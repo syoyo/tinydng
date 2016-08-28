@@ -64,8 +64,8 @@ int main(int argc, char **argv) {
 
 ## TODO
 
-* [ ] Big endian
 * [ ] Parse more DNG headers
+* [ ] Support DNG containing multiple images.
 * [ ] lossless&lossy JPEG DNG(CinemaDNG)
 * [ ] RLE-compressed DNG
 * [ ] DNG writer?
