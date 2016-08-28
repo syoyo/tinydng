@@ -67,7 +67,9 @@ int main(int argc, char **argv) {
 * [ ] Parse more DNG headers
 * [ ] Support DNG containing multiple images.
 * [ ] lossless&lossy JPEG DNG(CinemaDNG)
+  * Contribution is welcome.
 * [ ] RLE-compressed DNG
+  * Contribution is welcome.
 * [ ] DNG writer?
 * [ ] Support Big TIFF?(4GB+)
 
