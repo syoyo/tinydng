@@ -1,5 +1,7 @@
 # Tiny DNG Loader
 
+[![Build Status](https://travis-ci.org/syoyo/tinydngloader.svg?branch=master)](https://travis-ci.org/syoyo/tinydngloader)
+
 Header-only simple&limited DNG(Digital NeGative, subset of TIFF format) loader in C++.
 
 Currently TinyDNGLoader only supports lossless RAW DNG.
