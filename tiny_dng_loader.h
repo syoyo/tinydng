@@ -77,10 +77,6 @@ bool LoadDNG(DNGInfo* info,                     // [out] DNG meta information.
 #include <cassert>
 #include <sstream>
 
-//
-// @todo { Support big endian }
-//
-
 namespace tinydng {
 
 typedef struct {
