@@ -5,14 +5,20 @@
 * premake5
 * OpenGL 2.x
 
-## Build on Linux/MacOSX
+## Building
+
+### Build on Linux/MacOSX
 
     $ premake5 gmake
     $ make
 
-## Build on Windows
+### Build on Windows
 
-T.B.W.
+Confirmed build with Visual Studio 2015. Visual Studio 2013 may work.
+
+    > premake5 vs2015
+
+Then, build generated .sln with Visual Studio.
 
 ## Usage
 

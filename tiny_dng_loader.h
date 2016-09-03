@@ -83,6 +83,15 @@ bool LoadDNG(DNGInfo* info,                     // [out] DNG meta information.
 
 namespace tinydng {
 
+// Very simple count leading zero implementation.
+int clz32(unsigned int x)
+{
+	int n;
+	if (x == 0) return 32;
+	for (n = 0; ((x & 0x80000000) == 0); n++, x <<= 1);
+	return n;
+}
+
 #ifdef __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wc++11-extensions"
@@ -916,8 +925,9 @@ int frequencyScan(lje* self) {
     else
       Px = rows[0][col] + ((rows[1][col - 1] - rows[0][col - 1]) >> 1);
     diff = rows[1][col] - Px;
-    int ssss = 32 - __builtin_clz(abs(diff));
-    if (diff == 0) ssss = 0;
+    //int ssss = 32 - __builtin_clz(abs(diff));
+	int ssss = 32 - clz32(abs(diff));
+	if (diff == 0) ssss = 0;
     self->hist[ssss]++;
     // printf("%d %d %d %d %d %d\n",col,row,p,Px,diff,ssss);
     pixel++;
@@ -1189,8 +1199,9 @@ void writeBody(lje* self) {
     else
       Px = rows[0][col] + ((rows[1][col - 1] - rows[0][col - 1]) >> 1);
     diff = rows[1][col] - Px;
-    int ssss = 32 - __builtin_clz(abs(diff));
-    if (diff == 0) ssss = 0;
+    //int ssss = 32 - __builtin_clz(abs(diff));
+	int ssss = 32 - clz32(abs(diff));
+	if (diff == 0) ssss = 0;
     // printf("%d %d %d %d %d\n",col,row,Px,diff,ssss);
 
     // Write the huffman code for the ssss value
