@@ -9,6 +9,12 @@ Currently TinyDNGLoader only supports lossless RAW DNG.
 ![](images/colorchart.png)
 (NOTE: TinyDNGLoader just loads DNG data as is, thus you'll need your own RAW processing code(e.g. debayer) to get a developed image as shown the above)
 
+## Features
+
+* [x] RAW DNG data
+* [x] Lossless JPEG
+  * Experimental support. 16bit data only. Lossless JPEG decoding is supported through liblj92 lib. https://bitbucket.org/baldand/mlrawviewer.git
+
 ## Usage
 
 ```
@@ -63,18 +69,29 @@ int main(int argc, char **argv) {
 
 ```
 
+## Examples
+
+* [examples/viewer](examples/viewer) Simple viewer example.
+
 
 ## TODO
 
 * [ ] Parse more DNG headers
 * [ ] Support DNG containing multiple images.
-* [ ] lossless&lossy JPEG DNG(CinemaDNG)
+* [ ] Lossless JPEG other than 16bit.
   * Contribution is welcome.
-* [ ] RLE-compressed DNG
+* [ ] lossy JPEG DNG(CinemaDNG)
+  * Contribution is welcome.
+* [ ] ZIP-compressed DNG
   * Contribution is welcome.
 * [ ] DNG writer?
 * [ ] Support Big TIFF?(4GB+)
 
 ## License
 
-MIT license.
+TinyDNGLoader is licensed under MIT license.
+
+TinyDNGLoader uses the following third party license(s).
+
+* liblj92(Lossless JPEG library) : (c) Andrew Baldwin 2014. MIT license.  https://bitbucket.org/baldand/mlrawviewer.git
+
