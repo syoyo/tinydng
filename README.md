@@ -4,7 +4,7 @@
 
 Header-only simple&limited DNG(Digital NeGative, subset of TIFF format) loader in C++.
 
-Currently TinyDNGLoader only supports lossless RAW DNG.
+Currently TinyDNGLoader only supports lossless RAW DNG and limited lossless JPEG DNG.
 
 ![](images/tinydngloader_viewer.png)
 (NOTE: TinyDNGLoader just loads DNG data as is, thus you'll need your own RAW processing code(e.g. debayer) to get a developed image as shown the above)
