@@ -10,18 +10,9 @@
     $ premake5 gmake
     $ make
 
-## Build on MinGW(Experimental)
-
-    $ premake5 gmake
-    $ make
-
 ## Build on Windows
 
-    > premake5 vs2013
-
-Or 
-
-    > premake5 vs2015
+T.B.W.
 
 ## Usage
 
