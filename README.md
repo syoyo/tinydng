@@ -6,7 +6,7 @@ Header-only simple&limited DNG(Digital NeGative, subset of TIFF format) loader i
 
 Currently TinyDNGLoader only supports lossless RAW DNG.
 
-![](images/colorchart.png)
+![](images/tinydngloader_viewer.png)
 (NOTE: TinyDNGLoader just loads DNG data as is, thus you'll need your own RAW processing code(e.g. debayer) to get a developed image as shown the above)
 
 ## Features
