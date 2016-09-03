@@ -48,7 +48,8 @@ solution "ViewerSolution"
             "OpenGLWindow/Win32Window.cpp",
             "OpenGLWindow/Win32Window.h",
             }
-         files { "nativefiledialog/src/nfd_win.cpp" }
+         files { "nativefiledialog/src/nfd_win.cpp",
+                 "nativefiledialog/src/nfd_common.c" }
       end
       if os.is("Linux") then
          files {
@@ -73,7 +74,8 @@ solution "ViewerSolution"
                 "OpenGLWindow/MacOpenGLWindow.h",
                 "OpenGLWindow/MacOpenGLWindow.mm",
                }
-         files { "nativefiledialog/src/nfd_cocoa.m" }
+         files { "nativefiledialog/src/nfd_cocoa.m",
+                 "nativefiledialog/src/nfd_common.c" }
       end
 
       configuration "Debug"

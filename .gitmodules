@@ -1,0 +1,3 @@
+[submodule "third_party/charls"]
+	path = third_party/charls
+	url = https://github.com/team-charls/charls.git
