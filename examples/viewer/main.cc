@@ -711,7 +711,7 @@ void keyboardCallback(int keycode, int state) {
   // if (keycode == 'q' && window && window->isModifierKeyPressed(B3G_SHIFT)) {
   if (keycode == 27) { // ESC
     if (window) window->setRequestExit();
-  } else if (keycode = 32) { // Space
+  } else if (keycode == 32) { // Space
     // @todo { check key is pressed outside of ImGui window. }
     gUIParam.view_offset[0] = 0;
     gUIParam.view_offset[1] = 0;
