@@ -89,7 +89,7 @@ typedef struct {
   bool flip_y;
 
   int view_offset[2];
-  int view_scale;
+  int view_scale; // percentage.
   float display_gamma;
   int cfa_offset[2]; // CFA offset.
 
@@ -807,7 +807,7 @@ void Display(const GLContext& ctx, const UIParam& param) {
               (float)param.view_offset[0] / (float)gRAWImage.width,
               (float)param.view_offset[1] / (float)gRAWImage.height);
   glUniform1f(ctx.uv_scale_loc,
-               (float)param.view_scale);
+               (float)param.view_scale / (float)(100.0f));
   glUniform1f(ctx.gamma_loc, param.display_gamma);
   CheckGLError("uniform");
 
@@ -852,7 +852,7 @@ int main(int argc, char** argv) {
     gUIParam.view_offset[0] = 0;
     gUIParam.view_offset[1] = 0;
     gUIParam.display_gamma = 1.0f;
-    gUIParam.view_scale = 1;
+    gUIParam.view_scale = 100; // 100%
     gUIParam.cfa_offset[0] = 0;
     gUIParam.cfa_offset[1] = 0;
   }
@@ -949,7 +949,7 @@ int main(int argc, char** argv) {
       if (ImGui::SliderInt2("CFA offset(xy)", gUIParam.cfa_offset, 0, 1)) {
         Develop(&gRAWImage, gUIParam);
       }
-      if (ImGui::SliderInt("zoom", &gUIParam.view_scale, 1, 16)) {
+      if (ImGui::SliderInt("zoom(%%)", &gUIParam.view_scale, 1, 1600)) {
         Develop(&gRAWImage, gUIParam);
       }
     }
