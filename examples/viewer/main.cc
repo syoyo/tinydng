@@ -90,6 +90,8 @@ typedef struct {
 
   int view_offset[2];
   float display_gamma;
+
+  int cfa_offset[2]; // CFA offset.
 } UIParam;
 
 RAWImage gRAWImage;
@@ -224,7 +226,9 @@ void decode14_hdr(std::vector<float>& image, unsigned char* data, int width,
 
   image.resize(width * height);
 
+#ifdef _OPENMP
 #pragma omp parallel for schedule(dynamic, 1)
+#endif
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < width; x++) {
       unsigned char buf[7];
@@ -290,7 +294,9 @@ void decode16_hdr(std::vector<float>& image, unsigned char* data, int width,
   image.resize(width * height);
   unsigned short* ptr = reinterpret_cast<unsigned short*>(data);
 
+#ifdef _OPENMP
 #pragma omp parallel for schedule(dynamic, 1)
+#endif
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < width; x++) {
       unsigned short val = ptr[y * width + x];
@@ -302,6 +308,190 @@ void decode16_hdr(std::vector<float>& image, unsigned char* data, int width,
       image[y * width + x] = (float)val;
     }
   }
+}
+
+static inline double fclamp(double x, double minx, double maxx)
+{
+  if (x < minx) return minx;
+  if (x > maxx) return maxx;
+  return x;
+}
+
+static inline int clamp(int x, int minx, int maxx)
+{
+  if (x < minx) return minx;
+  if (x > maxx) return maxx;
+  return x;
+}
+
+
+static inline float fetch(
+  const std::vector<float>& in,
+  int x, int y, int w, int h)
+{
+  int xx = clamp(x, 0, w-1);
+  int yy = clamp(y, 0, h-1);
+  return in[yy*w+xx];
+}
+
+// Simple debayer.
+// debayerOffset = pixel offset to make CFA pattern RGGB.
+static void debayer(
+  std::vector<float>& out,
+  const std::vector<float>& in,
+  int width,
+  int height,
+  const int debayerOffset[2])
+{
+  if (out.size() != width * height * 3) {
+    out.resize(width * height * 3);
+  }
+
+  //printf("offset = %d, %d\n", debayerOffset[0], debayerOffset[1]);
+
+#if 1
+
+  #ifdef _OPENMP
+  #pragma omp parallel for
+  #endif
+  for (int yy = 0; yy < height; yy++) {
+    for (int xx = 0; xx < width; xx++) {
+
+      int x = xx + debayerOffset[0];
+      int y = yy + debayerOffset[1];
+
+      int xCoord[4] = {x-2, x-1, x+1, x+2};
+      int yCoord[4] = {y-2, y-1, y+1, y+2};
+
+      float C = fetch(in, x, y, width, height);
+      float kC[4] = {4.0/8.0, 6.0/8.0, 5.0/8.0, 5.0/8.0};
+
+      int altername[2];
+      altername[0] = xx % 2;
+      altername[1] = yy % 2;
+      //printf("x, y, alternate = %d, %d, %d, %d\n",
+      //  x, y, altername[0], altername[1]);
+
+      //int pattern = CFAPattern[y%2][x%2];
+  
+      float Dvec[4];
+      Dvec[0] = fetch(in, xCoord[1], yCoord[1], width, height);
+      Dvec[1] = fetch(in, xCoord[1], yCoord[2], width, height);
+      Dvec[2] = fetch(in, xCoord[2], yCoord[1], width, height);
+      Dvec[3] = fetch(in, xCoord[2], yCoord[2], width, height);
+
+      // vec4 PATTERN = (kC.xyz * C).xyzz;
+      float PATTERN[4];
+      PATTERN[0] = kC[0] * C;
+      PATTERN[1] = kC[1] * C;
+      PATTERN[2] = kC[2] * C;
+      PATTERN[3] = kC[2] * C;
+
+      // D = Dvec[0] + Dvec[1] + Dvec[2] + Dvec[3]
+      Dvec[0] += Dvec[1] + Dvec[2] + Dvec[3];
+
+      float value[4];
+      value[0] = fetch(in, x, yCoord[0], width, height);
+      value[1] = fetch(in, x, yCoord[1], width, height);
+      value[2] = fetch(in, xCoord[0], y, width, height);
+      value[3] = fetch(in, xCoord[1], y, width, height);
+
+      float temp[4];
+      temp[0] = fetch(in, x, yCoord[3], width, height);
+      temp[1] = fetch(in, x, yCoord[2], width, height);
+      temp[2] = fetch(in, xCoord[3], y, width, height);
+      temp[3] = fetch(in, xCoord[2], y, width, height);
+
+      float kA[4] = {-1.0/8.0, -1.5/8.0,  0.5/8.0, -1.0/8.0};
+      float kB[4] = { 2.0/8.0,  0.0/8.0,  0.0/8.0,  4.0/8.0};
+      float kD[4] = { 0.0/8.0,  2.0/8.0, -1.0/8.0, -1.0/8.0};
+
+      value[0] += temp[0];
+      value[1] += temp[1];
+      value[2] += temp[2];
+      value[3] += temp[3];
+
+      //#define kE (kA.xywz)
+      //#define kF (kB.xywz)
+      float kE[4];
+      kE[0] = kA[0];
+      kE[1] = kA[1];
+      kE[2] = kA[3];
+      kE[3] = kA[2];
+
+      float kF[4];
+      kF[0] = kB[0];
+      kF[1] = kB[1];
+      kF[2] = kB[3];
+      kF[3] = kB[2];
+
+      //#define A (value[0])
+      //#define B (value[1])
+      //#define D (Dvec.x)
+      //#define E (value[2])
+      //#define F (value[3])
+
+      // PATTERN.yzw += (kD.yz * D).xyy;
+      // 
+      // PATTERN += (kA.xyz * A).xyzx + (kE.xyw * E).xyxz;
+      // PATTERN.xw  += kB.xw * B;
+      // PATTERN.xz  += kF.xz * F;
+
+      PATTERN[1] += kD[1] * Dvec[0];
+      PATTERN[2] += kD[2] * Dvec[0];
+      PATTERN[3] += kD[2] * Dvec[0];
+
+      PATTERN[0] += kA[0] * value[0] + kE[0] * value[2];
+      PATTERN[1] += kA[1] * value[0] + kE[1] * value[2];
+      PATTERN[2] += kA[2] * value[0] + kE[0] * value[2];
+      PATTERN[3] += kA[0] * value[0] + kE[3] * value[2];
+
+      PATTERN[0] += kB[0] * value[1];
+      PATTERN[3] += kB[3] * value[1];
+
+      PATTERN[0] += kF[0] * value[3];
+      PATTERN[2] += kF[2] * value[3];
+
+      float rgb[3];
+      if (altername[1] == 0) {
+        if (altername[0] == 0) {
+          rgb[0] = C;
+          rgb[1] = PATTERN[0];
+          rgb[2] = PATTERN[1];
+        } else {
+          rgb[0] = PATTERN[2];
+          rgb[1] = C;
+          rgb[2] = PATTERN[3];
+        }
+      } else {
+        if (altername[0] == 0) {
+          rgb[0] = PATTERN[3];
+          rgb[1] = C;
+          rgb[2] = PATTERN[2];
+        } else {
+          rgb[0] = PATTERN[1];
+          rgb[1] = PATTERN[0];
+          rgb[2] = C;
+        }
+      }
+
+      out[3*(yy*width+xx)+0] = rgb[0];
+      out[3*(yy*width+xx)+1] = rgb[1];
+      out[3*(yy*width+xx)+2] = rgb[2];
+
+    }
+  }
+#else
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+      out[3*(y*width+x)+0] = in[y*width+x];
+      out[3*(y*width+x)+1] = in[y*width+x];
+      out[3*(y*width+x)+2] = in[y*width+x];
+    }
+  }
+
+#endif
+
 }
 
 void DecodeToHDR(RAWImage* raw, bool swap_endian) {
@@ -323,15 +513,34 @@ void DecodeToHDR(RAWImage* raw, bool swap_endian) {
 }
 
 // @todo { debayer, color correction, etc. }
-void Develop(RAWImage* raw, float intensity, bool flipY) {
+void Develop(RAWImage* raw, const UIParam& param) {
   if (raw->framebuffer.size() != (raw->width * raw->height * 3)) {
     raw->framebuffer.resize(raw->width * raw->height * 3);
   }
 
-  // Simply map raw pixel value to [0.0, 1.0] range.
   const float inv_scale =
       1.0f / (raw->dng_info.white_level - raw->dng_info.black_level);
 
+#if 1
+
+  std::vector<float> debayed;
+  debayer(debayed, raw->image, raw->width, raw->height, param.cfa_offset);
+
+  for (size_t y = 0; y < raw->height; y++) {
+    for (size_t x = 0; x < raw->width; x++) {
+      int Y = (param.flip_y) ? (raw->height - y - 1) : y;
+
+      // @fixme { subtract black_level after debayer won't be correct. Subtract black level before debayer? }
+
+      raw->framebuffer[3 * (Y * raw->width + x) + 0] = param.intensity * (debayed[3 * (y * raw->width + x) + 0] - raw->dng_info.black_level) * inv_scale;
+      raw->framebuffer[3 * (Y * raw->width + x) + 1] = param.intensity * (debayed[3 * (y * raw->width + x) + 1] - raw->dng_info.black_level) * inv_scale;
+      raw->framebuffer[3 * (Y * raw->width + x) + 2] = param.intensity * (debayed[3 * (y * raw->width + x) + 2] - raw->dng_info.black_level) * inv_scale;
+    }
+  }
+
+#else
+
+  // Simply map raw pixel value to [0.0, 1.0] range.
   // Assume src is grayscale image.
   for (size_t y = 0; y < raw->height; y++) {
     for (size_t x = 0; x < raw->width; x++) {
@@ -347,6 +556,7 @@ void Develop(RAWImage* raw, float intensity, bool flipY) {
       raw->framebuffer[3 * (Y * raw->width + x) + 2] = intensity * value;
     }
   }
+#endif
 
   // Upload to GL texture.
   if (gGLCtx.tex_id > 0) {
@@ -707,7 +917,7 @@ int main(int argc, char** argv) {
   ImGuiIO& io = ImGui::GetIO();
   io.Fonts->AddFontDefault();
 
-  Develop(&gRAWImage, gUIParam.intensity, gUIParam.flip_y);
+  Develop(&gRAWImage, gUIParam);
 
   while (!window->requestedExit()) {
     window->startRendering();
@@ -718,11 +928,15 @@ int main(int argc, char** argv) {
     ImGui::Begin("UI");
     {
       if (ImGui::SliderFloat("intensity", &gUIParam.intensity, 0.0f, 10.0f)) {
-        Develop(&gRAWImage, gUIParam.intensity, gUIParam.flip_y);
+        Develop(&gRAWImage, gUIParam);
       }
       if (ImGui::Checkbox("flip Y", &gUIParam.flip_y)) {
-        Develop(&gRAWImage, gUIParam.intensity, gUIParam.flip_y);
+        Develop(&gRAWImage, gUIParam);
       }
+      if (ImGui::SliderInt2("CFA offset(xy)", gUIParam.cfa_offset, 0, 1)) {
+        Develop(&gRAWImage, gUIParam);
+      }
+    
     }
 
     ImGui::End();
