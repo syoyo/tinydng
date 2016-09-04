@@ -84,12 +84,12 @@ bool LoadDNG(DNGInfo* info,                     // [out] DNG meta information.
 namespace tinydng {
 
 // Very simple count leading zero implementation.
-int clz32(unsigned int x)
-{
-	int n;
-	if (x == 0) return 32;
-	for (n = 0; ((x & 0x80000000) == 0); n++, x <<= 1);
-	return n;
+static int clz32(unsigned int x) {
+  int n;
+  if (x == 0) return 32;
+  for (n = 0; ((x & 0x80000000) == 0); n++, x <<= 1)
+    ;
+  return n;
 }
 
 #ifdef __clang__
@@ -235,9 +235,11 @@ static int find(ljp* self) {
   }
   ix += 2;
   if (ix >= self->datalen) {
+    // printf("idx = %d, datalen = %\d\n", ix, self->datalen);
     return -1;
   }
   self->ix = ix;
+  // printf("ix = %d, data = %d\n", ix, data[ix - 1]);
   return data[ix - 1];
 }
 
@@ -755,9 +757,11 @@ static int parseScan(ljp* self) {
 }
 
 static int parseImage(ljp* self) {
+  // printf("parseImage\n");
   int ret = LJ92_ERROR_NONE;
   while (1) {
     int nextMarker = find(self);
+    // printf("marker = %f\n", nextMarker);
     if (nextMarker == 0xc4)
       ret = parseHuff(self);
     else if (nextMarker == 0xc3)
@@ -925,9 +929,9 @@ int frequencyScan(lje* self) {
     else
       Px = rows[0][col] + ((rows[1][col - 1] - rows[0][col - 1]) >> 1);
     diff = rows[1][col] - Px;
-    //int ssss = 32 - __builtin_clz(abs(diff));
-	int ssss = 32 - clz32(abs(diff));
-	if (diff == 0) ssss = 0;
+    // int ssss = 32 - __builtin_clz(abs(diff));
+    int ssss = 32 - clz32(abs(diff));
+    if (diff == 0) ssss = 0;
     self->hist[ssss]++;
     // printf("%d %d %d %d %d %d\n",col,row,p,Px,diff,ssss);
     pixel++;
@@ -1199,9 +1203,9 @@ void writeBody(lje* self) {
     else
       Px = rows[0][col] + ((rows[1][col - 1] - rows[0][col - 1]) >> 1);
     diff = rows[1][col] - Px;
-    //int ssss = 32 - __builtin_clz(abs(diff));
-	int ssss = 32 - clz32(abs(diff));
-	if (diff == 0) ssss = 0;
+    // int ssss = 32 - __builtin_clz(abs(diff));
+    int ssss = 32 - clz32(abs(diff));
+    if (diff == 0) ssss = 0;
     // printf("%d %d %d %d %d\n",col,row,Px,diff,ssss);
 
     // Write the huffman code for the ssss value
@@ -1527,6 +1531,9 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
   assert(tiff_info.tile_width > 0);
   assert(tiff_info.tile_length > 0);
 
+  // printf("w x h = %d, %d\n", tiff_info.width, tiff_info.height);
+  // printf("tile = %d, %d\n", tiff_info.tile_width, tiff_info.tile_length);
+
   // @note { It looks width and height information stored in LJPEG header does
   // not maches with tile width height. Assume actual extent of LJPEG data is
   // tile width and height. }
@@ -1539,6 +1546,7 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
   while (tiff_h < static_cast<unsigned int>(tiff_info.height)) {
     // Read offset to JPEG data location.
     offset = static_cast<int>(Read4(fp, swap_endian));
+    // printf("offt = %d\n", offset);
 
     int lj_width = 0;
     int lj_height = 0;
@@ -1552,11 +1560,10 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
     int ret = lj92_open(&ljp, reinterpret_cast<const uint8_t*>(&src[offset]),
                         /* data_len */ static_cast<int>(input_len), &lj_width,
                         &lj_height, &lj_bits);
+    // printf("ret = %d\n", ret);
     assert(ret == LJ92_ERROR_NONE);
 
     // printf("lj %d, %d, %d\n", lj_width, lj_height, lj_bits);
-
-    assert(lj_bits == 16);  // Currently only supports 16bit pixel.
 
     int write_length = tiff_info.tile_width;
     int skip_length = dst_width - tiff_info.tile_width;
@@ -1943,6 +1950,10 @@ bool LoadDNG(DNGInfo* info, std::vector<unsigned char>* data, size_t* len,
       assert(ret == (*len));
     } else if (infos[idx].compression ==
                7) {  //  new JPEG(baseline DCT JPEG or lossless JPEG)
+
+      // lj92 decodes data into 16bits, so modify bps.
+      infos[idx].bps = 16;
+
       assert(((infos[idx].width * infos[idx].height * infos[idx].bps) % 8) ==
              0);
       (*len) = static_cast<size_t>(
