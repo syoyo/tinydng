@@ -89,9 +89,10 @@ typedef struct {
   bool flip_y;
 
   int view_offset[2];
+  int view_scale;
   float display_gamma;
-
   int cfa_offset[2]; // CFA offset.
+
 } UIParam;
 
 RAWImage gRAWImage;
@@ -121,9 +122,10 @@ static const char gFragmentShaderStr[] =
     "varying vec2 vTexcoord;\n"
     "uniform float uGamma;\n"
     "uniform vec2  uOffset;\n"
+    "uniform float uScale;\n"
     "uniform sampler2D tex;\n"
     "void main() {\n"
-    "    vec3 col = texture2D(tex, vTexcoord + uOffset).rgb;"
+    "    vec3 col = texture2D(tex,(vTexcoord / uScale) + uOffset).rgb;"
     "    col = clamp(pow(col, vec3(uGamma)), 0.0, 1.0);"
     "    gl_FragColor = vec4(col, 1.0);\n"
     "}\n";
@@ -138,6 +140,7 @@ typedef struct {
 
   GLint gamma_loc;
   GLint uv_offset_loc;
+  GLint uv_scale_loc;
   GLint tex_loc;
 
   GLuint tex_id;
@@ -673,6 +676,7 @@ void InitGLDisplay(GLContext* ctx, int width, int height) {
   // uniform
   BindUniform(ctx->gamma_loc, ctx->program, "uGamma");
   BindUniform(ctx->uv_offset_loc, ctx->program, "uOffset");
+  BindUniform(ctx->uv_scale_loc, ctx->program, "uScale");
 
   // Init texture for display.
   {
@@ -681,8 +685,8 @@ void InitGLDisplay(GLContext* ctx, int width, int height) {
     glBindTexture(GL_TEXTURE_2D, ctx->tex_id);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_FLOAT,
                  0);
     CheckGLError("glTexImage2D");
@@ -705,8 +709,12 @@ void keyboardCallback(int keycode, int state) {
   printf("hello key %d, state %d(ctrl %d)\n", keycode, state,
          window->isModifierKeyPressed(B3G_CONTROL));
   // if (keycode == 'q' && window && window->isModifierKeyPressed(B3G_SHIFT)) {
-  if (keycode == 27) {
+  if (keycode == 27) { // ESC
     if (window) window->setRequestExit();
+  } else if (keycode = 32) { // Space
+    // @todo { check key is pressed outside of ImGui window. }
+    gUIParam.view_offset[0] = 0;
+    gUIParam.view_offset[1] = 0;
   }
 
   ImGui_ImplBtGui_SetKeyState(keycode, (state == 1));
@@ -798,6 +806,8 @@ void Display(const GLContext& ctx, const UIParam& param) {
   glUniform2f(ctx.uv_offset_loc,
               (float)param.view_offset[0] / (float)gRAWImage.width,
               (float)param.view_offset[1] / (float)gRAWImage.height);
+  glUniform1f(ctx.uv_scale_loc,
+               (float)param.view_scale);
   glUniform1f(ctx.gamma_loc, param.display_gamma);
   CheckGLError("uniform");
 
@@ -842,6 +852,9 @@ int main(int argc, char** argv) {
     gUIParam.view_offset[0] = 0;
     gUIParam.view_offset[1] = 0;
     gUIParam.display_gamma = 1.0f;
+    gUIParam.view_scale = 1;
+    gUIParam.cfa_offset[0] = 0;
+    gUIParam.cfa_offset[1] = 0;
   }
 
   {
@@ -927,7 +940,7 @@ int main(int argc, char** argv) {
     ImGui_ImplBtGui_NewFrame(gMousePosX, gMousePosY);
     ImGui::Begin("UI");
     {
-      if (ImGui::SliderFloat("intensity", &gUIParam.intensity, 0.0f, 10.0f)) {
+      if (ImGui::SliderFloat("intensity", &gUIParam.intensity, 0.0f, 32.0f)) {
         Develop(&gRAWImage, gUIParam);
       }
       if (ImGui::Checkbox("flip Y", &gUIParam.flip_y)) {
@@ -936,7 +949,9 @@ int main(int argc, char** argv) {
       if (ImGui::SliderInt2("CFA offset(xy)", gUIParam.cfa_offset, 0, 1)) {
         Develop(&gRAWImage, gUIParam);
       }
-    
+      if (ImGui::SliderInt("zoom", &gUIParam.view_scale, 1, 16)) {
+        Develop(&gRAWImage, gUIParam);
+      }
     }
 
     ImGui::End();
