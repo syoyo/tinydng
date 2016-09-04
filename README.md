@@ -13,7 +13,7 @@ Currently TinyDNGLoader only supports lossless RAW DNG and limited lossless JPEG
 
 * [x] RAW DNG data
 * [x] Lossless JPEG
-  * Experimental support. 16bit data only. Lossless JPEG decoding is supported through liblj92 lib. https://bitbucket.org/baldand/mlrawviewer.git
+  * Experimental support. Lossless JPEG decoding is supported through liblj92 lib. https://bitbucket.org/baldand/mlrawviewer.git
 
 ## Usage
 
@@ -71,16 +71,14 @@ int main(int argc, char **argv) {
 
 ## Examples
 
-* [examples/viewer](examples/viewer) Simple viewer example.
+* [examples/viewer](examples/viewer) Simple viewer example with simple debayering.
 
 
 ## TODO
 
 * [ ] Parse more DNG headers
 * [ ] Support DNG containing multiple images.
-* [ ] Lossless JPEG other than 16bit.
-  * Contribution is welcome.
-* [ ] lossy JPEG DNG(CinemaDNG)
+* [ ] lossy DNG
   * Contribution is welcome.
 * [ ] ZIP-compressed DNG
   * Contribution is welcome.
