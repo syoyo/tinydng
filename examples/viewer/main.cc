@@ -838,12 +838,16 @@ void Display(const GLContext& ctx, const UIParam& param) {
 }
 
 int main(int argc, char** argv) {
+
+  std::string input_filename = "../../colorchart.dng";
+  
   if (argc < 2) {
     std::cout << "Needs input.dng" << std::endl;
-    return EXIT_FAILURE;
+    //return EXIT_FAILURE;
+  } else {
+    input_filename = std::string(argv[1]);
   }
 
-  std::string input_filename = std::string(argv[1]);
 
   // Init UI param
   {
