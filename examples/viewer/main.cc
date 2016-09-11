@@ -89,9 +89,12 @@ typedef struct {
   bool flip_y;
 
   int view_offset[2];
-  int view_scale; // percentage.
+  int view_scale;  // percentage.
   float display_gamma;
-  int cfa_offset[2]; // CFA offset.
+  int cfa_offset[2];  // CFA offset.
+  int cfa_pattern[4];
+
+  float color_matrix[3][3];
 
 } UIParam;
 
@@ -126,7 +129,7 @@ static const char gFragmentShaderStr[] =
     "uniform sampler2D tex;\n"
     "void main() {\n"
     "    vec3 col = texture2D(tex,(vTexcoord / uScale) + uOffset).rgb;"
-    "    col = clamp(pow(col, vec3(uGamma)), 0.0, 1.0);"
+    "    col = clamp(pow(col, vec3(1.0f / uGamma)), 0.0, 1.0);"
     "    gl_FragColor = vec4(col, 1.0);\n"
     "}\n";
 
@@ -159,6 +162,11 @@ static inline unsigned short swap2(unsigned short val) {
 
   return ret;
 }
+
+static const double xyz_rgb[3][3] = {/* XYZ from RGB */
+                                     {0.412453, 0.357580, 0.180423},
+                                     {0.212671, 0.715160, 0.072169},
+                                     {0.019334, 0.119193, 0.950227}};
 
 //
 // Decode 12bit integer image into floating point HDR image
@@ -313,70 +321,59 @@ void decode16_hdr(std::vector<float>& image, unsigned char* data, int width,
   }
 }
 
-static inline double fclamp(double x, double minx, double maxx)
-{
+static inline double fclamp(double x, double minx, double maxx) {
   if (x < minx) return minx;
   if (x > maxx) return maxx;
   return x;
 }
 
-static inline int clamp(int x, int minx, int maxx)
-{
+static inline int clamp(int x, int minx, int maxx) {
   if (x < minx) return minx;
   if (x > maxx) return maxx;
   return x;
 }
 
-
-static inline float fetch(
-  const std::vector<float>& in,
-  int x, int y, int w, int h)
-{
-  int xx = clamp(x, 0, w-1);
-  int yy = clamp(y, 0, h-1);
-  return in[yy*w+xx];
+static inline float fetch(const std::vector<float>& in, int x, int y, int w,
+                          int h) {
+  int xx = clamp(x, 0, w - 1);
+  int yy = clamp(y, 0, h - 1);
+  return in[yy * w + xx];
 }
 
 // Simple debayer.
 // debayerOffset = pixel offset to make CFA pattern RGGB.
-static void debayer(
-  std::vector<float>& out,
-  const std::vector<float>& in,
-  int width,
-  int height,
-  const int debayerOffset[2])
-{
+static void debayer(std::vector<float>& out, const std::vector<float>& in,
+                    int width, int height, const int debayerOffset[2]) {
   if (out.size() != width * height * 3) {
     out.resize(width * height * 3);
   }
 
-  //printf("offset = %d, %d\n", debayerOffset[0], debayerOffset[1]);
+// printf("offset = %d, %d\n", debayerOffset[0], debayerOffset[1]);
 
 #if 1
 
-  #ifdef _OPENMP
-  #pragma omp parallel for
-  #endif
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
   for (int yy = 0; yy < height; yy++) {
     for (int xx = 0; xx < width; xx++) {
-
       int x = xx + debayerOffset[0];
       int y = yy + debayerOffset[1];
 
-      int xCoord[4] = {x-2, x-1, x+1, x+2};
-      int yCoord[4] = {y-2, y-1, y+1, y+2};
+      int xCoord[4] = {x - 2, x - 1, x + 1, x + 2};
+      int yCoord[4] = {y - 2, y - 1, y + 1, y + 2};
 
       float C = fetch(in, x, y, width, height);
-      float kC[4] = {4.0/8.0, 6.0/8.0, 5.0/8.0, 5.0/8.0};
+      float kC[4] = {4.0 / 8.0, 6.0 / 8.0, 5.0 / 8.0, 5.0 / 8.0};
 
       int altername[2];
       altername[0] = xx % 2;
       altername[1] = yy % 2;
-      //printf("x, y, alternate = %d, %d, %d, %d\n",
+      // printf("x, y, alternate = %d, %d, %d, %d\n",
       //  x, y, altername[0], altername[1]);
 
-      //int pattern = CFAPattern[y%2][x%2];
-  
+      // int pattern = CFAPattern[y%2][x%2];
+
       float Dvec[4];
       Dvec[0] = fetch(in, xCoord[1], yCoord[1], width, height);
       Dvec[1] = fetch(in, xCoord[1], yCoord[2], width, height);
@@ -405,9 +402,9 @@ static void debayer(
       temp[2] = fetch(in, xCoord[3], y, width, height);
       temp[3] = fetch(in, xCoord[2], y, width, height);
 
-      float kA[4] = {-1.0/8.0, -1.5/8.0,  0.5/8.0, -1.0/8.0};
-      float kB[4] = { 2.0/8.0,  0.0/8.0,  0.0/8.0,  4.0/8.0};
-      float kD[4] = { 0.0/8.0,  2.0/8.0, -1.0/8.0, -1.0/8.0};
+      float kA[4] = {-1.0 / 8.0, -1.5 / 8.0, 0.5 / 8.0, -1.0 / 8.0};
+      float kB[4] = {2.0 / 8.0, 0.0 / 8.0, 0.0 / 8.0, 4.0 / 8.0};
+      float kD[4] = {0.0 / 8.0, 2.0 / 8.0, -1.0 / 8.0, -1.0 / 8.0};
 
       value[0] += temp[0];
       value[1] += temp[1];
@@ -435,7 +432,7 @@ static void debayer(
       //#define F (value[3])
 
       // PATTERN.yzw += (kD.yz * D).xyy;
-      // 
+      //
       // PATTERN += (kA.xyz * A).xyzx + (kE.xyw * E).xyxz;
       // PATTERN.xw  += kB.xw * B;
       // PATTERN.xz  += kF.xz * F;
@@ -478,23 +475,129 @@ static void debayer(
         }
       }
 
-      out[3*(yy*width+xx)+0] = rgb[0];
-      out[3*(yy*width+xx)+1] = rgb[1];
-      out[3*(yy*width+xx)+2] = rgb[2];
-
+      out[3 * (yy * width + xx) + 0] = rgb[0];
+      out[3 * (yy * width + xx) + 1] = rgb[1];
+      out[3 * (yy * width + xx) + 2] = rgb[2];
     }
   }
 #else
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < width; x++) {
-      out[3*(y*width+x)+0] = in[y*width+x];
-      out[3*(y*width+x)+1] = in[y*width+x];
-      out[3*(y*width+x)+2] = in[y*width+x];
+      out[3 * (y * width + x) + 0] = in[y * width + x];
+      out[3 * (y * width + x) + 1] = in[y * width + x];
+      out[3 * (y * width + x) + 2] = in[y * width + x];
     }
   }
 
 #endif
+}
 
+// @todo { Support CFA pattern other than RGGB }
+static void pre_color_correction(std::vector<float>& out,
+                                 std::vector<float>& in, int black_level,
+                                 int white_level,
+                                 const float color_matrix[3][3], int width,
+                                 int height, float scale) {
+  if (out.size() != width * height) {
+    out.resize(width * height);
+  }
+
+  //
+  // Compute color matrix
+  //
+  double rgb_matrix[3][3];  // RGB
+  double rgb_scale[3];
+  for (int i = 0; i < 3; i++) {
+    for (int j = 0; j < 3; j++) {
+      rgb_matrix[i][j] = 0.0;
+      for (int c = 0; c < 3; c++) {
+        // RGB = RGB x XYZ
+        rgb_matrix[i][j] += color_matrix[i][c] * xyz_rgb[c][j];
+      }
+      // printf("rgb_matrix[%d][%d] = %f\n", i, j, rgb_matrix[i][j]);
+    }
+  }
+
+  for (int i = 0; i < 3; i++) {
+    double sum = 0.0;
+    for (int j = 0; j < 3; j++) {
+      sum += rgb_matrix[i][j];
+    }
+    rgb_scale[i] = 1.0 / sum;
+    // printf("rgb_scale[%d] = %f\n", i, rgb_scale[i]);
+  }
+
+  double min_value = black_level;
+  double max_value = white_level;
+  max_value -= min_value;
+
+  // Normalize factor.
+  double factor[4];  // @fixme { Assume RGGB for now }
+  double dmax = 0.0;
+  for (int i = 0; i < 3; i++) {
+    if (dmax < rgb_scale[i]) {
+      dmax = rgb_scale[i];
+    }
+  }
+
+  factor[0] = (rgb_scale[0] / dmax) * 65535.0 / max_value;
+  factor[1] = factor[2] = (rgb_scale[1] / dmax) * 65535.0 / max_value;
+  factor[3] = (rgb_scale[2] / dmax) * 65535.0 / max_value;
+
+  int idx[4] = {0, 1, 1, 2};  // RGGB
+
+#pragma omp parallel for schedule(dynamic, 1)
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+      int xx = x % 2;
+      int yy = y % 2;
+      int i = (yy << 1) | xx;
+      double val = in[y * width + x];
+
+      // Assume BlackLevel is all same for color channel.
+      val -= min_value;
+      val *= scale * factor[idx[i]];
+
+      // normalize
+      // val /= 65535.0f;
+      // val /= max_value;
+      // printf("val = %f\n", val);
+      // out[y*width+x] = fclamp(val, 0.0, 32.0); // @fixme { max clamp value.
+      // val should be mostly < 1.0 after normalization. }
+      out[y * width + x] = fclamp(val, 0.0, 65535.0);
+    }
+  }
+}
+
+// Simple color correctionr.
+static void color_correction(std::vector<float>& out,
+                             const std::vector<float>& in, int width,
+                             int height, const double color_matrix[3][3]) {
+  if (out.size() != width * height * 3) {
+    out.resize(width * height * 3);
+  }
+
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+      float r = in[3 * (y * width + x) + 0];
+      float g = in[3 * (y * width + x) + 1];
+      float b = in[3 * (y * width + x) + 2];
+
+      float R = r;  // color_matrix[0][0] * r + color_matrix[1][0] * g +
+                    // color_matrix[2][0] * b;
+      float G = g;  // color_matrix[0][1] * r + color_matrix[1][1] * g +
+                    // color_matrix[2][1] * b;
+      float B = b;  // color_matrix[0][2] * r + color_matrix[1][2] * g +
+                    // color_matrix[2][2] * b;
+
+      out[3 * (y * width + x) + 0] = R;
+      out[3 * (y * width + x) + 1] = G;
+      out[3 * (y * width + x) + 2] = B;
+    }
+  }
 }
 
 void DecodeToHDR(RAWImage* raw, bool swap_endian) {
@@ -526,18 +629,33 @@ void Develop(RAWImage* raw, const UIParam& param) {
 
 #if 1
 
+  std::vector<float> pre_color_corrected;
+  pre_color_correction(pre_color_corrected, raw->image,
+                       raw->dng_info.black_level, raw->dng_info.white_level,
+                       param.color_matrix, raw->width, raw->height,
+                       /* scale */ 1.0f);
+
   std::vector<float> debayed;
-  debayer(debayed, raw->image, raw->width, raw->height, param.cfa_offset);
+  debayer(debayed, pre_color_corrected, raw->width, raw->height,
+          param.cfa_offset);
+
+  std::vector<float> color_corrected;
+  color_correction(color_corrected, debayed, raw->width, raw->height,
+                   raw->dng_info.color_matrix);
 
   for (size_t y = 0; y < raw->height; y++) {
     for (size_t x = 0; x < raw->width; x++) {
       int Y = (param.flip_y) ? (raw->height - y - 1) : y;
 
-      // @fixme { subtract black_level after debayer won't be correct. Subtract black level before debayer? }
-
-      raw->framebuffer[3 * (Y * raw->width + x) + 0] = param.intensity * (debayed[3 * (y * raw->width + x) + 0] - raw->dng_info.black_level) * inv_scale;
-      raw->framebuffer[3 * (Y * raw->width + x) + 1] = param.intensity * (debayed[3 * (y * raw->width + x) + 1] - raw->dng_info.black_level) * inv_scale;
-      raw->framebuffer[3 * (Y * raw->width + x) + 2] = param.intensity * (debayed[3 * (y * raw->width + x) + 2] - raw->dng_info.black_level) * inv_scale;
+      raw->framebuffer[3 * (Y * raw->width + x) + 0] =
+          param.intensity * color_corrected[3 * (y * raw->width + x) + 0] *
+          inv_scale;
+      raw->framebuffer[3 * (Y * raw->width + x) + 1] =
+          param.intensity * color_corrected[3 * (y * raw->width + x) + 1] *
+          inv_scale;
+      raw->framebuffer[3 * (Y * raw->width + x) + 2] =
+          param.intensity * color_corrected[3 * (y * raw->width + x) + 2] *
+          inv_scale;
     }
   }
 
@@ -709,9 +827,9 @@ void keyboardCallback(int keycode, int state) {
   printf("hello key %d, state %d(ctrl %d)\n", keycode, state,
          window->isModifierKeyPressed(B3G_CONTROL));
   // if (keycode == 'q' && window && window->isModifierKeyPressed(B3G_SHIFT)) {
-  if (keycode == 27) { // ESC
+  if (keycode == 27) {  // ESC
     if (window) window->setRequestExit();
-  } else if (keycode == 32) { // Space
+  } else if (keycode == 32) {  // Space
     // @todo { check key is pressed outside of ImGui window. }
     gUIParam.view_offset[0] = 0;
     gUIParam.view_offset[1] = 0;
@@ -806,8 +924,7 @@ void Display(const GLContext& ctx, const UIParam& param) {
   glUniform2f(ctx.uv_offset_loc,
               (float)param.view_offset[0] / (float)gRAWImage.width,
               (float)param.view_offset[1] / (float)gRAWImage.height);
-  glUniform1f(ctx.uv_scale_loc,
-               (float)param.view_scale / (float)(100.0f));
+  glUniform1f(ctx.uv_scale_loc, (float)param.view_scale / (float)(100.0f));
   glUniform1f(ctx.gamma_loc, param.display_gamma);
   CheckGLError("uniform");
 
@@ -845,18 +962,6 @@ int main(int argc, char** argv) {
 
   std::string input_filename = std::string(argv[1]);
 
-  // Init UI param
-  {
-    gUIParam.intensity = 1.0f;
-    gUIParam.flip_y = true;
-    gUIParam.view_offset[0] = 0;
-    gUIParam.view_offset[1] = 0;
-    gUIParam.display_gamma = 1.0f;
-    gUIParam.view_scale = 100; // 100%
-    gUIParam.cfa_offset[0] = 0;
-    gUIParam.cfa_offset[1] = 0;
-  }
-
   {
     int width;
     int height;
@@ -886,6 +991,29 @@ int main(int argc, char** argv) {
     gRAWImage.dng_info = dng_info;
 
     DecodeToHDR(&gRAWImage, /* endian*/ false);  // @fixme { detect endian }
+  }
+
+  // Init UI param
+  {
+    gUIParam.intensity = 1.0f;
+    gUIParam.flip_y = true;
+    gUIParam.view_offset[0] = 0;
+    gUIParam.view_offset[1] = 0;
+    gUIParam.display_gamma = 2.2f;
+    gUIParam.view_scale = 100;  // 100%
+    gUIParam.cfa_offset[0] = 0;
+    gUIParam.cfa_offset[1] = 0;
+
+    gUIParam.cfa_pattern[0] = gRAWImage.dng_info.cfa_pattern[0][0];
+    gUIParam.cfa_pattern[1] = gRAWImage.dng_info.cfa_pattern[0][1];
+    gUIParam.cfa_pattern[2] = gRAWImage.dng_info.cfa_pattern[1][0];
+    gUIParam.cfa_pattern[3] = gRAWImage.dng_info.cfa_pattern[1][1];
+
+    for (int j = 0; j < 3; j++) {
+      for (int i = 0; i < 3; i++) {
+        gUIParam.color_matrix[j][i] = gRAWImage.dng_info.color_matrix[j][i];
+      }
+    }
   }
 
   window = new b3gDefaultOpenGLWindow;
@@ -940,6 +1068,14 @@ int main(int argc, char** argv) {
     ImGui_ImplBtGui_NewFrame(gMousePosX, gMousePosY);
     ImGui::Begin("UI");
     {
+      ImGui::Text("black level : %d", gRAWImage.dng_info.black_level);
+      ImGui::Text("white level : %d", gRAWImage.dng_info.white_level);
+
+      if (ImGui::SliderFloat("display gamma", &gUIParam.display_gamma, 0.0f,
+                             8.0f)) {
+        Develop(&gRAWImage, gUIParam);
+      }
+
       if (ImGui::SliderFloat("intensity", &gUIParam.intensity, 0.0f, 32.0f)) {
         Develop(&gRAWImage, gUIParam);
       }
@@ -950,6 +1086,18 @@ int main(int argc, char** argv) {
         Develop(&gRAWImage, gUIParam);
       }
       if (ImGui::SliderInt("zoom(%%)", &gUIParam.view_scale, 1, 1600)) {
+        Develop(&gRAWImage, gUIParam);
+      }
+      if (ImGui::InputFloat3("color mat 0", gUIParam.color_matrix[0])) {
+        Develop(&gRAWImage, gUIParam);
+      }
+      if (ImGui::InputFloat3("color mat 1", gUIParam.color_matrix[1])) {
+        Develop(&gRAWImage, gUIParam);
+      }
+      if (ImGui::InputFloat3("color mat 2", gUIParam.color_matrix[2])) {
+        Develop(&gRAWImage, gUIParam);
+      }
+      if (ImGui::InputInt4("CFA pattern", gUIParam.cfa_pattern)) {
         Develop(&gRAWImage, gUIParam);
       }
     }
