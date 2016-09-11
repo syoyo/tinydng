@@ -1682,7 +1682,6 @@ static bool ParseTIFFIFD(tinydng::DNGInfo* dng_info, TIFFInfo infos[16],
     unsigned int saved_offt;
     GetTIFFTag(&tag, &type, &len, &saved_offt, fp, swap_endian);
 
-    printf("tag = %d\n", tag);
     switch (tag) {
       case 2:
       case TAG_IMAGE_WIDTH:
