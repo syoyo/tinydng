@@ -74,11 +74,51 @@ int main(int argc, char **argv) {
               << dng_info.active_area[1] << ", " << dng_info.active_area[2]
               << ", " << dng_info.active_area[3] << std::endl;
 
-    std::cout << "color_matrix = " << std::endl;
+    std::cout << "calibration_illuminant1 = "
+              << dng_info.calibration_illuminant1 << std::endl;
+    std::cout << "calibration_illuminant2 = "
+              << dng_info.calibration_illuminant2 << std::endl;
+
+    std::cout << "color_matrix1 = " << std::endl;
     for (size_t i = 0; i < 3; i++) {
-      std::cout << dng_info.color_matrix[i][0] << " , "
-                << dng_info.color_matrix[i][1] << " , "
-                << dng_info.color_matrix[i][2] << std::endl;
+      std::cout << dng_info.color_matrix1[i][0] << " , "
+                << dng_info.color_matrix1[i][1] << " , "
+                << dng_info.color_matrix1[i][2] << std::endl;
+    }
+
+    std::cout << "color_matrix2 = " << std::endl;
+    for (size_t i = 0; i < 3; i++) {
+      std::cout << dng_info.color_matrix2[i][0] << " , "
+                << dng_info.color_matrix2[i][1] << " , "
+                << dng_info.color_matrix2[i][2] << std::endl;
+    }
+
+    std::cout << "forward_matrix1 = " << std::endl;
+    for (size_t i = 0; i < 3; i++) {
+      std::cout << dng_info.forward_matrix1[i][0] << " , "
+                << dng_info.forward_matrix1[i][1] << " , "
+                << dng_info.forward_matrix1[i][2] << std::endl;
+    }
+
+    std::cout << "forward_matrix2 = " << std::endl;
+    for (size_t i = 0; i < 3; i++) {
+      std::cout << dng_info.forward_matrix2[i][0] << " , "
+                << dng_info.forward_matrix2[i][1] << " , "
+                << dng_info.forward_matrix2[i][2] << std::endl;
+    }
+
+    std::cout << "camera_calibration1 = " << std::endl;
+    for (size_t i = 0; i < 3; i++) {
+      std::cout << dng_info.camera_calibration1[i][0] << " , "
+                << dng_info.camera_calibration1[i][1] << " , "
+                << dng_info.camera_calibration1[i][2] << std::endl;
+    }
+
+    std::cout << "camera_calibration2 = " << std::endl;
+    for (size_t i = 0; i < 3; i++) {
+      std::cout << dng_info.camera_calibration2[i][0] << " , "
+                << dng_info.camera_calibration2[i][1] << " , "
+                << dng_info.camera_calibration2[i][2] << std::endl;
     }
 
   } else {
