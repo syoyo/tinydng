@@ -96,6 +96,8 @@ typedef struct {
 
   float color_matrix[3][3];
 
+  float raw_white_balance[3];
+
 } UIParam;
 
 RAWImage gRAWImage;
@@ -549,7 +551,7 @@ static void debayer(std::vector<float>& out, const std::vector<float>& in,
 }
 
 static void compute_color_matrix(double dst[3][3],
-                                 const double color_matrix[3][3]) {
+                                 const double color_matrix[3][3], const float wb[3]) {
   //
   // See "Mapping Camera Color Space to CIE XYZ Space" section in DNG spec for
   // more details.
@@ -566,8 +568,7 @@ static void compute_color_matrix(double dst[3][3],
   // XYZtoCamera = AB * (CC) * CM;
   double xyz_to_camera[3][3];
 
-  // @todo {}
-  const double analog_balance[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+  const double analog_balance[3][3] = {{wb[0], 0, 0}, {0, wb[1], 0}, {0, 0, wb[2]}};
 
   MatrixMult(xyz_to_camera, analog_balance, color_matrix);
 
@@ -639,12 +640,12 @@ static void color_correction(std::vector<float>& out,
       float g = in[3 * (y * width + x) + 1];
       float b = in[3 * (y * width + x) + 2];
 
-      float R = r;  // color_matrix[0][0] * r + color_matrix[1][0] * g +
-                    // color_matrix[2][0] * b;
-      float G = g;  // color_matrix[0][1] * r + color_matrix[1][1] * g +
-                    // color_matrix[2][1] * b;
-      float B = b;  // color_matrix[0][2] * r + color_matrix[1][2] * g +
-                    // color_matrix[2][2] * b;
+      float R = color_matrix[0][0] * r + color_matrix[1][0] * g +
+                     color_matrix[2][0] * b;
+      float G =  color_matrix[0][1] * r + color_matrix[1][1] * g +
+                     color_matrix[2][1] * b;
+      float B =  color_matrix[0][2] * r + color_matrix[1][2] * g +
+                     color_matrix[2][2] * b;
 
       out[3 * (y * width + x) + 0] = R;
       out[3 * (y * width + x) + 1] = G;
@@ -693,7 +694,7 @@ void Develop(RAWImage* raw, const UIParam& param) {
           param.cfa_offset);
 
   double srgb_color_matrix[3][3];
-  compute_color_matrix(srgb_color_matrix, raw->dng_info.color_matrix1);
+  compute_color_matrix(srgb_color_matrix, raw->dng_info.color_matrix1, param.raw_white_balance);
 
   std::vector<float> color_corrected;
   color_correction(color_corrected, debayed, raw->width, raw->height,
@@ -1067,6 +1068,10 @@ int main(int argc, char** argv) {
     gUIParam.cfa_pattern[2] = gRAWImage.dng_info.cfa_pattern[1][0];
     gUIParam.cfa_pattern[3] = gRAWImage.dng_info.cfa_pattern[1][1];
 
+    gUIParam.raw_white_balance[0] = 1.0;
+    gUIParam.raw_white_balance[1] = 1.0;
+    gUIParam.raw_white_balance[2] = 1.0;
+
     for (int j = 0; j < 3; j++) {
       for (int i = 0; i < 3; i++) {
         gUIParam.color_matrix[j][i] = gRAWImage.dng_info.color_matrix1[j][i];
@@ -1156,6 +1161,9 @@ int main(int argc, char** argv) {
         Develop(&gRAWImage, gUIParam);
       }
       if (ImGui::InputInt4("CFA pattern", gUIParam.cfa_pattern)) {
+        Develop(&gRAWImage, gUIParam);
+      }
+      if (ImGui::SliderFloat3("RAW white balance", gUIParam.raw_white_balance, 0.0, 10.0)) {
         Develop(&gRAWImage, gUIParam);
       }
     }
