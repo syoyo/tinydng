@@ -163,10 +163,66 @@ static inline unsigned short swap2(unsigned short val) {
   return ret;
 }
 
-static const double xyz_rgb[3][3] = {/* XYZ from RGB */
-                                     {0.412453, 0.357580, 0.180423},
-                                     {0.212671, 0.715160, 0.072169},
-                                     {0.019334, 0.119193, 0.950227}};
+// sRGB = XYZD65_to_sRGB * XYZD50_to_XYZD65 * ForwardMatrix(wbCCT) * rawWB *
+// CameraRaw
+static const double xyzD65_to_sRGB[3][3] = {{3.2406, -1.5372, -0.4986},
+                                            {-0.9689, 1.8758, 0.0415},
+                                            {0.0557, -0.2040, 1.0570}};
+
+static const double xyzD50_to_xyzD65[3][3] = {
+    {0.9555766, -0.0230393, 0.0631636},
+    {-0.0282895, 1.0099416, 0.0210077},
+    {0.0122982, -0.0204830, 1.3299098}};
+
+// From the Halide camera_pipe's color_correct
+void MakeColorMatrix(float color_matrix[], float temperature) {
+  float alpha = (1.0 / temperature - 1.0 / 3200) / (1.0 / 7000 - 1.0 / 3200);
+
+  color_matrix[0] = alpha * 1.6697f + (1 - alpha) * 2.2997f;
+  color_matrix[1] = alpha * -0.2693f + (1 - alpha) * -0.4478f;
+  color_matrix[2] = alpha * -0.4004f + (1 - alpha) * 0.1706f;
+  color_matrix[3] = alpha * -42.4346f + (1 - alpha) * -39.0923f;
+
+  color_matrix[4] = alpha * -0.3576f + (1 - alpha) * -0.3826f;
+  color_matrix[5] = alpha * 1.0615f + (1 - alpha) * 1.5906f;
+  color_matrix[6] = alpha * 1.5949f + (1 - alpha) * -0.2080f;
+  color_matrix[7] = alpha * -37.1158f + (1 - alpha) * -25.4311f;
+
+  color_matrix[8] = alpha * -0.2175f + (1 - alpha) * -0.0888f;
+  color_matrix[9] = alpha * -1.8751f + (1 - alpha) * -0.7344f;
+  color_matrix[10] = alpha * 6.9640f + (1 - alpha) * 2.2832f;
+  color_matrix[11] = alpha * -26.6970f + (1 - alpha) * -20.0826f;
+}
+
+static inline void InverseMatrix33(double dst[3][3], double m[3][3]) {
+  // computes the inverse of a matrix m
+  double det = m[0][0] * (m[1][1] * m[2][2] - m[2][1] * m[1][2]) -
+               m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+               m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+
+  double invdet = 1 / det;
+
+  dst[0][0] = (m[1][1] * m[2][2] - m[2][1] * m[1][2]) * invdet;
+  dst[0][1] = (m[0][2] * m[2][1] - m[0][1] * m[2][2]) * invdet;
+  dst[0][2] = (m[0][1] * m[1][2] - m[0][2] * m[1][1]) * invdet;
+  dst[1][0] = (m[1][2] * m[2][0] - m[1][0] * m[2][2]) * invdet;
+  dst[1][1] = (m[0][0] * m[2][2] - m[0][2] * m[2][0]) * invdet;
+  dst[1][2] = (m[1][0] * m[0][2] - m[0][0] * m[1][2]) * invdet;
+  dst[2][0] = (m[1][0] * m[2][1] - m[2][0] * m[1][1]) * invdet;
+  dst[2][1] = (m[2][0] * m[0][1] - m[0][0] * m[2][1]) * invdet;
+  dst[2][2] = (m[0][0] * m[1][1] - m[1][0] * m[0][1]) * invdet;
+}
+
+void MatrixMult(double dst[3][3], const double a[3][3], const double b[3][3]) {
+  for (int i = 0; i < 3; i++) {
+    for (int j = 0; j < 3; j++) {
+      dst[i][j] = 0.0;
+      for (int c = 0; c < 3; c++) {
+        dst[i][j] += a[i][c] * b[c][j];
+      }
+    }
+  }
+}
 
 //
 // Decode 12bit integer image into floating point HDR image
@@ -492,6 +548,51 @@ static void debayer(std::vector<float>& out, const std::vector<float>& in,
 #endif
 }
 
+static void compute_color_matrix(double dst[3][3],
+                                 const double color_matrix[3][3]) {
+  //
+  // See "Mapping Camera Color Space to CIE XYZ Space" section in DNG spec for
+  // more details.
+  // @todo { Consider AnalogBalance, ForwardMatrix, CameraCalibration,
+  // ReudctionMatrix }
+  //
+  // CM = ColorMatrix
+  // CC = CameraCalibration
+  // AB = AnalogBalance
+  // RM = ReductionMatrix
+  // FM = ForwardMatrix
+  //
+
+  // XYZtoCamera = AB * (CC) * CM;
+  double xyz_to_camera[3][3];
+
+  // @todo {}
+  const double analog_balance[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+
+  MatrixMult(xyz_to_camera, analog_balance, color_matrix);
+
+  // Assume ForwardMatrix not included.
+  // CamraToXYZ = Inverse(XYZtoCamer);
+  double camera_to_xyz[3][3];
+  InverseMatrix33(camera_to_xyz, xyz_to_camera);
+
+  // @todo { CB }
+  // XYZD65tosRGB * XYZD50toXYZD65 * (CB) * CameraToXYZ
+
+  // Bradford.
+  // @fixme { Is this correct matrix? }
+  const double chromatic_abbrebiation[3][3] = {
+      {0.8951000, 0.2664000, -0.1614000},
+      {-0.7502000, 1.7135000, 0.0367000},
+      {0.0389000, -0.0685000, 1.0296000}};
+
+  double tmp0[3][3];
+  double tmp1[3][3];
+  MatrixMult(tmp0, chromatic_abbrebiation, camera_to_xyz);
+  MatrixMult(tmp1, xyzD50_to_xyzD65, tmp0);
+  MatrixMult(dst, xyzD65_to_sRGB, tmp1);
+}
+
 // @todo { Support CFA pattern other than RGGB }
 static void pre_color_correction(std::vector<float>& out,
                                  std::vector<float>& in, int black_level,
@@ -502,51 +603,10 @@ static void pre_color_correction(std::vector<float>& out,
     out.resize(width * height);
   }
 
-  //
-  // Compute color matrix
-  //
-  double rgb_matrix[3][3];  // RGB
-  double rgb_scale[3];
-  for (int i = 0; i < 3; i++) {
-    for (int j = 0; j < 3; j++) {
-      rgb_matrix[i][j] = 0.0;
-      for (int c = 0; c < 3; c++) {
-        // RGB = RGB x XYZ
-        rgb_matrix[i][j] += color_matrix[i][c] * xyz_rgb[c][j];
-      }
-      // printf("rgb_matrix[%d][%d] = %f\n", i, j, rgb_matrix[i][j]);
-    }
-  }
-
-  for (int i = 0; i < 3; i++) {
-    double sum = 0.0;
-    for (int j = 0; j < 3; j++) {
-      sum += rgb_matrix[i][j];
-    }
-    rgb_scale[i] = 1.0 / sum;
-    // printf("rgb_scale[%d] = %f\n", i, rgb_scale[i]);
-  }
-
   double min_value = black_level;
   double max_value = white_level;
   max_value -= min_value;
 
-  // Normalize factor.
-  double factor[4];  // @fixme { Assume RGGB for now }
-  double dmax = 0.0;
-  for (int i = 0; i < 3; i++) {
-    if (dmax < rgb_scale[i]) {
-      dmax = rgb_scale[i];
-    }
-  }
-
-  factor[0] = (rgb_scale[0] / dmax) * 65535.0 / max_value;
-  factor[1] = factor[2] = (rgb_scale[1] / dmax) * 65535.0 / max_value;
-  factor[3] = (rgb_scale[2] / dmax) * 65535.0 / max_value;
-
-  int idx[4] = {0, 1, 1, 2};  // RGGB
-
-#pragma omp parallel for schedule(dynamic, 1)
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < width; x++) {
       int xx = x % 2;
@@ -554,16 +614,9 @@ static void pre_color_correction(std::vector<float>& out,
       int i = (yy << 1) | xx;
       double val = in[y * width + x];
 
-      // Assume BlackLevel is all same for color channel.
+      // Assume BlackLevel is same for all color channel.
       val -= min_value;
-      val *= scale * factor[idx[i]];
 
-      // normalize
-      // val /= 65535.0f;
-      // val /= max_value;
-      // printf("val = %f\n", val);
-      // out[y*width+x] = fclamp(val, 0.0, 32.0); // @fixme { max clamp value.
-      // val should be mostly < 1.0 after normalization. }
       out[y * width + x] = fclamp(val, 0.0, 65535.0);
     }
   }
@@ -639,9 +692,12 @@ void Develop(RAWImage* raw, const UIParam& param) {
   debayer(debayed, pre_color_corrected, raw->width, raw->height,
           param.cfa_offset);
 
+  double srgb_color_matrix[3][3];
+  compute_color_matrix(srgb_color_matrix, raw->dng_info.color_matrix1);
+
   std::vector<float> color_corrected;
   color_correction(color_corrected, debayed, raw->width, raw->height,
-                   raw->dng_info.color_matrix);
+                   srgb_color_matrix);
 
   for (size_t y = 0; y < raw->height; y++) {
     for (size_t x = 0; x < raw->width; x++) {
@@ -955,16 +1011,14 @@ void Display(const GLContext& ctx, const UIParam& param) {
 }
 
 int main(int argc, char** argv) {
-
   std::string input_filename = "../../colorchart.dng";
-  
+
   if (argc < 2) {
     std::cout << "Needs input.dng" << std::endl;
-    //return EXIT_FAILURE;
+    // return EXIT_FAILURE;
   } else {
     input_filename = std::string(argv[1]);
   }
-
 
   {
     int width;
@@ -1015,7 +1069,7 @@ int main(int argc, char** argv) {
 
     for (int j = 0; j < 3; j++) {
       for (int i = 0; i < 3; i++) {
-        gUIParam.color_matrix[j][i] = gRAWImage.dng_info.color_matrix[j][i];
+        gUIParam.color_matrix[j][i] = gRAWImage.dng_info.color_matrix1[j][i];
       }
     }
   }

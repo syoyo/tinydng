@@ -37,10 +37,36 @@ THE SOFTWARE.
 
 namespace tinydng {
 
+typedef enum {
+  LIGHTSOURCE_UNKNOWN = 0,
+  LIGHTSOURCE_DAYLIGHT = 1,
+  LIGHTSOURCE_FLUORESCENT = 2,
+  LIGHTSOURCE_TUNGSTEN = 3,
+  LIGHTSOURCE_FLASH = 4,
+  LIGHTSOURCE_FINE_WEATHER = 9,
+  LIGHTSOURCE_CLOUDY_WEATHER = 10,
+  LIGHTSOURCE_SHADE = 11,
+  LIGHTSOURCE_DAYLIGHT_FLUORESCENT = 12,
+  LIGHTSOURCE_DAY_WHITE_FLUORESCENT = 13,
+  LIGHTSOURCE_COOL_WHITE_FLUORESCENT = 14,
+  LIGHTSOURCE_WHITE_FLUORESCENT = 15,
+  LIGHTSOURCE_STANDARD_LIGHT_A = 17,
+  LIGHTSOURCE_STANDARD_LIGHT_B = 18,
+  LIGHTSOURCE_STANDARD_LIGHT_C = 19,
+  LIGHTSOURCE_D55 = 20,
+  LIGHTSOURCE_D65 = 21,
+  LIGHTSOURCE_D75 = 22,
+  LIGHTSOURCE_D50 = 23,
+  LIGHTSOURCE_ISO_STUDIO_TUNGSTEN = 24,
+  LIGHTSOURCE_OTHER_LIGHT_SOURCE = 255
+} LightSource;
+
 struct DNGInfo {
   int black_level;
   int white_level;
   int version;
+
+  int bits_internal;  // BitsPerSample in stored file.
 
   char cfa_plane_color[4];  // 0:red, 1:green, 2:blue, 3:cyan, 4:magenta,
                             // 5:yellow, 6:white
@@ -51,8 +77,19 @@ struct DNGInfo {
   int tile_width;
   int tile_length;
   unsigned int tile_offset;
+  int pad0;
 
-  double color_matrix[3][3];
+  double color_matrix1[3][3];
+  double color_matrix2[3][3];
+
+  double forward_matrix1[3][3];
+  double forward_matrix2[3][3];
+
+  double camera_calibration1[3][3];
+  double camera_calibration2[3][3];
+
+  LightSource calibration_illuminant1;
+  LightSource calibration_illuminant2;
 };
 
 // Load DNG image.
@@ -63,9 +100,9 @@ bool LoadDNG(DNGInfo* info,                     // [out] DNG meta information.
              size_t* data_len,                  // [out] DNG image data size
              int* width,                        // [out] DNG image width
              int* height,                       // [out] DNG image height
-             int* bits,                         // [out] DNG pixel bits
-             int* num_components,               // [out] DNG # of components
-             std::string* err,                  // [out] error message.
+             int* bits,            // [out] DNG pixel bits(after decoding)
+             int* num_components,  // [out] DNG # of components
+             std::string* err,     // [out] error message.
              const char* filename,
              bool is_system_big_endian =
                  false);  // Set true if you are running on Big Endian machine.
@@ -1365,8 +1402,14 @@ typedef enum {
   TAG_WHITE_LEVEL = 50717,
   TAG_COLOR_MATRIX1 = 50721,
   TAG_COLOR_MATRIX2 = 50722,
+  TAG_CAMERA_CALIBRATION1 = 50723,
+  TAG_CAMERA_CALIBRATION2 = 50724,
   TAG_DNG_VERSION = 50706,
+  TAG_CALIBRATION_ILLUMINANT1 = 50778,
+  TAG_CALIBRATION_ILLUMINANT2 = 50779,
   TAG_ACTIVE_AREA = 50829,
+  TAG_FORWARD_MATRIX1 = 50964,
+  TAG_FORWARD_MATRIX2 = 50965,
 
   TAG_INVALID = 65535
 } TiffTag;
@@ -1639,7 +1682,7 @@ static bool ParseTIFFIFD(tinydng::DNGInfo* dng_info, TIFFInfo infos[16],
     unsigned int saved_offt;
     GetTIFFTag(&tag, &type, &len, &saved_offt, fp, swap_endian);
 
-    // printf("tag = %d\n", tag);
+    printf("tag = %d\n", tag);
     switch (tag) {
       case 2:
       case TAG_IMAGE_WIDTH:
@@ -1659,6 +1702,7 @@ static bool ParseTIFFIFD(tinydng::DNGInfo* dng_info, TIFFInfo infos[16],
       case 61443:  // BitsPerSample
         infos[idx].samples = len & 7;
         infos[idx].bps = static_cast<int>(ReadUInt(type, fp, swap_endian));
+        dng_info->bits_internal = infos[idx].bps;
         break;
 
       case TAG_COMPRESSION:  // Compression
@@ -1788,17 +1832,69 @@ static bool ParseTIFFIFD(tinydng::DNGInfo* dng_info, TIFFInfo infos[16],
             static_cast<int>(ReadUInt(type, fp, swap_endian));
         break;
 
-      case TAG_COLOR_MATRIX1:
+      case TAG_CALIBRATION_ILLUMINANT1:
+        dng_info->calibration_illuminant1 =
+            static_cast<LightSource>(Read2(fp, swap_endian));
+        break;
+
+      case TAG_CALIBRATION_ILLUMINANT2:
+        dng_info->calibration_illuminant2 =
+            static_cast<LightSource>(Read2(fp, swap_endian));
+        break;
+
+      case TAG_COLOR_MATRIX1: {
+        for (int c = 0; c < 3; c++) {
+          for (int k = 0; k < 3; k++) {
+            double val = ReadReal(type, fp, swap_endian);
+            dng_info->color_matrix1[c][k] = val;
+          }
+        }
+      } break;
+
       case TAG_COLOR_MATRIX2: {
         for (int c = 0; c < 3; c++) {
           for (int k = 0; k < 3; k++) {
             double val = ReadReal(type, fp, swap_endian);
-            dng_info->color_matrix[c][k] = val;
+            dng_info->color_matrix2[c][k] = val;
           }
         }
-      }
+      } break;
 
-      break;
+      case TAG_FORWARD_MATRIX1: {
+        for (int c = 0; c < 3; c++) {
+          for (int k = 0; k < 3; k++) {
+            double val = ReadReal(type, fp, swap_endian);
+            dng_info->forward_matrix1[c][k] = val;
+          }
+        }
+      } break;
+
+      case TAG_FORWARD_MATRIX2: {
+        for (int c = 0; c < 3; c++) {
+          for (int k = 0; k < 3; k++) {
+            double val = ReadReal(type, fp, swap_endian);
+            dng_info->forward_matrix2[c][k] = val;
+          }
+        }
+      } break;
+
+      case TAG_CAMERA_CALIBRATION1: {
+        for (int c = 0; c < 3; c++) {
+          for (int k = 0; k < 3; k++) {
+            double val = ReadReal(type, fp, swap_endian);
+            dng_info->camera_calibration1[c][k] = val;
+          }
+        }
+      } break;
+
+      case TAG_CAMERA_CALIBRATION2: {
+        for (int c = 0; c < 3; c++) {
+          for (int k = 0; k < 3; k++) {
+            double val = ReadReal(type, fp, swap_endian);
+            dng_info->camera_calibration2[c][k] = val;
+          }
+        }
+      } break;
 
       default:
         break;
@@ -1821,20 +1917,76 @@ static bool ParseDNG(tinydng::DNGInfo* dng_info, TIFFInfo infos[16],
   }
 
   // Init
-  dng_info->color_matrix[0][0] = 1.0;
-  dng_info->color_matrix[0][1] = 0.0;
-  dng_info->color_matrix[0][2] = 0.0;
-  dng_info->color_matrix[1][0] = 0.0;
-  dng_info->color_matrix[1][1] = 1.0;
-  dng_info->color_matrix[1][2] = 0.0;
-  dng_info->color_matrix[2][0] = 0.0;
-  dng_info->color_matrix[2][1] = 0.0;
-  dng_info->color_matrix[2][2] = 1.0;
-  dng_info->white_level = 16383;  // 2^14-1 @fixme { The spec says: The default
-                                  // value for this tag is (2 ** BitsPerSample)
-                                  // -1 for unsigned integer images, and 1.0 for
-                                  // floating point images. }
+  dng_info->color_matrix1[0][0] = 1.0;
+  dng_info->color_matrix1[0][1] = 0.0;
+  dng_info->color_matrix1[0][2] = 0.0;
+  dng_info->color_matrix1[1][0] = 0.0;
+  dng_info->color_matrix1[1][1] = 1.0;
+  dng_info->color_matrix1[1][2] = 0.0;
+  dng_info->color_matrix1[2][0] = 0.0;
+  dng_info->color_matrix1[2][1] = 0.0;
+  dng_info->color_matrix1[2][2] = 1.0;
+
+  dng_info->color_matrix2[0][0] = 1.0;
+  dng_info->color_matrix2[0][1] = 0.0;
+  dng_info->color_matrix2[0][2] = 0.0;
+  dng_info->color_matrix2[1][0] = 0.0;
+  dng_info->color_matrix2[1][1] = 1.0;
+  dng_info->color_matrix2[1][2] = 0.0;
+  dng_info->color_matrix2[2][0] = 0.0;
+  dng_info->color_matrix2[2][1] = 0.0;
+  dng_info->color_matrix2[2][2] = 1.0;
+
+  dng_info->forward_matrix1[0][0] = 1.0;
+  dng_info->forward_matrix1[0][1] = 0.0;
+  dng_info->forward_matrix1[0][2] = 0.0;
+  dng_info->forward_matrix1[1][0] = 0.0;
+  dng_info->forward_matrix1[1][1] = 1.0;
+  dng_info->forward_matrix1[1][2] = 0.0;
+  dng_info->forward_matrix1[2][0] = 0.0;
+  dng_info->forward_matrix1[2][1] = 0.0;
+  dng_info->forward_matrix1[2][2] = 1.0;
+
+  dng_info->forward_matrix2[0][0] = 1.0;
+  dng_info->forward_matrix2[0][1] = 0.0;
+  dng_info->forward_matrix2[0][2] = 0.0;
+  dng_info->forward_matrix2[1][0] = 0.0;
+  dng_info->forward_matrix2[1][1] = 1.0;
+  dng_info->forward_matrix2[1][2] = 0.0;
+  dng_info->forward_matrix2[2][0] = 0.0;
+  dng_info->forward_matrix2[2][1] = 0.0;
+  dng_info->forward_matrix2[2][2] = 1.0;
+
+  dng_info->camera_calibration1[0][0] = 1.0;
+  dng_info->camera_calibration1[0][1] = 0.0;
+  dng_info->camera_calibration1[0][2] = 0.0;
+  dng_info->camera_calibration1[1][0] = 0.0;
+  dng_info->camera_calibration1[1][1] = 1.0;
+  dng_info->camera_calibration1[1][2] = 0.0;
+  dng_info->camera_calibration1[2][0] = 0.0;
+  dng_info->camera_calibration1[2][1] = 0.0;
+  dng_info->camera_calibration1[2][2] = 1.0;
+
+  dng_info->camera_calibration2[0][0] = 1.0;
+  dng_info->camera_calibration2[0][1] = 0.0;
+  dng_info->camera_calibration2[0][2] = 0.0;
+  dng_info->camera_calibration2[1][0] = 0.0;
+  dng_info->camera_calibration2[1][1] = 1.0;
+  dng_info->camera_calibration2[1][2] = 0.0;
+  dng_info->camera_calibration2[2][0] = 0.0;
+  dng_info->camera_calibration2[2][1] = 0.0;
+  dng_info->camera_calibration2[2][2] = 1.0;
+
+  dng_info->calibration_illuminant1 = LIGHTSOURCE_UNKNOWN;
+  dng_info->calibration_illuminant2 = LIGHTSOURCE_UNKNOWN;
+
+  dng_info->white_level = -1;  // White level will be set after parsing TAG.
+                               // The spec says: The default value for this
+                               // tag is (2 ** BitsPerSample)
+                               // -1 for unsigned integer images, and 1.0 for
+                               // floating point images.
   dng_info->black_level = 0;
+  dng_info->bits_internal = 0;
 
   (*num_ifds) = 0;  // initial value = 0
   while (offt) {
@@ -1844,6 +1996,12 @@ static bool ParseDNG(tinydng::DNGInfo* dng_info, TIFFInfo infos[16],
     }
     ret = fread(&offt, 1, 4, fp);
     assert(ret == 4);
+  }
+
+  if (dng_info->white_level == -1) {
+    assert(dng_info->bits_internal > 0);
+    assert(dng_info->bits_internal < 32);
+    dng_info->white_level = (1 << dng_info->bits_internal);
   }
 
   return true;
