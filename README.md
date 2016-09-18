@@ -76,6 +76,7 @@ int main(int argc, char **argv) {
 
 ## TODO
 
+* [ ] Parse DNG file shot by iPhone(#1)
 * [ ] Parse more DNG headers
 * [ ] Support DNG containing multiple images.
 * [ ] lossy DNG
