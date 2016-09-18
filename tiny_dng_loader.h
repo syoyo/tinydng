@@ -470,9 +470,9 @@ static int parseSof3(ljp* self) {
   self->components = self->data[self->ix + 7];
   self->ix += BEH(self->data[self->ix]);
 
-  // if (self->components > 1) {
-  //	self->x *= self->components;
-  //}
+  assert(self->components >= 1);
+  assert(self->components < 6);
+
   return LJ92_ERROR_NONE;
 }
 
@@ -719,10 +719,10 @@ static int parseScan(ljp* self) {
   self->ix += BEH(self->data[self->ix]);
   self->cnt = 0;
   self->b = 0;
-  int write = self->writelen;
+  // int write = self->writelen;
   // Now need to decode huffman coded values
-  int c = 0;
-  int pixels = self->y * self->x;
+  // int c = 0;
+  // int pixels = self->y * self->x * self->components;
   u16* out = self->image;
   u16* thisrow = self->outrow[0];
   u16* lastrow = self->outrow[1];
@@ -730,78 +730,95 @@ static int parseScan(ljp* self) {
   // First pixel predicted from base value
   int diff;
   int Px;
-  int col = 0;
-  int row = 0;
+  // int col = 0;
+  // int row = 0;
   int left = 0;
-  while (c < pixels) {
-    printf("c = %d, pixes = %d, col = %d, row = %d\n", c, pixels, col, row);
-    if ((col == 0) && (row == 0)) {
-      Px = 1 << (self->bits - 1);
-    } else if (row == 0) {
-      Px = left;
-    } else if (col == 0) {
-      Px = lastrow[col];  // Use value above for first pixel in row
-    } else {
-      printf("pred = %d\n", pred);
-      switch (pred) {
-        case 0:
-          Px = 0;
-          break;  // No prediction... should not be used
-        case 1:
-          Px = left;
-          break;
-        case 2:
-          Px = lastrow[col];
-          break;
-        case 3:
-          Px = lastrow[col - 1];
-          break;
-        case 4:
-          Px = left + lastrow[col] - lastrow[col - 1];
-          break;
-        case 5:
-          Px = left + ((lastrow[col] - lastrow[col - 1]) >> 1);
-          break;
-        case 6:
-          Px = lastrow[col] + ((left - lastrow[col - 1]) >> 1);
-          break;
-        case 7:
-          Px = (left + lastrow[col]) >> 1;
-          break;
-      }
-    }
-    diff = nextdiff(self, Px);
-    left = Px + diff;
-    // printf("Px = %d, diff = %d\n", Px, diff);
-    assert(left >= 0);
-    assert(left < (1 << self->bits));
-    // printf("pix = %d\n", left);
-    // printf("%d %d %d\n",c,diff,left);
-    int linear;
-    if (self->linearize) {
-      if (left > self->linlen) return LJ92_ERROR_CORRUPT;
-      linear = self->linearize[left];
-    } else {
-      linear = left;
-    }
+  for (int row = 0; row < self->y; row++) {
+    for (int col = 0; col < self->x; col++) {
+      int colx = col * self->components;
+      for (int c = 0; c < self->components; c++) {
+        // printf("c = %d, col = %d, row = %d\n", c, col, row);
+        if ((col == 0) && (row == 0)) {
+          Px = 1 << (self->bits - 1);
+        } else if (row == 0) {
+          // Px = left;
+          assert(col > 0);
+          Px = thisrow[(col - 1) * self->components + c];
+        } else if (col == 0) {
+          Px = lastrow[c];  // Use value above for first pixel in row
+        } else {
+          int prev_colx = (col - 1) * self->components;
+          // printf("pred = %d\n", pred);
+          switch (pred) {
+            case 0:
+              Px = 0;
+              break;  // No prediction... should not be used
+            case 1:
+              Px = thisrow[prev_colx + c];
+              break;
+            case 2:
+              Px = lastrow[colx + c];
+              break;
+            case 3:
+              Px = lastrow[prev_colx + c];
+              break;
+            case 4:
+              Px = left + lastrow[colx + c] - lastrow[prev_colx + c];
+              break;
+            case 5:
+              Px = left + ((lastrow[colx + c] - lastrow[prev_colx + c]) >> 1);
+              break;
+            case 6:
+              Px = lastrow[colx + c] + ((left - lastrow[prev_colx + c]) >> 1);
+              break;
+            case 7:
+              Px = (left + lastrow[colx + c]) >> 1;
+              break;
+          }
+        }
+        diff = nextdiff(self, Px);  // @fixme { Lookup different huffman table
+                                    // for each components }
+        left = Px + diff;
+        // printf("c[%d] Px = %d, diff = %d\n", c, Px, diff);
+        assert(left >= 0);
+        assert(left < (1 << self->bits));
+        // printf("pix = %d\n", left);
+        // printf("%d %d %d\n",c,diff,left);
+        int linear;
+        if (self->linearize) {
+          if (left > self->linlen) return LJ92_ERROR_CORRUPT;
+          linear = self->linearize[left];
+        } else {
+          linear = left;
+        }
 
-    // printf("linear = %d\n", linear);
-    thisrow[col] = left;
-    out[c++] = linear;
-    if (++col == self->x) {
-      col = 0;
-      row++;
-      u16* temprow = lastrow;
-      lastrow = thisrow;
-      thisrow = temprow;
-    }
-    if (--write == 0) {
-      out += self->skiplen;
-      write = self->writelen;
-    }
-    if (self->ix >= self->datalen + 2) break;
-  }
-  if (c >= pixels) ret = LJ92_ERROR_NONE;
+        // printf("linear = %d\n", linear);
+        thisrow[colx + c] = left;
+        out[colx + c] = linear;
+      }  // c
+    }    // col
+
+    u16* temprow = lastrow;
+    lastrow = thisrow;
+    thisrow = temprow;
+
+    out += self->x * self->components + self->skiplen;
+
+  }  // row
+
+  ret = LJ92_ERROR_NONE;
+
+  // if (++col == self->x) {
+  //	col = 0;
+  //	row++;
+  //}
+  // if (--write == 0) {
+  //	out += self->skiplen;
+  //	write = self->writelen;
+  //}
+  // if (self->ix >= self->datalen + 2) break;
+
+  // if (c >= pixels) ret = LJ92_ERROR_NONE;
   /*for (int h=0;h<17;h++) {
       printf("ssss:%d=%d
   (%f)\n",h,self->sssshist[h],(float)self->sssshist[h]/(float)(pixels));
@@ -877,7 +894,7 @@ int lj92_open(lj92* lj, const uint8_t* data, int datalen, int* width,
   int ret = findSoI(self);
 
   if (ret == LJ92_ERROR_NONE) {
-    u16* rowcache = (u16*)calloc(self->x * 2, sizeof(u16));
+    u16* rowcache = (u16*)calloc(self->x * self->components * 2, sizeof(u16));
     if (rowcache == NULL)
       ret = LJ92_ERROR_NO_MEMORY;
     else {
@@ -927,6 +944,7 @@ typedef struct _lje {
   int width;
   int height;
   int bitdepth;
+  int components;
   int readLength;
   int skipLength;
   uint16_t* delinearize;
@@ -948,7 +966,7 @@ int frequencyScan(lje* self) {
   uint16_t* pixel = self->image;
   int pixcount = self->width * self->height;
   int scan = self->readLength;
-  uint16_t* rowcache = (uint16_t*)calloc(1, self->width * 4);
+  uint16_t* rowcache = (uint16_t*)calloc(1, self->width * self->components * 4);
   uint16_t* rows[2];
   rows[0] = rowcache;
   rows[1] = &rowcache[self->width];
@@ -1228,7 +1246,7 @@ void writeBody(lje* self) {
   uint16_t* pixel = self->image;
   int pixcount = self->width * self->height;
   int scan = self->readLength;
-  uint16_t* rowcache = (uint16_t*)calloc(1, self->width * 4);
+  uint16_t* rowcache = (uint16_t*)calloc(1, self->width * self->components * 4);
   uint16_t* rows[2];
   rows[0] = rowcache;
   rows[1] = &rowcache[self->width];
@@ -1629,7 +1647,7 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
 
     size_t dst_offset =
         column_step * static_cast<size_t>(tiff_info.tile_width) +
-        static_cast<unsigned int>(dst_width) * tiff_h / 2;
+        static_cast<unsigned int>(dst_width) * tiff_h;
     ret = lj92_decode(ljp, dst_data + dst_offset, write_length, skip_length,
                       NULL, 0);
 
