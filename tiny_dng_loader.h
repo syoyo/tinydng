@@ -2179,7 +2179,7 @@ bool LoadDNG(DNGInfo* info, std::vector<unsigned char>* data, size_t* len,
       // Move to LJPEG data location.
       fseek(fp, static_cast<long>(data_offset), SEEK_SET);
 
-      printf("data_offset = %d\n", static_cast<int>(data_offset));
+      //printf("data_offset = %d\n", static_cast<int>(data_offset));
       bool ok = DecompressLosslessJPEG(
           reinterpret_cast<unsigned short*>(data->data()), infos[idx].width,
           buffer.data(), buffer.size(), fp, infos[idx], swap_endian);
