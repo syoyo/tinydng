@@ -83,6 +83,7 @@ Here is the list of great articles on how to develop RAW image.
 
 ## TODO
 
+* [ ] Parse DNG file shot by iPhone(#1)
 * [ ] Parse more DNG headers
 * [ ] Support DNG containing multiple images.
 * [ ] lossy DNG
