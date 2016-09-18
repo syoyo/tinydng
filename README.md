@@ -74,6 +74,13 @@ int main(int argc, char **argv) {
 * [examples/viewer](examples/viewer) Simple viewer example with simple debayering.
 
 
+## Resource
+
+Here is the list of great articles on how to develop RAW image.
+
+* Developing a RAW photo file 'by hand' - Part 1 http://www.odelama.com/photo/Developing-a-RAW-Photo-by-hand/
+* Developing a RAW photo file 'by hand' - Part 2 http://www.odelama.com/photo/Developing-a-RAW-Photo-by-hand/Developing-a-RAW-Photo-by-hand_Part-2/
+
 ## TODO
 
 * [ ] Parse more DNG headers
