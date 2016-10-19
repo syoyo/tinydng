@@ -43,6 +43,24 @@ THE SOFTWARE.
 #include <sys/stat.h>
 #endif
 
+#ifdef _WIN32
+#ifdef __cplusplus
+extern "C" {
+#endif
+#include <windows.h>
+#include <mmsystem.h>
+#ifdef __cplusplus
+}
+#endif
+#pragma comment(lib, "winmm.lib")
+#else
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/time.h>
+#else
+#include <ctime>
+#endif
+#endif
+
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -65,6 +83,64 @@ int gWidth = 512;
 int gHeight = 512;
 int gMousePosX = -1, gMousePosY = -1;
 bool gMouseLeftDown = false;
+
+class timer {
+ public:
+#ifdef _WIN32
+  typedef DWORD time_t;
+
+  timer() { ::timeBeginPeriod(1); }
+  ~timer() { ::timeEndPeriod(1); }
+
+  void start() { t_[0] = ::timeGetTime(); }
+  void end() { t_[1] = ::timeGetTime(); }
+
+  time_t sec() { return (time_t)((t_[1] - t_[0]) / 1000); }
+  time_t msec() { return (time_t)((t_[1] - t_[0])); }
+  time_t usec() { return (time_t)((t_[1] - t_[0]) * 1000); }
+
+#else
+#if defined(__unix__) || defined(__APPLE__)
+  typedef unsigned long int time_t;
+
+  void start() { gettimeofday(tv + 0, &tz); }
+  void end() { gettimeofday(tv + 1, &tz); }
+
+  time_t sec() { return (time_t)(tv[1].tv_sec - tv[0].tv_sec); }
+  time_t msec() {
+    return this->sec() * 1000 +
+           (time_t)((tv[1].tv_usec - tv[0].tv_usec) / 1000);
+  }
+  time_t usec() {
+    return this->sec() * 1000000 + (time_t)(tv[1].tv_usec - tv[0].tv_usec);
+  }
+
+#else  // C timer
+  // using namespace std;
+  typedef clock_t time_t;
+
+  void start() { t_[0] = clock(); }
+  void end() { t_[1] = clock(); }
+
+  time_t sec() { return (time_t)((t_[1] - t_[0]) / CLOCKS_PER_SEC); }
+  time_t msec() { return (time_t)((t_[1] - t_[0]) * 1000 / CLOCKS_PER_SEC); }
+  time_t usec() { return (time_t)((t_[1] - t_[0]) * 1000000 / CLOCKS_PER_SEC); }
+
+#endif
+#endif
+
+ private:
+#ifdef _WIN32
+  DWORD t_[2];
+#else
+#if defined(__unix__) || defined(__APPLE__)
+  struct timeval tv[2];
+  struct timezone tz;
+#else
+  time_t t_[2];
+#endif
+#endif
+};
 
 typedef struct {
   int width;
@@ -95,9 +171,23 @@ typedef struct {
   int cfa_pattern[4];
 
   float color_matrix[3][3];
+  float inv_color_matrix[3][3];
 
   float raw_white_balance[3];
 
+  bool use_as_shot_neutral;
+  float as_shot_neutral[3];
+
+  // Pixel inspection
+  float inspect_raw_value;         // RAW censor value
+  float inspect_after_debayer[3];  // RAW color value after debayer
+  int inspect_pos[2];
+
+  // Perf counter
+  double color_correction_msec;
+  double debayer_msec;
+  double develop_msec;
+  
 } UIParam;
 
 RAWImage gRAWImage;
@@ -127,11 +217,13 @@ static const char gFragmentShaderStr[] =
     "varying vec2 vTexcoord;\n"
     "uniform float uGamma;\n"
     "uniform vec2  uOffset;\n"
+    "uniform vec2  uTexsize;\n"
     "uniform float uScale;\n"
     "uniform sampler2D tex;\n"
     "void main() {\n"
-    "    vec3 col = texture2D(tex,(vTexcoord / uScale) + uOffset).rgb;"
-    "    col = clamp(pow(col, vec3(1.0f / uGamma)), 0.0, 1.0);"
+    "    vec2 tcoord = uScale * (vTexcoord + uOffset) / uTexsize;\n"
+    "    vec3 col = texture2D(tex, tcoord).rgb;\n"
+    "    col = clamp(pow(col, vec3(1.0f / uGamma)), 0.0, 1.0);\n"
     "    gl_FragColor = vec4(col, 1.0);\n"
     "}\n";
 
@@ -146,6 +238,7 @@ typedef struct {
   GLint gamma_loc;
   GLint uv_offset_loc;
   GLint uv_scale_loc;
+  GLint texture_size_loc;
   GLint tex_loc;
 
   GLuint tex_id;
@@ -400,15 +493,18 @@ static inline float fetch(const std::vector<float>& in, int x, int y, int w,
 
 // Simple debayer.
 // debayerOffset = pixel offset to make CFA pattern RGGB.
-static void debayer(std::vector<float>& out, const std::vector<float>& in,
+static double debayer(std::vector<float>& out, const std::vector<float>& in,
                     int width, int height, const int debayerOffset[2]) {
+
+  timer t_debayer;
+
+  t_debayer.start();
+
   if (out.size() != width * height * 3) {
     out.resize(width * height * 3);
   }
 
 // printf("offset = %d, %d\n", debayerOffset[0], debayerOffset[1]);
-
-#if 1
 
 #ifdef _OPENMP
 #pragma omp parallel for
@@ -538,20 +634,15 @@ static void debayer(std::vector<float>& out, const std::vector<float>& in,
       out[3 * (yy * width + xx) + 2] = rgb[2];
     }
   }
-#else
-  for (int y = 0; y < height; y++) {
-    for (int x = 0; x < width; x++) {
-      out[3 * (y * width + x) + 0] = in[y * width + x];
-      out[3 * (y * width + x) + 1] = in[y * width + x];
-      out[3 * (y * width + x) + 2] = in[y * width + x];
-    }
-  }
 
-#endif
+  t_debayer.end();
+
+  return t_debayer.msec();
 }
 
 static void compute_color_matrix(double dst[3][3],
-                                 const double color_matrix[3][3], const float wb[3]) {
+                                 const double color_matrix[3][3],
+                                 const float wb[3]) {
   //
   // See "Mapping Camera Color Space to CIE XYZ Space" section in DNG spec for
   // more details.
@@ -565,10 +656,15 @@ static void compute_color_matrix(double dst[3][3],
   // FM = ForwardMatrix
   //
 
+  // CM(Color Matrix) is a matrix which converts XYZ value to camera space,
+  // Thus we need to invert it to get XYZ value from camera's raw censor value
+  // (Unless ForwardMatrix is not available)
+
   // XYZtoCamera = AB * (CC) * CM;
   double xyz_to_camera[3][3];
 
-  const double analog_balance[3][3] = {{wb[0], 0, 0}, {0, wb[1], 0}, {0, 0, wb[2]}};
+  const double analog_balance[3][3] = {
+      {wb[0], 0, 0}, {0, wb[1], 0}, {0, 0, wb[2]}};
 
   MatrixMult(xyz_to_camera, analog_balance, color_matrix);
 
@@ -576,6 +672,13 @@ static void compute_color_matrix(double dst[3][3],
   // CamraToXYZ = Inverse(XYZtoCamer);
   double camera_to_xyz[3][3];
   InverseMatrix33(camera_to_xyz, xyz_to_camera);
+
+  // DBG
+  for (int j = 0; j < 3; j++) {
+    for (int i = 0; i < 3; i++) {
+      gUIParam.inv_color_matrix[j][i] = camera_to_xyz[j][i];
+    }
+  }
 
   // @todo { CB }
   // XYZD65tosRGB * XYZD50toXYZD65 * (CB) * CameraToXYZ
@@ -589,9 +692,13 @@ static void compute_color_matrix(double dst[3][3],
 
   double tmp0[3][3];
   double tmp1[3][3];
-  MatrixMult(tmp0, chromatic_abbrebiation, camera_to_xyz);
-  MatrixMult(tmp1, xyzD50_to_xyzD65, tmp0);
+  // MatrixMult(tmp0, chromatic_abbrebiation, camera_to_xyz);
+  // MatrixMult(tmp1, xyzD50_to_xyzD65, tmp0);
+  MatrixMult(tmp1, xyzD50_to_xyzD65, camera_to_xyz);
   MatrixMult(dst, xyzD65_to_sRGB, tmp1);
+  // MatrixMult(dst, chromatic_abbrebiation, camera_to_xyz);
+  // MatrixMult(dst, camera_to_xyz, chromatic_abbrebiation);
+  // MatrixMult(dst, chromatic_abbrebiation, camera_to_xyz);
 }
 
 // @todo { Support CFA pattern other than RGGB }
@@ -624,9 +731,14 @@ static void pre_color_correction(std::vector<float>& out,
 }
 
 // Simple color correctionr.
-static void color_correction(std::vector<float>& out,
+static double color_correction(std::vector<float>& out,
                              const std::vector<float>& in, int width,
                              int height, const double color_matrix[3][3]) {
+
+  timer t_color_correction;
+
+  t_color_correction.start();
+
   if (out.size() != width * height * 3) {
     out.resize(width * height * 3);
   }
@@ -641,17 +753,20 @@ static void color_correction(std::vector<float>& out,
       float b = in[3 * (y * width + x) + 2];
 
       float R = color_matrix[0][0] * r + color_matrix[1][0] * g +
-                     color_matrix[2][0] * b;
-      float G =  color_matrix[0][1] * r + color_matrix[1][1] * g +
-                     color_matrix[2][1] * b;
-      float B =  color_matrix[0][2] * r + color_matrix[1][2] * g +
-                     color_matrix[2][2] * b;
+                color_matrix[2][0] * b;
+      float G = color_matrix[0][1] * r + color_matrix[1][1] * g +
+                color_matrix[2][1] * b;
+      float B = color_matrix[0][2] * r + color_matrix[1][2] * g +
+                color_matrix[2][2] * b;
 
       out[3 * (y * width + x) + 0] = R;
       out[3 * (y * width + x) + 1] = G;
       out[3 * (y * width + x) + 2] = B;
     }
   }
+
+  t_color_correction.end();
+  return t_color_correction.msec();
 }
 
 void DecodeToHDR(RAWImage* raw, bool swap_endian) {
@@ -674,14 +789,17 @@ void DecodeToHDR(RAWImage* raw, bool swap_endian) {
 
 // @todo { debayer, color correction, etc. }
 void Develop(RAWImage* raw, const UIParam& param) {
+
+  timer t_develop;
+
+  t_develop.start();
+
   if (raw->framebuffer.size() != (raw->width * raw->height * 3)) {
     raw->framebuffer.resize(raw->width * raw->height * 3);
   }
 
   const float inv_scale =
       1.0f / (raw->dng_info.white_level - raw->dng_info.black_level);
-
-#if 1
 
   std::vector<float> pre_color_corrected;
   pre_color_correction(pre_color_corrected, raw->image,
@@ -690,14 +808,15 @@ void Develop(RAWImage* raw, const UIParam& param) {
                        /* scale */ 1.0f);
 
   std::vector<float> debayed;
-  debayer(debayed, pre_color_corrected, raw->width, raw->height,
+  gUIParam.debayer_msec = debayer(debayed, pre_color_corrected, raw->width, raw->height,
           param.cfa_offset);
 
   double srgb_color_matrix[3][3];
-  compute_color_matrix(srgb_color_matrix, raw->dng_info.color_matrix1, param.raw_white_balance);
+  compute_color_matrix(srgb_color_matrix, raw->dng_info.color_matrix1,
+                       param.raw_white_balance);
 
   std::vector<float> color_corrected;
-  color_correction(color_corrected, debayed, raw->width, raw->height,
+  gUIParam.color_correction_msec = color_correction(color_corrected, debayed, raw->width, raw->height,
                    srgb_color_matrix);
 
   for (size_t y = 0; y < raw->height; y++) {
@@ -716,25 +835,9 @@ void Develop(RAWImage* raw, const UIParam& param) {
     }
   }
 
-#else
+  t_develop.end();
 
-  // Simply map raw pixel value to [0.0, 1.0] range.
-  // Assume src is grayscale image.
-  for (size_t y = 0; y < raw->height; y++) {
-    for (size_t x = 0; x < raw->width; x++) {
-      float value =
-          (raw->image[y * raw->width + x] - raw->dng_info.black_level) *
-          inv_scale;
-
-      int Y = (flipY) ? (raw->height - y - 1) : y;
-
-      // Simply show grayscale.
-      raw->framebuffer[3 * (Y * raw->width + x) + 0] = intensity * value;
-      raw->framebuffer[3 * (Y * raw->width + x) + 1] = intensity * value;
-      raw->framebuffer[3 * (Y * raw->width + x) + 2] = intensity * value;
-    }
-  }
-#endif
+  gUIParam.develop_msec = t_develop.msec();
 
   // Upload to GL texture.
   if (gGLCtx.tex_id > 0) {
@@ -743,6 +846,19 @@ void Develop(RAWImage* raw, const UIParam& param) {
                     GL_FLOAT, raw->framebuffer.data());
     glBindTexture(GL_TEXTURE_2D, 0);
   }
+}
+
+void inspect_pixel(int x, int y) {
+  if (x >= gRAWImage.width) x = gRAWImage.width - 1;
+  if (x < 0) x = 0;
+  if (y >= gRAWImage.height) y = gRAWImage.height - 1;
+  if (y < 0) y = 0;
+
+  float value = gRAWImage.image[y * gRAWImage.width + x];
+
+  gUIParam.inspect_raw_value = value;
+  gUIParam.inspect_pos[0] = x;
+  gUIParam.inspect_pos[1] = y;
 }
 
 void CheckGLError(std::string desc) {
@@ -852,6 +968,7 @@ void InitGLDisplay(GLContext* ctx, int width, int height) {
   BindUniform(ctx->gamma_loc, ctx->program, "uGamma");
   BindUniform(ctx->uv_offset_loc, ctx->program, "uOffset");
   BindUniform(ctx->uv_scale_loc, ctx->program, "uScale");
+  BindUniform(ctx->texture_size_loc, ctx->program, "uTexsize");
 
   // Init texture for display.
   {
@@ -909,6 +1026,11 @@ void mouseMoveCallback(float x, float y) {
     gUIParam.view_offset[0] -= dx;
     gUIParam.view_offset[1] += dy;
   }
+
+  int px = clamp(x + gUIParam.view_offset[0], 0, gRAWImage.width - 1);
+  int py = clamp(y + gUIParam.view_offset[1], 0, gRAWImage.height - 1);
+
+  inspect_pixel(px, py);
 
   gMousePosX = (int)x;
   gMousePosY = (int)y;
@@ -979,10 +1101,11 @@ void Display(const GLContext& ctx, const UIParam& param) {
   CheckGLError("use_program");
 
   glUniform2f(ctx.uv_offset_loc,
-              (float)param.view_offset[0] / (float)gRAWImage.width,
-              (float)param.view_offset[1] / (float)gRAWImage.height);
+              (float)param.view_offset[0],
+              (float)param.view_offset[1]);
   glUniform1f(ctx.uv_scale_loc, (float)param.view_scale / (float)(100.0f));
   glUniform1f(ctx.gamma_loc, param.display_gamma);
+  glUniform2f(ctx.texture_size_loc, gRAWImage.width, gRAWImage.height);
   CheckGLError("uniform");
 
   glActiveTexture(GL_TEXTURE0);
@@ -1072,11 +1195,29 @@ int main(int argc, char** argv) {
     gUIParam.raw_white_balance[1] = 1.0;
     gUIParam.raw_white_balance[2] = 1.0;
 
+    gUIParam.as_shot_neutral[0] = gRAWImage.dng_info.as_shot_neutral[0];
+    gUIParam.as_shot_neutral[1] = gRAWImage.dng_info.as_shot_neutral[1];
+    gUIParam.as_shot_neutral[2] = gRAWImage.dng_info.as_shot_neutral[2];
+
+    gUIParam.use_as_shot_neutral =
+        (gRAWImage.dng_info.has_as_shot_neutral) ? true : false;
+
     for (int j = 0; j < 3; j++) {
       for (int i = 0; i < 3; i++) {
         gUIParam.color_matrix[j][i] = gRAWImage.dng_info.color_matrix1[j][i];
       }
     }
+
+    for (int j = 0; j < 3; j++) {
+      for (int i = 0; i < 3; i++) {
+        gUIParam.inv_color_matrix[j][i] = 0.0f;
+      }
+    }
+
+    gUIParam.debayer_msec = 0.0;
+    gUIParam.develop_msec = 0.0;
+    gUIParam.color_correction_msec = 0.0;
+
   }
 
   window = new b3gDefaultOpenGLWindow;
@@ -1131,8 +1272,15 @@ int main(int argc, char** argv) {
     ImGui_ImplBtGui_NewFrame(gMousePosX, gMousePosY);
     ImGui::Begin("UI");
     {
+      ImGui::Text("develop            : %f [msecs]", gUIParam.develop_msec);
+      ImGui::Text("  debayer          : %f [msecs]", gUIParam.debayer_msec);
+      ImGui::Text("  color correction : %f [msecs]", gUIParam.color_correction_msec);
+
       ImGui::Text("black level : %d", gRAWImage.dng_info.black_level);
       ImGui::Text("white level : %d", gRAWImage.dng_info.white_level);
+
+      ImGui::Text("(%d x %d) RAW value = : %f", gUIParam.inspect_pos[0],
+                  gUIParam.inspect_pos[1], gUIParam.inspect_raw_value);
 
       if (ImGui::SliderFloat("display gamma", &gUIParam.display_gamma, 0.0f,
                              8.0f)) {
@@ -1160,11 +1308,30 @@ int main(int argc, char** argv) {
       if (ImGui::InputFloat3("color mat 2", gUIParam.color_matrix[2])) {
         Develop(&gRAWImage, gUIParam);
       }
+
+      if (ImGui::InputFloat3("inv color mat 0", gUIParam.inv_color_matrix[0])) {
+      }
+      if (ImGui::InputFloat3("inv color mat 1", gUIParam.inv_color_matrix[1])) {
+      }
+      if (ImGui::InputFloat3("inv color mat 2", gUIParam.inv_color_matrix[2])) {
+      }
+
       if (ImGui::InputInt4("CFA pattern", gUIParam.cfa_pattern)) {
         Develop(&gRAWImage, gUIParam);
       }
-      if (ImGui::SliderFloat3("RAW white balance", gUIParam.raw_white_balance, 0.0, 10.0)) {
+      if (ImGui::SliderFloat3("RAW white balance", gUIParam.raw_white_balance,
+                              0.0, 5.0)) {
         Develop(&gRAWImage, gUIParam);
+      }
+      if (gRAWImage.dng_info.has_as_shot_neutral) {
+        if (ImGui::Checkbox("Use as shot neutral",
+                            &gUIParam.use_as_shot_neutral)) {
+          Develop(&gRAWImage, gUIParam);
+        }
+
+        if (ImGui::InputFloat3("As shot neutral", gUIParam.as_shot_neutral)) {
+          Develop(&gRAWImage, gUIParam);
+        }
       }
     }
 

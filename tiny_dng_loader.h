@@ -79,6 +79,14 @@ struct DNGInfo {
   unsigned int tile_offset;
   int pad0;
 
+  double analog_balance[3];
+  bool has_analog_balance;
+  unsigned char pad1[7];
+
+  double as_shot_neutral[3];
+  bool has_as_shot_neutral;
+  unsigned char pad2[7];
+
   double color_matrix1[3][3];
   double color_matrix2[3][3];
 
@@ -1424,11 +1432,13 @@ typedef enum {
   TAG_STRIP_OFFSET = 273,
   TAG_ORIENTATION = 274,
   TAG_STRIP_BYTE_COUNTS = 279,
+  TAG_PLANAR_CONFIGURATION = 284,
   TAG_SUB_IFDS = 330,
   TAG_TILE_WIDTH = 322,
   TAG_TILE_LENGTH = 323,
   TAG_TILE_OFFSETS = 324,
   TAG_TILE_BYTE_COUNTS = 325,
+  TAG_CFA_PATTERN_DIM = 33421,
   TAG_CFA_PATTERN = 33422,
   TAG_CFA_PLANE_COLOR = 50710,
   TAG_CFA_LAYOUT = 50711,
@@ -1439,6 +1449,8 @@ typedef enum {
   TAG_CAMERA_CALIBRATION1 = 50723,
   TAG_CAMERA_CALIBRATION2 = 50724,
   TAG_DNG_VERSION = 50706,
+  TAG_ANALOG_BALANCE = 50727,
+  TAG_AS_SHOT_NEUTRAL = 50728,
   TAG_CALIBRATION_ILLUMINANT1 = 50778,
   TAG_CALIBRATION_ILLUMINANT2 = 50779,
   TAG_ACTIVE_AREA = 50829,
@@ -1458,19 +1470,29 @@ typedef struct {
   int samples;
   int bytes;
   int strip_byte_count;
-  int active_area[4];  // top, left, bottom, right
+  int planar_configuration;  // 1: chunky, 2: planar
+  int active_area[4];        // top, left, bottom, right
   bool has_active_area;
   unsigned char pad[3];
 
   char cfa_plane_color[4];  // 0:red, 1:green, 2:blue, 3:cyan, 4:magenta,
                             // 5:yellow, 6:white
-  int cfa_pattern[2][2];    // @fixme { Support non 2x2 CFA pattern. }
+  int cfa_pattern_dim;
+  int cfa_pattern[2][2];  // @fixme { Support non 2x2 CFA pattern. }
   int cfa_layout;
 
   int tile_width;
   int tile_length;
   unsigned int tile_offset;
   unsigned int tile_byte_count;  // (compressed) size
+
+  double analog_balance[3];
+  bool has_analog_balance;
+  unsigned char pad0[7];
+
+  double as_shot_neutral[3];
+  bool has_as_shot_neutral;
+  unsigned char pad1[7];
 } TIFFInfo;
 
 static void swap2(unsigned short* val) {
@@ -1553,11 +1575,22 @@ static unsigned int ReadUInt(int type, FILE* fp, bool swap) {
 }
 
 static double ReadReal(int type, FILE* fp, bool swap) {
-  assert(type == 10);  // @todo { Support more types. }
-  int num = static_cast<int>(Read4(fp, swap));
-  int denom = static_cast<int>(Read4(fp, swap));
+  assert(type == 5 || type == 10);  // @todo { Support more types. }
 
-  return static_cast<double>(num) / static_cast<double>(denom);
+  if (type == 5) {
+    unsigned int num = static_cast<unsigned int>(Read4(fp, swap));
+    unsigned int denom = static_cast<unsigned int>(Read4(fp, swap));
+
+    return static_cast<double>(num) / static_cast<double>(denom);
+  } else if (type == 10) {
+    int num = static_cast<int>(Read4(fp, swap));
+    int denom = static_cast<int>(Read4(fp, swap));
+
+    return static_cast<double>(num) / static_cast<double>(denom);
+  } else {
+    assert(0);
+    return 0.0;
+  }
 }
 
 static void GetTIFFTag(unsigned short* tag, unsigned short* type,
@@ -1696,6 +1729,8 @@ static bool ParseTIFFIFD(tinydng::DNGInfo* dng_info, TIFFInfo infos[16],
   infos[idx].cfa_plane_color[2] = 2;
   infos[idx].cfa_plane_color[3] = 0;  // optional?
 
+  infos[idx].cfa_pattern_dim = 2;
+
   // The spec says default is None, thus fill with -1(=invalid).
   infos[idx].cfa_pattern[0][0] = -1;
   infos[idx].cfa_pattern[0][1] = -1;
@@ -1709,6 +1744,11 @@ static bool ParseTIFFIFD(tinydng::DNGInfo* dng_info, TIFFInfo infos[16],
   infos[idx].tile_width = -1;
   infos[idx].tile_length = -1;
   infos[idx].tile_offset = 0;
+
+  infos[idx].planar_configuration = 1;  // chunky
+
+  infos[idx].has_analog_balance = false;
+  infos[idx].has_as_shot_neutral = false;
 
   // printf("----------\n");
 
@@ -1765,6 +1805,10 @@ static bool ParseTIFFIFD(tinydng::DNGInfo* dng_info, TIFFInfo infos[16],
         // printf("strip_byte_count = %d\n", infos[idx].strip_byte_count);
         break;
 
+      case TAG_PLANAR_CONFIGURATION:
+        infos[idx].planar_configuration = Read2(fp, swap_endian);
+        break;
+
       case TAG_SUB_IFDS:
 
       {
@@ -1806,6 +1850,10 @@ static bool ParseTIFFIFD(tinydng::DNGInfo* dng_info, TIFFInfo infos[16],
         infos[idx].tile_byte_count = len > 1
                                          ? static_cast<unsigned int>(ftell(fp))
                                          : Read4(fp, swap_endian);
+        break;
+
+      case TAG_CFA_PATTERN_DIM:
+        infos[idx].cfa_pattern_dim = Read2(fp, swap_endian);
         break;
 
       case TAG_CFA_PATTERN: {
@@ -1867,6 +1915,23 @@ static bool ParseTIFFIFD(tinydng::DNGInfo* dng_info, TIFFInfo infos[16],
       case TAG_WHITE_LEVEL:
         dng_info->white_level =
             static_cast<int>(ReadUInt(type, fp, swap_endian));
+        break;
+
+      case TAG_ANALOG_BALANCE:
+        // Assume RGB
+        infos[idx].analog_balance[0] = ReadReal(type, fp, swap_endian);
+        infos[idx].analog_balance[1] = ReadReal(type, fp, swap_endian);
+        infos[idx].analog_balance[2] = ReadReal(type, fp, swap_endian);
+        infos[idx].has_analog_balance = true;
+        break;
+
+      case TAG_AS_SHOT_NEUTRAL:
+        // Assume RGB
+        // printf("ty = %d\n", type);
+        infos[idx].as_shot_neutral[0] = ReadReal(type, fp, swap_endian);
+        infos[idx].as_shot_neutral[1] = ReadReal(type, fp, swap_endian);
+        infos[idx].as_shot_neutral[2] = ReadReal(type, fp, swap_endian);
+        infos[idx].has_as_shot_neutral = true;
         break;
 
       case TAG_CALIBRATION_ILLUMINANT1:
@@ -1934,6 +1999,7 @@ static bool ParseTIFFIFD(tinydng::DNGInfo* dng_info, TIFFInfo infos[16],
       } break;
 
       default:
+        // printf("tag = %d\n", tag);
         break;
     }
 
@@ -2179,7 +2245,7 @@ bool LoadDNG(DNGInfo* info, std::vector<unsigned char>* data, size_t* len,
       // Move to LJPEG data location.
       fseek(fp, static_cast<long>(data_offset), SEEK_SET);
 
-      //printf("data_offset = %d\n", static_cast<int>(data_offset));
+      // printf("data_offset = %d\n", static_cast<int>(data_offset));
       bool ok = DecompressLosslessJPEG(
           reinterpret_cast<unsigned short*>(data->data()), infos[idx].width,
           buffer.data(), buffer.size(), fp, infos[idx], swap_endian);
@@ -2231,6 +2297,16 @@ bool LoadDNG(DNGInfo* info, std::vector<unsigned char>* data, size_t* len,
     info->cfa_pattern[1][0] = infos[idx].cfa_pattern[1][0];
     info->cfa_pattern[1][1] = infos[idx].cfa_pattern[1][1];
     info->cfa_layout = infos[idx].cfa_layout;
+
+    info->has_as_shot_neutral = infos[idx].has_as_shot_neutral;
+    info->as_shot_neutral[0] = infos[idx].as_shot_neutral[0];
+    info->as_shot_neutral[1] = infos[idx].as_shot_neutral[1];
+    info->as_shot_neutral[2] = infos[idx].as_shot_neutral[2];
+
+    info->has_analog_balance = infos[idx].has_analog_balance;
+    info->analog_balance[0] = infos[idx].analog_balance[0];
+    info->analog_balance[1] = infos[idx].analog_balance[1];
+    info->analog_balance[2] = infos[idx].analog_balance[2];
 
     info->tile_width = infos[idx].tile_width;
     info->tile_length = infos[idx].tile_length;

@@ -24,6 +24,11 @@ Then, build generated .sln with Visual Studio.
 
     $ ./bin/native/Release/view /path/to/file.dng
 
+## TODO
+
+* [ ] Clamp hight(otherwise Pinkish or Greenish pixel appear in saturated region)
+* [ ] Denoise(wavelet denoise, etc)
+* [ ] More advanced debayer
 
 ## Licenses
 
