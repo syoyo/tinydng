@@ -221,7 +221,7 @@ static const char gFragmentShaderStr[] =
     "uniform float uScale;\n"
     "uniform sampler2D tex;\n"
     "void main() {\n"
-    "    vec2 tcoord = uScale * (vTexcoord + uOffset) / uTexsize;\n"
+    "    vec2 tcoord = uScale * (vTexcoord + uOffset); // uTexsize;\n"
     "    vec3 col = texture2D(tex, tcoord).rgb;\n"
     "    col = clamp(pow(col, vec3(1.0f / uGamma)), 0.0, 1.0);\n"
     "    gl_FragColor = vec4(col, 1.0);\n"
