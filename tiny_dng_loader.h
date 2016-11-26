@@ -1612,7 +1612,7 @@ static void GetTIFFTag(unsigned short* tag, unsigned short* type,
 
   (*saved_offt) = static_cast<unsigned int>(ftell(fp)) + 4;
 
-  size_t typesize_table[] = {1, 1, 1, 2, 4, 8, 1, 1, 2, 4, 8, 4, 8, 8};
+  size_t typesize_table[] = {1, 1, 1, 2, 4, 8, 1, 1, 2, 4, 8, 4, 8, 4};
 
   if ((*len) * (typesize_table[(*type) < 14 ? (*type) : 0]) > 4) {
     unsigned int base = 0;  // fixme
