@@ -66,12 +66,22 @@ static const int FILETYPE_PAGE = 2;
 static const int FILETYPE_MASK = 4;
 
 // PLANARCONFIG
-static const int PLANARCONFIG_CONFIG= 1;
+static const int PLANARCONFIG_CONTIG= 1;
 static const int PLANARCONFIG_SEPARATE = 2;
 
 // COMPRESSION
 // TODO(syoyo) more compressin types.
 static const int COMPRESSION_NONE = 1;
+
+// ORIENTATION
+static const int ORIENTATION_TOPLEFT = 1;
+static const int ORIENTATION_TOPRIGHT = 2;
+static const int ORIENTATION_BOTRIGHT = 3;
+static const int ORIENTATION_BOTLEFT = 4;
+static const int ORIENTATION_LEFTTOP = 5;
+static const int ORIENTATION_RIGHTTOP = 6;
+static const int ORIENTATION_RIGHTBOT = 7;
+static const int ORIENTATION_LEFTBOT = 8;
 
 // PHOTOMETRIC
 // TODO(syoyo) more photometric types.
@@ -91,13 +101,26 @@ DNGWriter
   /// Explicitly specify endian swapness.
   bool SwapEndian(bool swap_endian);
 
-  /// Set TIFF field.
-  bool SetField(Tag tag, const unsigned char *data);
+  bool SetImageWidth(unsigned int value);
+  bool SetImageLength(unsigned int value);
+  bool SetRowsPerStrip(unsigned int value);
+  bool SetSamplesPerPixel(unsigned short value);
+  bool SetBitsPerSample(unsigned short value);
+  bool SetPhotometric(unsigned short value);
+  bool SetPlanarConfig(unsigned short value);
+  bool SetOrientation(unsigned short value);
+  bool SetCompression(unsigned short value);
+
+  /// Specify black level per sample.
+  bool SetBlackLevelRational(unsigned int num_samples, const double *values); 
+
+  /// Specify white level per sample.
+  bool SetWhiteLevelRational(unsigned int num_samples, const double *values);
 
   /// Write DNG to a file.
   /// Return error string to `err` when Write() returns false.
   /// Returns true upon success.
-  bool Write(const char *filename, std::string *err);
+  bool WriteToFile(const char *filename, std::string *err);
 
  private:
   std::ostringstream ifd_os_;
@@ -109,8 +132,6 @@ DNGWriter
   unsigned int samples_per_pixels_;
 
 };
-
-bool WriteDNG(std::ostringstream *out);
 
 }  // namespace tinydng
 
@@ -266,74 +287,228 @@ static bool WriteTIFFHeader(std::ostringstream *out) {
 
 }
 
-bool DNGWriter::SetField(Tag tag, const unsigned char *data) {
+bool DNGWriter::SetImageWidth(const unsigned int width) {
+  unsigned int count = 1;
 
-  assert(data);
+  unsigned int data = width;
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_IMAGEWIDTH), TIFF_LONG, count, reinterpret_cast<const unsigned char*>(&data), swap_endian_, &ifd_os_, &data_os_);
 
-  unsigned int count = 0;
-  DataType type = TIFF_NOTYPE;
-
-  if (tag == TIFFTAG_IMAGEWIDTH) {
-    type = TIFF_LONG;
-    count = 1;
-  } else if (tag == TIFFTAG_IMAGELENGTH) {
-    type = TIFF_LONG;
-    count = 1;
-  } else if (tag == TIFFTAG_ROWSPERSTRIP) {
-    type = TIFF_LONG;
-    count = 1;
-		// NOTE: must be > 0.
-  } else if (tag == TIFFTAG_SAMPLESPERPIXEL) {
-    type = TIFF_SHORT;
-    count = 1;
-		samples_per_pixels_ = *(reinterpret_cast<const unsigned short*>(data)); // Save value for later use.
-		assert(samples_per_pixels_ <= 4);
-  } else if (tag == TIFFTAG_BITSPERSAMPLE) {
-    type = TIFF_SHORT;
-    count = 1;
-  } else if (tag == TIFFTAG_PLANARCONFIG) {
-    type = TIFF_SHORT;
-    count = 1;
-  } else if (tag == TIFFTAG_COMPRESSION) {
-    type = TIFF_SHORT;
-    count = 1;
-  } else if (tag == TIFFTAG_ORIENTATION) {
-    type = TIFF_SHORT;
-    count = 1;
-  } else if (tag == TIFFTAG_PHOTOMETRIC) {
-    type = TIFF_SHORT;
-    count = 1;
-  } else if (tag == TIFFTAG_PROFILENAME) {
-    type = TIFF_ASCII;
-    count = static_cast<unsigned int>(strlen(reinterpret_cast<const char*>(data)) + 1); // +1 for null
-  } else if (tag == TIFFTAG_ASSHOTPROFILENAME) {
-    type = TIFF_ASCII;
-    count = static_cast<unsigned int>(strlen(reinterpret_cast<const char*>(data)) + 1); // +1 for null
-  } else if (tag == TIFFTAG_BLACKLEVEL) {
-    type = TIFF_RATIONAL;
-    count = samples_per_pixels_;
-		assert(0); // TODO
-  } else if (tag == TIFFTAG_WHITELEVEL) {
-    type = TIFF_RATIONAL;
-    count = samples_per_pixels_;
-		assert(0); // TODO
-	}
-
-  if (type == TIFF_NOTYPE) {
-    // Unknown or unsupported tag.
-    err_ss_ << "Unknown or unsupported TIFF TAG. Skip writing this TAG : " << tag << std::endl;
+  if (!ret) {
     return false;
   }
 
-  WriteTIFFTag(static_cast<unsigned short>(tag), static_cast<unsigned short>(type), count, data, swap_endian_, &ifd_os_, &data_os_);
-
   num_fields_++;
-
   return true;
-  
 }
 
-bool DNGWriter::Write(const char *filename, std::string *err) {
+bool DNGWriter::SetImageLength(const unsigned int length) {
+  unsigned int count = 1;
+
+  const unsigned int data = length;
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_IMAGELENGTH), TIFF_LONG, count, reinterpret_cast<const unsigned char*>(&data), swap_endian_, &ifd_os_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGWriter::SetRowsPerStrip(const unsigned int rows) {
+
+  if (rows == 0) {
+    return false;
+  }
+
+  unsigned int count = 1;
+
+  const unsigned int data = rows;
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_ROWSPERSTRIP), TIFF_LONG, count, reinterpret_cast<const unsigned char*>(&data), swap_endian_, &ifd_os_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGWriter::SetSamplesPerPixel(const unsigned short value) {
+
+  if (value > 4) {
+    return false;
+  }
+
+  unsigned int count = 1;
+
+  const unsigned short data = value;
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_SAMPLESPERPIXEL), TIFF_SHORT, count, reinterpret_cast<const unsigned char*>(&data), swap_endian_, &ifd_os_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  samples_per_pixels_ = value; // Store SPP for later use.
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGWriter::SetBitsPerSample(const unsigned short value) {
+
+  if (value > 32) {
+    return false;
+  }
+
+  unsigned int count = 1;
+
+  const unsigned short data = value;
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_BITSPERSAMPLE), TIFF_SHORT, count, reinterpret_cast<const unsigned char*>(&data), swap_endian_, &ifd_os_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGWriter::SetPhotometric(const unsigned short value) {
+
+  if ((value == PHOTOMETRIC_LINEARRAW) || (value == PHOTOMETRIC_RGB)) {
+    // OK
+  } else {
+    return false;
+  }
+
+  unsigned int count = 1;
+
+  const unsigned int data = value;
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_PHOTOMETRIC), TIFF_SHORT, count, reinterpret_cast<const unsigned char*>(&data), swap_endian_, &ifd_os_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGWriter::SetPlanarConfig(const unsigned short value) {
+
+  unsigned int count = 1;
+
+  if ((value == PLANARCONFIG_CONTIG) || (value == PLANARCONFIG_SEPARATE)) {
+    // OK
+  } else {
+    return false;
+  }
+
+  const unsigned int data = value;
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_PLANARCONFIG), TIFF_SHORT, count, reinterpret_cast<const unsigned char*>(&data), swap_endian_, &ifd_os_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGWriter::SetCompression(const unsigned short value) {
+
+  unsigned int count = 1;
+
+  if ((value == COMPRESSION_NONE)) {
+    // OK
+  } else {
+    return false;
+  }
+
+  const unsigned int data = value;
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_COMPRESSION), TIFF_SHORT, count, reinterpret_cast<const unsigned char*>(&data), swap_endian_, &ifd_os_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGWriter::SetOrientation(const unsigned short value) {
+
+  unsigned int count = 1;
+
+  if ((value == ORIENTATION_TOPLEFT) ||
+      (value == ORIENTATION_TOPRIGHT) ||
+      (value == ORIENTATION_BOTRIGHT) ||
+      (value == ORIENTATION_BOTLEFT) ||
+      (value == ORIENTATION_LEFTTOP) ||
+      (value == ORIENTATION_RIGHTTOP) ||
+      (value == ORIENTATION_RIGHTBOT) ||
+      (value == ORIENTATION_LEFTBOT)) {
+    // OK
+  } else {
+    return false;
+  }
+
+  const unsigned int data = value;
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_ORIENTATION), TIFF_SHORT, count, reinterpret_cast<const unsigned char*>(&data), swap_endian_, &ifd_os_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGWriter::SetBlackLevelRational(unsigned int num_samples, const double *values) {
+
+  // `SetSamplesPerPixel()` must be called in advance and SPP shoud be equal to `num_samples`.
+  if ((num_samples > 0) && (num_samples == samples_per_pixels_)) {
+    // OK
+  } else {
+    return false;
+  }
+
+  unsigned int count = num_samples;
+
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_BLACKLEVEL), TIFF_RATIONAL, count, reinterpret_cast<const unsigned char*>(values), swap_endian_, &ifd_os_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGWriter::SetWhiteLevelRational(unsigned int num_samples, const double *values) {
+
+  // `SetSamplesPerPixel()` must be called in advance and SPP shoud be equal to `num_samples`.
+  if ((num_samples > 0) && (num_samples == samples_per_pixels_)) {
+    // OK
+  } else {
+    return false;
+  }
+
+  unsigned int count = num_samples;
+
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_WHITELEVEL), TIFF_RATIONAL, count, reinterpret_cast<const unsigned char*>(values), swap_endian_, &ifd_os_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+
+bool DNGWriter::WriteToFile(const char *filename, std::string *err) {
 
   if ((num_fields_ == 0) || (ifd_os_.tellp() < 12) ) {
     err_ss_ << "No TIFF tag.\n";

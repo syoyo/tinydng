@@ -20,10 +20,12 @@ main(int argc, char **argv)
   
   tinydngwriter::DNGWriter dng_writer;
   unsigned int image_width = 512;
-  dng_writer.SetField(tinydngwriter::TIFFTAG_IMAGEWIDTH, reinterpret_cast<const unsigned char*>(&image_width));
+  unsigned int image_height = 512;
+  dng_writer.SetImageWidth(image_width);
+  dng_writer.SetImageLength(image_height);
 
   std::string err;
-  bool ret = dng_writer.Write("output.dng", &err);
+  bool ret = dng_writer.WriteToFile("output.dng", &err);
 
   if (!err.empty()) {
     std::cerr << err;
