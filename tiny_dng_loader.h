@@ -122,10 +122,6 @@ bool LoadDNG(DNGInfo* info,                     // [out] DNG meta information.
 #include <cassert>
 #include <sstream>
 
-#ifdef TINY_DNG_ENABLE_CHARLS
-#include <charls.h>
-#endif
-
 namespace tinydng {
 
 // Very simple count leading zero implementation.
