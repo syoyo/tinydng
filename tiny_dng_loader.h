@@ -1713,7 +1713,7 @@ static bool ParseTIFFIFD(tinydng::DNGInfo* dng_info, TIFFInfo infos[16],
   // printf("num_entries = %d\n", num_entries);
 
   assert(ret == 2);
-  if (num_entries > 512) {
+  if (num_entries == 0) {
     assert(0);
     return false;  // @fixme
   }
