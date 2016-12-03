@@ -1,5 +1,5 @@
 //
-// TinyDNGLoadr, single header only DNG loader.
+// TinyDNGLoader, single header only DNG loader.
 //
 
 /*
