@@ -121,6 +121,10 @@ bool LoadDNG(DNGInfo* info,                     // [out] DNG meta information.
 
 #include <cassert>
 #include <sstream>
+#include <cstring>
+#include <cstdlib>
+#include <cstdio>
+#include <stdint.h> // for lj92
 
 namespace tinydng {
 
@@ -171,11 +175,6 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
-
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 enum LJ92_ERRORS {
   LJ92_ERROR_NONE = 0,
