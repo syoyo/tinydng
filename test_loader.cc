@@ -46,11 +46,16 @@ int main(int argc, char **argv) {
     std::cout << "width = " << width << std::endl;
     std::cout << "height = " << height << std::endl;
     std::cout << "bits per piexl = " << bits << std::endl;
+    std::cout << "bits per piexl(original) = " << dng_info.bits_internal << std::endl;
+    std::cout << "samples per piexl = " << dng_info.samples_per_pixel << std::endl;
     std::cout << "# of components = " << components << std::endl;
 
     std::cout << "version = " << dng_info.version << std::endl;
-    std::cout << "white_level = " << dng_info.white_level << std::endl;
-    std::cout << "black_level = " << dng_info.black_level << std::endl;
+
+    for (int s = 0; s < dng_info.samples_per_pixel; s++) {
+      std::cout << "white_level[" << s << "] = " << dng_info.white_level[s] << std::endl;
+      std::cout << "black_level[" << s << "] = " << dng_info.black_level[s] << std::endl;
+    }
 
     std::cout << "tile_width = " << dng_info.tile_width << std::endl;
     std::cout << "tile_length = " << dng_info.tile_length << std::endl;
@@ -119,6 +124,20 @@ int main(int argc, char **argv) {
       std::cout << dng_info.camera_calibration2[i][0] << " , "
                 << dng_info.camera_calibration2[i][1] << " , "
                 << dng_info.camera_calibration2[i][2] << std::endl;
+    }
+
+    if (dng_info.has_analog_balance) {
+      std::cout << "analog_balance = "
+                << dng_info.analog_balance[0] << " , "
+                << dng_info.analog_balance[1] << " , "
+                << dng_info.analog_balance[2] << std::endl;
+    }
+
+    if (dng_info.has_as_shot_neutral) {
+      std::cout << "as_shot_neutral = "
+                << dng_info.as_shot_neutral[0] << " , "
+                << dng_info.as_shot_neutral[1] << " , "
+                << dng_info.as_shot_neutral[2] << std::endl;
     }
 
   } else {

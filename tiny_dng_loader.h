@@ -62,9 +62,11 @@ typedef enum {
 } LightSource;
 
 struct DNGInfo {
-  int black_level;
-  int white_level;
+  int black_level[4]; // for each spp(up to 4)
+  int white_level[4]; // for each spp(up to 4)
   int version;
+
+  int samples_per_pixel;
 
   int bits_internal;  // BitsPerSample in stored file.
 
@@ -77,16 +79,19 @@ struct DNGInfo {
   int tile_width;
   int tile_length;
   unsigned int tile_offset;
-  int pad0;
 
   double analog_balance[3];
+  int pad0;
   bool has_analog_balance;
   unsigned char pad1[7];
 
+  int pad2;
   double as_shot_neutral[3];
+  int pad3;
   bool has_as_shot_neutral;
-  unsigned char pad2[7];
+  unsigned char pad4[7];
 
+  int pad5;
   double color_matrix1[3][3];
   double color_matrix2[3][3];
 
@@ -119,12 +124,12 @@ bool LoadDNG(DNGInfo* info,                     // [out] DNG meta information.
 
 #ifdef TINY_DNG_LOADER_IMPLEMENTATION
 
+#include <stdint.h>  // for lj92
 #include <cassert>
-#include <sstream>
-#include <cstring>
-#include <cstdlib>
 #include <cstdio>
-#include <stdint.h> // for lj92
+#include <cstdlib>
+#include <cstring>
+#include <sstream>
 
 namespace tinydng {
 
@@ -1426,6 +1431,7 @@ typedef enum {
   TAG_COMPRESSION = 259,
   TAG_STRIP_OFFSET = 273,
   TAG_ORIENTATION = 274,
+  TAG_SAMPLES_PER_PIXEL = 277,
   TAG_STRIP_BYTE_COUNTS = 279,
   TAG_PLANAR_CONFIGURATION = 284,
   TAG_SUB_IFDS = 330,
@@ -1458,7 +1464,8 @@ typedef enum {
 typedef struct {
   int width;
   int height;
-  int bps;
+  int bps;  // bits per sample
+  int spp;  // samples per pixel
   int compression;
   unsigned int offset;
   int orientation;
@@ -1481,13 +1488,14 @@ typedef struct {
   unsigned int tile_offset;
   unsigned int tile_byte_count;  // (compressed) size
 
+  int pad0;
   double analog_balance[3];
   bool has_analog_balance;
-  unsigned char pad0[7];
+  unsigned char pad1[7];
 
   double as_shot_neutral[3];
   bool has_as_shot_neutral;
-  unsigned char pad1[7];
+  unsigned char pad2[7];
 } TIFFInfo;
 
 static void swap2(unsigned short* val) {
@@ -1745,6 +1753,8 @@ static bool ParseTIFFIFD(tinydng::DNGInfo* dng_info, TIFFInfo infos[16],
   infos[idx].has_analog_balance = false;
   infos[idx].has_as_shot_neutral = false;
 
+  infos[idx].spp = 1;
+
   // printf("----------\n");
 
   while (num_entries--) {
@@ -1773,6 +1783,12 @@ static bool ParseTIFFIFD(tinydng::DNGInfo* dng_info, TIFFInfo infos[16],
         infos[idx].samples = len & 7;
         infos[idx].bps = static_cast<int>(ReadUInt(type, fp, swap_endian));
         dng_info->bits_internal = infos[idx].bps;
+        break;
+
+      case TAG_SAMPLES_PER_PIXEL:
+        infos[idx].spp = static_cast<int>(Read2(fp, swap_endian));
+        assert(infos[idx].spp <= 4);
+        dng_info->samples_per_pixel = infos[idx].spp;
         break;
 
       case TAG_COMPRESSION:  // Compression
@@ -1903,13 +1919,25 @@ static bool ParseTIFFIFD(tinydng::DNGInfo* dng_info, TIFFInfo infos[16],
         break;
 
       case TAG_BLACK_LEVEL:
-        dng_info->black_level =
-            static_cast<int>(ReadUInt(type, fp, swap_endian));
+        {
+          // Assume TAG_SAMPLES_PER_PIXEL is read before
+          // FIXME(syoyo): scan TAG_SAMPLES_PER_PIXEL in IFD table in advance.
+          for (int s = 0; s < infos[idx].spp; s++) {
+            dng_info->black_level[s] =
+                static_cast<int>(ReadUInt(type, fp, swap_endian));
+          }
+        }
         break;
 
       case TAG_WHITE_LEVEL:
-        dng_info->white_level =
-            static_cast<int>(ReadUInt(type, fp, swap_endian));
+        {
+          // Assume TAG_SAMPLES_PER_PIXEL is read before
+          // FIXME(syoyo): scan TAG_SAMPLES_PER_PIXEL in IFD table in advance.
+          for (int s = 0; s < infos[idx].spp; s++) {
+            dng_info->white_level[s] =
+                static_cast<int>(ReadUInt(type, fp, swap_endian));
+          }
+        }
         break;
 
       case TAG_ANALOG_BALANCE:
@@ -2080,12 +2108,20 @@ static bool ParseDNG(tinydng::DNGInfo* dng_info, TIFFInfo infos[16],
   dng_info->calibration_illuminant1 = LIGHTSOURCE_UNKNOWN;
   dng_info->calibration_illuminant2 = LIGHTSOURCE_UNKNOWN;
 
-  dng_info->white_level = -1;  // White level will be set after parsing TAG.
+  dng_info->white_level[0] = -1;  // White level will be set after parsing TAG.
                                // The spec says: The default value for this
                                // tag is (2 ** BitsPerSample)
                                // -1 for unsigned integer images, and 1.0 for
                                // floating point images.
-  dng_info->black_level = 0;
+
+  dng_info->white_level[1] = -1;
+  dng_info->white_level[2] = -1;
+  dng_info->white_level[3] = -1;
+  dng_info->black_level[0] = 0;
+  dng_info->black_level[1] = 0;
+  dng_info->black_level[2] = 0;
+  dng_info->black_level[3] = 0;
+
   dng_info->bits_internal = 0;
 
   (*num_ifds) = 0;  // initial value = 0
@@ -2101,10 +2137,12 @@ static bool ParseDNG(tinydng::DNGInfo* dng_info, TIFFInfo infos[16],
     (*num_ifds)++;
   }
 
-  if (dng_info->white_level == -1) {
-    assert(dng_info->bits_internal > 0);
-    assert(dng_info->bits_internal < 32);
-    dng_info->white_level = (1 << dng_info->bits_internal);
+  for (int s = 0; s < dng_info->samples_per_pixel; s++) {
+    if (dng_info->white_level[s] == -1) {
+      assert(dng_info->bits_internal > 0);
+      assert(dng_info->bits_internal < 32);
+      dng_info->white_level[s] = (1 << dng_info->bits_internal);
+    }
   }
 
   return true;
