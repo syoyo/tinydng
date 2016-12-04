@@ -799,11 +799,11 @@ void Develop(RAWImage* raw, const UIParam& param) {
   }
 
   const float inv_scale =
-      1.0f / (raw->dng_info.white_level - raw->dng_info.black_level);
+      1.0f / (raw->dng_info.white_level[0] - raw->dng_info.black_level[0]);
 
   std::vector<float> pre_color_corrected;
   pre_color_correction(pre_color_corrected, raw->image,
-                       raw->dng_info.black_level, raw->dng_info.white_level,
+                       raw->dng_info.black_level[0], raw->dng_info.white_level[0],
                        param.color_matrix, raw->width, raw->height,
                        /* scale */ 1.0f);
 
@@ -1276,8 +1276,10 @@ int main(int argc, char** argv) {
       ImGui::Text("  debayer          : %f [msecs]", gUIParam.debayer_msec);
       ImGui::Text("  color correction : %f [msecs]", gUIParam.color_correction_msec);
 
-      ImGui::Text("black level : %d", gRAWImage.dng_info.black_level);
-      ImGui::Text("white level : %d", gRAWImage.dng_info.white_level);
+      for (int s = 0; s < gRAWImage.dng_info.samples_per_pixel; s++) {
+        ImGui::Text("black level[%d] : %d", s, gRAWImage.dng_info.black_level[s]);
+        ImGui::Text("white level[%d] : %d", s, gRAWImage.dng_info.white_level[s]);
+      }
 
       ImGui::Text("(%d x %d) RAW value = : %f", gUIParam.inspect_pos[0],
                   gUIParam.inspect_pos[1], gUIParam.inspect_raw_value);
