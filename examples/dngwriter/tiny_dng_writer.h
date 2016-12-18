@@ -56,6 +56,7 @@ typedef enum {
 	TIFFTAG_PROFILENAME = 50936,
 	TIFFTAG_ASSHOTPROFILENAME = 50934,
 	TIFFTAG_DEFAULTBLACKRENDER = 51110,
+  TIFFTAG_ACTIVEAREA = 50829,
 	TIFFTAG_FORWARDMATRIX1 = 50964,
 	TIFFTAG_FORWARDMATRIX2 = 50965
 } Tag;
@@ -95,12 +96,13 @@ class
 DNGWriter
 {
  public:
-  DNGWriter() : is_host_big_endian_(false), swap_endian_(true), num_fields_(0), samples_per_pixels_(0) {}
+  DNGWriter();
   ~DNGWriter() {}
 
-  /// Explicitly specify endian swapness.
+  /// Optional: Explicitly specify endian swapness.
   bool SwapEndian(bool swap_endian);
 
+  bool SetSubfileType(unsigned int value);
   bool SetImageWidth(unsigned int value);
   bool SetImageLength(unsigned int value);
   bool SetRowsPerStrip(unsigned int value);
@@ -110,6 +112,10 @@ DNGWriter
   bool SetPlanarConfig(unsigned short value);
   bool SetOrientation(unsigned short value);
   bool SetCompression(unsigned short value);
+
+  bool SetActiveArea(const unsigned int values[4]);
+
+  bool SetChromaBlurRadius(double value);
 
   /// Specify black level per sample.
   bool SetBlackLevelRational(unsigned int num_samples, const double *values); 
@@ -156,17 +162,19 @@ namespace tinydngwriter {
 // TinyDNGWriter stores IFD table in the end of file so that offset to
 // image data can be easily computed.
 //
-// +--------------+
-// |    header    |
-// +--------------+
-// |              |
-// |  image data  |
-// |              |
-// +--------------+
-// |              |
-// |  IFD table   |
-// |              |
-// +--------------+
+// +----------------------+
+// |    header            |
+// +----------------------+
+// |                      |
+// |  image & other data  |
+// |                      |
+// +----------------------+
+// |  Sub IFD tables      |
+// +----------------------+
+// |                      |
+// |  Main IFD table      |
+// |                      |
+// +----------------------+
 //
 	
 
@@ -192,6 +200,13 @@ typedef enum {
 } DataType;
 
 const static int kHeaderSize = 8; // TIFF header size.
+
+static inline bool IsBigEndian() {
+    uint32_t i = 0x01020304;
+    char c[4];
+    memcpy(c, &i, 4);
+    return (c[0] == 1);
+}
 
 static void swap2(unsigned short* val) {
   unsigned short tmp = *val;
@@ -273,10 +288,6 @@ static bool WriteTIFFHeader(std::ostringstream *out) {
 
 	// TODO(syoyo): Support BigTIFF?
 	
-	// Use big endian format.
-	
-  // Header
-
 	// 4d 4d = Big endian. 49 49 = Little endian.
 	Write1(0x4d, out);
 	Write1(0x4d, out);
@@ -286,6 +297,28 @@ static bool WriteTIFFHeader(std::ostringstream *out) {
   return true;
 
 }
+
+DNGWriter::DNGWriter() : is_host_big_endian_(false), swap_endian_(true), num_fields_(0), samples_per_pixels_(0) {
+  // Data is stored in big endian, thus no byteswapping required for big endian machine.
+  if (IsBigEndian()) {
+    swap_endian_ = false;
+  }
+}
+
+bool DNGWriter::SetSubfileType(const unsigned int value) {
+  unsigned int count = 1;
+
+  unsigned int data = value;
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_SUBFILETYPE), TIFF_LONG, count, reinterpret_cast<const unsigned char*>(&data), swap_endian_, &ifd_os_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
 
 bool DNGWriter::SetImageWidth(const unsigned int width) {
   unsigned int count = 1;
@@ -498,6 +531,21 @@ bool DNGWriter::SetWhiteLevelRational(unsigned int num_samples, const double *va
   unsigned int count = num_samples;
 
   bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_WHITELEVEL), TIFF_RATIONAL, count, reinterpret_cast<const unsigned char*>(values), swap_endian_, &ifd_os_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGWriter::SetActiveArea(const unsigned int values[4]) {
+
+  unsigned int count = 4;
+
+  const unsigned int *data = values;
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_ACTIVEAREA), TIFF_LONG, count, reinterpret_cast<const unsigned char*>(data), swap_endian_, &ifd_os_, &data_os_);
 
   if (!ret) {
     return false;

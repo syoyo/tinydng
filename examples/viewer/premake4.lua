@@ -68,6 +68,8 @@ solution "ViewerSolution"
          end
       end
       if os.is("MacOSX") then
+         buildoptions { "-fsanitize=address" }
+         linkoptions { "-fsanitize=address" }
          defines { "USE_NATIVEFILEDIALOG" }
          links {"Cocoa.framework"}
          files {

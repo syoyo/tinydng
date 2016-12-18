@@ -69,7 +69,7 @@ struct DNGImage {
   int samples_per_pixel;
 
   int bits_per_sample_original;  // BitsPerSample in stored file.
-  int bits_per_sample;           // Bits per sample after reading(decoding) DNG image.
+  int bits_per_sample;  // Bits per sample after reading(decoding) DNG image.
 
   char cfa_plane_color[4];  // 0:red, 1:green, 2:blue, 3:cyan, 4:magenta,
                             // 5:yellow, 6:white
@@ -117,16 +117,17 @@ struct DNGImage {
   int strip_byte_count;
   int planar_configuration;  // 1: chunky, 2: planar
   int pad6;
-  
-  std::vector<std::vector<unsigned char> > data;  // pixel data per sample.
+
+  std::vector<unsigned char>
+      data;  // Decoded pixel data(len = spp * width * height * bps / 8)
 };
 
 // When DNG contains multiple images(e.g. full-res image + thumnail image),
 // The function creates `DNGImage` data strucure for each images.
 // Returns true upon success.
 // Returns false upon failure and store error message into `err`.
-bool LoadDNG(std::vector<DNGImage>* images,     // [out] DNG images.
-             std::string* err,     // [out] error message.
+bool LoadDNG(std::vector<DNGImage>* images,  // [out] DNG images.
+             std::string* err,               // [out] error message.
              const char* filename);
 
 }  // namespace tinydng
@@ -1677,8 +1678,7 @@ static void InitializeTIFFInfo(TIFFInfo* info)
 }
 #endif
 
-static void InitializeDNGImage(tinydng::DNGImage *image)
-{
+static void InitializeDNGImage(tinydng::DNGImage* image) {
   image->color_matrix1[0][0] = 1.0;
   image->color_matrix1[0][1] = 0.0;
   image->color_matrix1[0][2] = 0.0;
@@ -1743,10 +1743,10 @@ static void InitializeDNGImage(tinydng::DNGImage *image)
   image->calibration_illuminant2 = LIGHTSOURCE_UNKNOWN;
 
   image->white_level[0] = -1;  // White level will be set after parsing TAG.
-                                  // The spec says: The default value for this
-                                  // tag is (2 ** BitsPerSample)
-                                  // -1 for unsigned integer images, and 1.0 for
-                                  // floating point images.
+                               // The spec says: The default value for this
+                               // tag is (2 ** BitsPerSample)
+                               // -1 for unsigned integer images, and 1.0 for
+                               // floating point images.
 
   image->white_level[1] = -1;
   image->white_level[2] = -1;
@@ -1795,7 +1795,7 @@ static void InitializeDNGImage(tinydng::DNGImage *image)
 static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
                                    const unsigned char* src,
                                    const size_t src_length, FILE* fp,
-                                   const DNGImage& tiff_info,
+                                   const DNGImage& image_info,
                                    bool swap_endian) {
   // @todo { Remove FILE dependency. }
   //
@@ -1806,10 +1806,10 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
   return true;
 
   // Assume Lossless JPEG data is stored in tiled format.
-  assert(tiff_info.tile_width > 0);
-  assert(tiff_info.tile_length > 0);
+  assert(image_info.tile_width > 0);
+  assert(image_info.tile_length > 0);
 
-  // printf("tile = %d, %d\n", tiff_info.tile_width, tiff_info.tile_length);
+  // printf("tile = %d, %d\n", image_info.tile_width, image_info.tile_length);
 
   // @note { It looks width and height information stored in LJPEG header does
   // not maches with tile width height. Assume actual extent of LJPEG data is
@@ -1817,10 +1817,10 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
   //
 
   // Currently we only support tile data for tile.length == tiff.height.
-  // assert(tiff_info.tile_length == tiff_info.height);
+  // assert(image_info.tile_length == image_info.height);
 
   size_t column_step = 0;
-  while (tiff_h < static_cast<unsigned int>(tiff_info.height)) {
+  while (tiff_h < static_cast<unsigned int>(image_info.height)) {
     // Read offset to JPEG data location.
     offset = static_cast<int>(Read4(fp, swap_endian));
     // printf("offt = %d\n", offset);
@@ -1842,12 +1842,12 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
 
     // printf("lj %d, %d, %d\n", lj_width, lj_height, lj_bits);
 
-    int write_length = tiff_info.tile_width;
-    int skip_length = dst_width - tiff_info.tile_width;
+    int write_length = image_info.tile_width;
+    int skip_length = dst_width - image_info.tile_width;
     // printf("write_len = %d, skip_len = %d\n", write_length, skip_length);
 
     size_t dst_offset =
-        column_step * static_cast<size_t>(tiff_info.tile_width) +
+        column_step * static_cast<size_t>(image_info.tile_width) +
         static_cast<unsigned int>(dst_width) * tiff_h;
     ret = lj92_decode(ljp, dst_data + dst_offset, write_length, skip_length,
                       NULL, 0);
@@ -1856,13 +1856,13 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
 
     lj92_close(ljp);
 
-    tiff_w += static_cast<unsigned int>(tiff_info.tile_width);
+    tiff_w += static_cast<unsigned int>(image_info.tile_width);
     column_step++;
     // printf("col = %d, tiff_w = %d / %d\n", column_step, tiff_w,
-    // tiff_info.width);
-    if (tiff_w >= static_cast<unsigned int>(tiff_info.width)) {
-      // tiff_h += static_cast<unsigned int>(tiff_info.tile_length);
-      tiff_h += static_cast<unsigned int>(tiff_info.tile_length);
+    // image_info.width);
+    if (tiff_w >= static_cast<unsigned int>(image_info.width)) {
+      // tiff_h += static_cast<unsigned int>(image_info.tile_length);
+      tiff_h += static_cast<unsigned int>(image_info.tile_length);
       // printf("tiff_h = %d\n", tiff_h);
       tiff_w = 0;
       column_step = 0;
@@ -1872,7 +1872,8 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
   return true;
 }
 
-static bool ParseTIFFIFD(std::vector<tinydng::DNGImage> *images, FILE* fp, bool swap_endian) {
+static bool ParseTIFFIFD(std::vector<tinydng::DNGImage>* images, FILE* fp,
+                         bool swap_endian) {
   tinydng::DNGImage image;
   InitializeDNGImage(&image);
 
@@ -1883,7 +1884,7 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage> *images, FILE* fp, bool 
   if (swap_endian) {
     swap2(&num_entries);
   }
-  printf("num_entries = %d\n", num_entries);
+  // printf("num_entries = %d\n", num_entries);
 
   assert(ret == 2);
   if (num_entries == 0) {
@@ -1891,8 +1892,8 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage> *images, FILE* fp, bool 
     return false;  // @fixme
   }
 
-  //TIFFInfo info;
-  //InitializeTIFFInfo(&info);
+  // TIFFInfo info;
+  // InitializeTIFFInfo(&info);
 
   // printf("----------\n");
 
@@ -1901,47 +1902,47 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage> *images, FILE* fp, bool 
     unsigned int len;
     unsigned int saved_offt;
     GetTIFFTag(&tag, &type, &len, &saved_offt, fp, swap_endian);
-    printf("tag = %d\n", tag);
+    // printf("tag = %d\n", tag);
 
     switch (tag) {
       case 2:
       case TAG_IMAGE_WIDTH:
       case 61441:  // ImageWidth
         image.width = static_cast<int>(ReadUInt(type, fp, swap_endian));
-        //printf("[%d] width = %d\n", idx, info.width);
+        // printf("[%d] width = %d\n", idx, info.width);
         break;
 
       case 3:
       case TAG_IMAGE_HEIGHT:
       case 61442:  // ImageHeight
         image.height = static_cast<int>(ReadUInt(type, fp, swap_endian));
-        printf("height = %d\n", image.height);
+        // printf("height = %d\n", image.height);
         break;
 
       case TAG_BITS_PER_SAMPLE:
       case 61443:  // BitsPerSample
-        //image->samples = len & 7;
-        image.bits_per_sample_original = static_cast<int>(ReadUInt(type, fp, swap_endian));
-        printf("bits per pixel = %d\n", image.bits_per_sample_original);
+        // image->samples = len & 7;
+        image.bits_per_sample_original =
+            static_cast<int>(ReadUInt(type, fp, swap_endian));
+        // printf("bits per pixel = %d\n", image.bits_per_sample_original);
         break;
 
       case TAG_SAMPLES_PER_PIXEL:
         image.samples_per_pixel = static_cast<int>(Read2(fp, swap_endian));
         assert(image.samples_per_pixel <= 4);
-        printf("spp = %d\n", image.samples_per_pixel);
+        // printf("spp = %d\n", image.samples_per_pixel);
         break;
 
       case TAG_COMPRESSION:  // Compression
-        image.compression =
-            static_cast<int>(ReadUInt(type, fp, swap_endian));
-        printf("tag-compression = %d\n", image.compression);
+        image.compression = static_cast<int>(ReadUInt(type, fp, swap_endian));
+        // printf("tag-compression = %d\n", image.compression);
         break;
 
       case TAG_STRIP_OFFSET:              // StripOffset
       case 513:                           // JpegIFOffset
         assert(tag == TAG_STRIP_OFFSET);  // @todo { jpeg data }
         image.offset = Read4(fp, swap_endian);
-        printf("strip_offset = %d\n", image.offset);
+        // printf("strip_offset = %d\n", image.offset);
         break;
 
       case 514:  // JpegIFByteCount
@@ -1964,43 +1965,40 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage> *images, FILE* fp, bool 
       case TAG_SUB_IFDS:
 
       {
-        printf("sub_ifds = %d\n", len);
+        // printf("sub_ifds = %d\n", len);
         for (size_t k = 0; k < len; k++) {
           unsigned int i = static_cast<unsigned int>(ftell(fp));
           unsigned int offt = Read4(fp, swap_endian);
           unsigned int base = 0;  // @fixme
           fseek(fp, offt + base, SEEK_SET);
 
-          ParseTIFFIFD(images, fp, swap_endian);   // recursive call
-          fseek(fp, i + 4, SEEK_SET);  // rewind
+          ParseTIFFIFD(images, fp, swap_endian);  // recursive call
+          fseek(fp, i + 4, SEEK_SET);             // rewind
         }
-        printf("sub_ifds DONE\n");
+        // printf("sub_ifds DONE\n");
       }
 
       break;
 
       case TAG_TILE_WIDTH:
-        image.tile_width =
-            static_cast<int>(ReadUInt(type, fp, swap_endian));
-        printf("tile_width = %d\n", image.tile_width);
+        image.tile_width = static_cast<int>(ReadUInt(type, fp, swap_endian));
+        // printf("tile_width = %d\n", image.tile_width);
         break;
 
       case TAG_TILE_LENGTH:
-        image.tile_length =
-            static_cast<int>(ReadUInt(type, fp, swap_endian));
-        printf("tile_length = %d\n", image.tile_length);
+        image.tile_length = static_cast<int>(ReadUInt(type, fp, swap_endian));
+        // printf("tile_length = %d\n", image.tile_length);
         break;
 
       case TAG_TILE_OFFSETS:
         image.tile_offset = len > 1 ? static_cast<unsigned int>(ftell(fp))
-                                         : Read4(fp, swap_endian);
+                                    : Read4(fp, swap_endian);
         // printf("tile_offt = %d\n", image->tile_offset);
         break;
 
       case TAG_TILE_BYTE_COUNTS:
-        image.tile_byte_count = len > 1
-                                         ? static_cast<unsigned int>(ftell(fp))
-                                         : Read4(fp, swap_endian);
+        image.tile_byte_count = len > 1 ? static_cast<unsigned int>(ftell(fp))
+                                        : Read4(fp, swap_endian);
         break;
 
       case TAG_CFA_PATTERN_DIM:
@@ -2158,7 +2156,7 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage> *images, FILE* fp, bool 
       } break;
 
       default:
-        printf("unknown or unsupported tag = %d\n", tag);
+        // printf("unknown or unsupported tag = %d\n", tag);
         break;
     }
 
@@ -2173,7 +2171,8 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage> *images, FILE* fp, bool 
   return true;
 }
 
-static bool ParseDNG(std::vector<tinydng::DNGImage> *images, FILE* fp, bool swap_endian) {
+static bool ParseDNG(std::vector<tinydng::DNGImage>* images, FILE* fp,
+                     bool swap_endian) {
   int offt;
   size_t ret = fread(&offt, 1, 4, fp);
   assert(ret == 4);
@@ -2191,13 +2190,12 @@ static bool ParseDNG(std::vector<tinydng::DNGImage> *images, FILE* fp, bool swap
       break;
     }
     // Get next IFD offset(0 = end of file).
-    ret = fread(&offt, 1, 4, fp); 
+    ret = fread(&offt, 1, 4, fp);
     assert(ret == 4);
-
   }
 
   for (size_t i = 0; i < images->size(); i++) {
-    tinydng::DNGImage *image = &((*images)[i]);
+    tinydng::DNGImage* image = &((*images)[i]);
     assert(image->samples_per_pixel <= 4);
     for (int s = 0; s < image->samples_per_pixel; s++) {
       if (image->white_level[s] == -1) {
@@ -2213,13 +2211,14 @@ static bool ParseDNG(std::vector<tinydng::DNGImage> *images, FILE* fp, bool swap
 }
 
 static bool IsBigEndian() {
-    uint32_t i = 0x01020304;
-    char c[4];
-    memcpy(c, &i, 4);
-    return (c[0] == 1);
+  uint32_t i = 0x01020304;
+  char c[4];
+  memcpy(c, &i, 4);
+  return (c[0] == 1);
 }
 
-bool LoadDNG(std::vector<DNGImage> *images, std::string* err, const char* filename) {
+bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
+             const char* filename) {
   std::stringstream ss;
 
   assert(images);
@@ -2274,14 +2273,13 @@ bool LoadDNG(std::vector<DNGImage> *images, std::string* err, const char* filena
   ret = ParseDNG(images, fp, swap_endian);
 
   if (!ret) {
-    fclose(fp); 
+    fclose(fp);
     return false;
   }
 
   for (size_t i = 0; i < images->size(); i++) {
-
-    tinydng::DNGImage *image = &((*images)[i]);
-    printf("compression = %d\n", image->compression);
+    tinydng::DNGImage* image = &((*images)[i]);
+    // printf("compression = %d\n", image->compression);
 
     size_t data_offset =
         (image->offset > 0) ? image->offset : image->tile_offset;
@@ -2295,49 +2293,46 @@ bool LoadDNG(std::vector<DNGImage> *images, std::string* err, const char* filena
       image->bits_per_sample = image->bits_per_sample_original;
       assert(((image->width * image->height * image->bits_per_sample) % 8) ==
              0);
-      const size_t len = static_cast<size_t>(
-          (image->width * image->height * image->bits_per_sample) / 8);
+      const size_t len =
+          static_cast<size_t>((image->samples_per_pixel * image->width *
+                               image->height * image->bits_per_sample) /
+                              8);
       assert(len > 0);
-      image->data.resize(static_cast<size_t>(image->samples_per_pixel));
+      image->data.resize(len);
       fseek(fp, static_cast<long>(data_offset), SEEK_SET);
 
-      // FIXME(syoyo): Consider interleaved pixel format?
-      for (size_t c = 0; c < static_cast<size_t>(image->samples_per_pixel); c++) {
-        image->data[c].resize(len, 0);
-        ret = fread(&(image->data[c].at(0)), 1, len, fp);
-        assert(ret == len);
-      }
+      ret = fread(&(image->data.at(0)), 1, len, fp);
+      assert(ret == len);
     } else if (image->compression ==
                7) {  //  new JPEG(baseline DCT JPEG or lossless JPEG)
 
       // lj92 decodes data into 16bits, so modify bps.
       image->bits_per_sample = 16;
-      image->data.resize(static_cast<size_t>(image->samples_per_pixel));
 
       assert(((image->width * image->height * image->bits_per_sample) % 8) ==
              0);
-      const size_t len = static_cast<size_t>(
-          (image->width * image->height * image->bits_per_sample) / 8);
+      const size_t len =
+          static_cast<size_t>((image->samples_per_pixel * image->width *
+                               image->height * image->bits_per_sample) /
+                              8);
       assert(len > 0);
+      image->data.resize(len);
 
       //
       // Read whole file data.
       // @todo { Read only compressed LJPEG data into buffer. }
       //
       fseek(fp, 0, SEEK_SET);
-      std::vector<unsigned char> buffer(file_size);
+      std::vector<unsigned char> buffer;
+      buffer.resize(file_size);
       ret = fread(buffer.data(), 1, file_size, fp);
       assert(ret == file_size);
 
       // Move to LJPEG data location.
       fseek(fp, static_cast<long>(data_offset), SEEK_SET);
 
-      // TODO(Read multi-channel data)
-      image->data[0].resize(len);
-
-      // printf("data_offset = %d\n", static_cast<int>(data_offset));
       bool ok = DecompressLosslessJPEG(
-          reinterpret_cast<unsigned short*>(image->data[0].data()), image->width,
+          reinterpret_cast<unsigned short*>(&(image->data.at(0))), image->width,
           buffer.data(), buffer.size(), fp, (*image), swap_endian);
       if (!ok) {
         if (err) {
