@@ -1,0 +1,249 @@
+#define TINYEXR_IMPLEMENTATION
+#include "tinyexr.h"
+
+#define TINY_DNG_LOADER_IMPLEMENTATION
+#include "../../tiny_dng_loader.h"
+
+#include <iostream>
+
+static inline unsigned short swap2(unsigned short val) {
+  unsigned short ret;
+
+  unsigned char* buf = reinterpret_cast<unsigned char*>(&ret);
+
+  unsigned short x = val;
+  buf[1] = static_cast<unsigned char>(x);
+  buf[0] = static_cast<unsigned char>(x >> 8);
+
+  return ret;
+}
+
+//
+// Decode 12bit integer image into floating point HDR image
+//
+static void decode12_hdr(std::vector<float>& image, unsigned char* data, int width,
+                  int height, bool do_swap) {
+  int offsets[2][2] = {{0, 1}, {1, 2}};
+
+  int bit_shifts[2] = {4, 0};
+
+  image.resize(static_cast<size_t>(width * height));
+
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic, 1)
+#endif
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+      unsigned char buf[3];
+
+      // Calculate load addres for 12bit pixel(three 8 bit pixels)
+      int n = int(y * width + x);
+
+      // 24 = 12bit * 2 pixel, 8bit * 3 pixel
+      int n2 = n % 2;           // used for offset & bitshifts
+      int addr3 = (n / 2) * 3;  // 8bit pixel pos
+      int odd = (addr3 % 2);
+
+      int bit_shift;
+      bit_shift = bit_shifts[n2];
+
+      int offset[2];
+      offset[0] = offsets[n2][0];
+      offset[1] = offsets[n2][1];
+
+      if (do_swap) {
+        // load with short byte swap
+        if (odd) {
+          buf[0] = data[addr3 - 1];
+          buf[1] = data[addr3 + 2];
+          buf[2] = data[addr3 + 1];
+        } else {
+          buf[0] = data[addr3 + 1];
+          buf[1] = data[addr3 + 0];
+          buf[2] = data[addr3 + 3];
+        }
+      } else {
+        buf[0] = data[addr3 + 0];
+        buf[1] = data[addr3 + 1];
+        buf[2] = data[addr3 + 2];
+      }
+      unsigned int b0 = static_cast<unsigned int>(buf[offset[0]] & 0xff);
+      unsigned int b1 = static_cast<unsigned int>(buf[offset[1]] & 0xff);
+
+      unsigned int val = (b0 << 8) | b1;
+      val = 0xfff & (val >> bit_shift);
+
+      image[static_cast<size_t>(y * width + x)] = static_cast<float>(val);
+    }
+  }
+}
+
+//
+// Decode 14bit integer image into floating point HDR image
+//
+static void decode14_hdr(std::vector<float>& image, unsigned char* data, int width,
+                  int height, bool do_swap) {
+  int offsets[4][3] = {{0, 0, 1}, {1, 2, 3}, {3, 4, 5}, {5, 5, 6}};
+
+  int bit_shifts[4] = {2, 4, 6, 0};
+
+  image.resize(static_cast<size_t>(width * height));
+
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic, 1)
+#endif
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+      unsigned char buf[7];
+
+      // Calculate load addres for 14bit pixel(three 8 bit pixels)
+      int n = int(y * width + x);
+
+      // 56 = 14bit * 4 pixel, 8bit * 7 pixel
+      int n4 = n % 4;           // used for offset & bitshifts
+      int addr7 = (n / 4) * 7;  // 8bit pixel pos
+      int odd = (addr7 % 2);
+
+      int offset[3];
+      offset[0] = offsets[n4][0];
+      offset[1] = offsets[n4][1];
+      offset[2] = offsets[n4][2];
+
+      int bit_shift;
+      bit_shift = bit_shifts[n4];
+
+      if (do_swap) {
+        // load with short byte swap
+        if (odd) {
+          buf[0] = data[addr7 - 1];
+          buf[1] = data[addr7 + 2];
+          buf[2] = data[addr7 + 1];
+          buf[3] = data[addr7 + 4];
+          buf[4] = data[addr7 + 3];
+          buf[5] = data[addr7 + 6];
+          buf[6] = data[addr7 + 5];
+        } else {
+          buf[0] = data[addr7 + 1];
+          buf[1] = data[addr7 + 0];
+          buf[2] = data[addr7 + 3];
+          buf[3] = data[addr7 + 2];
+          buf[4] = data[addr7 + 5];
+          buf[5] = data[addr7 + 4];
+          buf[6] = data[addr7 + 7];
+        }
+      } else {
+        memcpy(buf, &data[addr7], 7);
+      }
+      unsigned int b0 = static_cast<unsigned int>(buf[offset[0]] & 0xff);
+      unsigned int b1 = static_cast<unsigned int>(buf[offset[1]] & 0xff);
+      unsigned int b2 = static_cast<unsigned int>(buf[offset[2]] & 0xff);
+
+      // unsigned int val = (b0 << 16) | (b1 << 8) | b2;
+      // unsigned int val = (b2 << 16) | (b0 << 8) | b0;
+      unsigned int val = (b0 << 16) | (b1 << 8) | b2;
+      // unsigned int val = b2;
+      val = 0x3fff & (val >> bit_shift);
+
+      image[static_cast<size_t>(y * width + x)] = static_cast<float>(val);
+    }
+  }
+}
+
+//
+// Decode 16bit integer image into floating point HDR image
+//
+static void decode16_hdr(std::vector<float>& image, unsigned char* data, int width,
+                  int height, bool do_swap) {
+  image.resize(static_cast<size_t>(width * height));
+  unsigned short* ptr = reinterpret_cast<unsigned short*>(data);
+
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic, 1)
+#endif
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+      unsigned short val = ptr[y * width + x];
+      if (do_swap) {
+        val = swap2(val);
+      }
+
+      // range will be [0, 65535]
+      image[static_cast<size_t>(y * width + x)] = static_cast<float>(val);
+    }
+  }
+}
+
+int
+main(int argc, char **argv)
+{
+  size_t image_idx = static_cast<size_t>(-1); // -1 = use largest image.
+  if (argc < 3) {
+    std::cout << "dng2exr input.dng output.exr (image_idx)" << std::endl;
+    return EXIT_FAILURE;
+  }
+
+  std::string input_filename = std::string(argv[1]);
+  std::string output_filename = std::string(argv[2]);
+
+  if (argc > 3) {
+    image_idx = static_cast<size_t>(atoi(argv[3]));
+  }
+
+  std::vector<tinydng::DNGImage> images;
+  {
+    std::string err;
+    bool ret =
+        tinydng::LoadDNG(&images, &err, input_filename.c_str());
+
+    if (!err.empty()) {
+      std::cout << err << std::endl;
+    }
+
+    if (ret == false) {
+      std::cout << "failed to load DNG" << std::endl;
+      return EXIT_FAILURE;
+    }
+
+  }
+  assert(images.size() > 0);
+
+  if (image_idx == static_cast<size_t>(-1)) {
+    // Find largest image based on width.
+    size_t largest = 0;
+    int largest_width = images[0].width;
+    for (size_t i = 1; i < images.size(); i++) {
+      std::cout << largest_width << ", " << images[i].width << std::endl;
+      if (largest_width < images[i].width) {
+        largest = i;
+        largest_width = images[i].width;
+      } 
+    }
+
+    image_idx = static_cast<size_t>(largest);
+  }
+
+  // Convert to float.
+  std::vector<float> hdr;
+  bool do_swap = false;
+
+  int spp = images[image_idx].samples_per_pixel;
+  if (images[image_idx].bits_per_sample == 12) {
+    decode12_hdr(hdr, &(images[image_idx].data.at(0)), images[image_idx].width, images[image_idx].height * spp, do_swap);
+  } else if (images[image_idx].bits_per_sample == 14) {
+    decode14_hdr(hdr, &(images[image_idx].data.at(0)), images[image_idx].width, images[image_idx].height * spp, do_swap);
+  } else if (images[image_idx].bits_per_sample == 16) {
+    decode16_hdr(hdr, &(images[image_idx].data.at(0)), images[image_idx].width, images[image_idx].height * spp, do_swap);
+  } else {
+    std::cerr << "Unsupported bits_per_sample" << std::endl;
+    exit(-1);
+  }
+  
+  int ret = SaveEXR(&(hdr.at(0)), images[image_idx].width, images[image_idx].height, spp, output_filename.c_str());
+  if (ret != TINYEXR_SUCCESS) {
+    std::cout << "Save EXR failure: err code = " << ret << std::endl;
+    return EXIT_FAILURE;
+  }
+  std::cout << "Saved to " << output_filename << std::endl;
+  return EXIT_SUCCESS;
+  
+}
