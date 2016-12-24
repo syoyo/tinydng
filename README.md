@@ -14,6 +14,8 @@ Currently TinyDNGLoader only supports lossless RAW DNG and limited lossless JPEG
 * [x] RAW DNG data
 * [x] Lossless JPEG
   * Experimental support. Lossless JPEG decoding is supported through liblj92 lib. https://bitbucket.org/baldand/mlrawviewer.git
+* [x] JPEG
+  * Support JPEG image(e.g. thumbnail) through `stb_image.h`.
 
 ## Usage
 
@@ -96,7 +98,8 @@ Here is the list of great articles on how to develop RAW image.
 
 TinyDNGLoader is licensed under MIT license.
 
-TinyDNGLoader uses the following third party license(s).
+TinyDNGLoader uses the following third party libraries.
 
 * liblj92(Lossless JPEG library) : (c) Andrew Baldwin 2014. MIT license.  https://bitbucket.org/baldand/mlrawviewer.git
+* stb_image : Public domain image loader.
 

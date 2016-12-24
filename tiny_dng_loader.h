@@ -115,8 +115,8 @@ struct DNGImage {
   unsigned int offset;
   int orientation;
   int strip_byte_count;
+  int jpeg_byte_count;
   int planar_configuration;  // 1: chunky, 2: planar
-  int pad6;
 
   std::vector<unsigned char>
       data;  // Decoded pixel data(len = spp * width * height * bps / 8)
@@ -163,7 +163,17 @@ static int clz32(unsigned int x) {
 #pragma clang diagnostic ignored "-Wunused-function"
 #pragma clang diagnostic ignored "-Wpadded"
 #pragma clang diagnostic ignored "-Wmissing-prototypes"
+#pragma clang diagnostic ignored "-Wreserved-id-macro"
+#pragma clang diagnostic ignored "-Wdisabled-macro-expansion"
+#pragma clang diagnostic ignored "-Wdouble-promotion"
 #endif
+
+// STB image to decode jpeg image.
+#ifndef STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_IMPLEMENTATION
+#endif
+#include "stb_image.h"
+
 
 namespace {
 // Begin liblj92, Lossless JPEG decode/encoder ------------------------------
@@ -1449,6 +1459,8 @@ typedef enum {
   TAG_TILE_LENGTH = 323,
   TAG_TILE_OFFSETS = 324,
   TAG_TILE_BYTE_COUNTS = 325,
+  TAG_JPEG_IF_OFFSET = 513,
+  TAG_JPEG_IF_BYTE_COUNT = 514,
   TAG_CFA_PATTERN_DIM = 33421,
   TAG_CFA_PATTERN = 33422,
   TAG_CFA_PLANE_COLOR = 50710,
@@ -1470,45 +1482,6 @@ typedef enum {
 
   TAG_INVALID = 65535
 } TiffTag;
-
-#if 0
-typedef struct {
-  int width;
-  int height;
-  int bps;  // bits per sample
-  int samples_per_pixel;
-  int compression;
-  unsigned int offset;
-  int orientation;
-  int samples;
-  int bytes;
-  int strip_byte_count;
-  int planar_configuration;  // 1: chunky, 2: planar
-  int active_area[4];        // top, left, bottom, right
-  bool has_active_area;
-  unsigned char pad[3];
-
-  char cfa_plane_color[4];  // 0:red, 1:green, 2:blue, 3:cyan, 4:magenta,
-                            // 5:yellow, 6:white
-  int cfa_pattern_dim;
-  int cfa_pattern[2][2];  // @fixme { Support non 2x2 CFA pattern. }
-  int cfa_layout;
-
-  int tile_width;
-  int tile_length;
-  unsigned int tile_offset;
-  unsigned int tile_byte_count;  // (compressed) size
-
-  int pad0;
-  double analog_balance[3];
-  bool has_analog_balance;
-  unsigned char pad1[7];
-
-  double as_shot_neutral[3];
-  bool has_as_shot_neutral;
-  unsigned char pad2[7];
-} TIFFInfo;
-#endif
 
 static void swap2(unsigned short* val) {
   unsigned short tmp = *val;
@@ -1641,43 +1614,6 @@ static void GetTIFFTag(unsigned short* tag, unsigned short* type,
   }
 }
 
-#if 0
-static void InitializeTIFFInfo(TIFFInfo* info)
-{
-  info->compression = 1; // No compression.
-
-  info->has_active_area = false;
-  info->cfa_plane_color[0] = 0;
-  info->cfa_plane_color[1] = 1;
-  info->cfa_plane_color[2] = 2;
-  info->cfa_plane_color[3] = 0;  // optional?
-
-  info->cfa_pattern_dim = 2;
-
-  // The spec says default is None, thus fill with -1(=invalid).
-  info->cfa_pattern[0][0] = -1;
-  info->cfa_pattern[0][1] = -1;
-  info->cfa_pattern[1][0] = -1;
-  info->cfa_pattern[1][1] = -1;
-
-  info->cfa_layout = 1;
-
-  info->offset = 0;
-
-  info->tile_width = -1;
-  info->tile_length = -1;
-  info->tile_offset = 0;
-
-  info->planar_configuration = 1;  // chunky
-
-  info->has_analog_balance = false;
-  info->has_as_shot_neutral = false;
-
-  info->spp = 1;
-
-}
-#endif
-
 static void InitializeDNGImage(tinydng::DNGImage* image) {
   image->color_matrix1[0][0] = 1.0;
   image->color_matrix1[0][1] = 0.0;
@@ -1757,7 +1693,6 @@ static void InitializeDNGImage(tinydng::DNGImage* image) {
   image->black_level[3] = 0;
 
   image->bits_per_sample = 0;
-  image->bits_per_sample_original = 0;
 
   image->has_active_area = false;
   image->active_area[0] = -1;
@@ -1790,6 +1725,12 @@ static void InitializeDNGImage(tinydng::DNGImage* image) {
 
   image->has_analog_balance = false;
   image->has_as_shot_neutral = false;
+
+  image->jpeg_byte_count = -1;
+  image->strip_byte_count = -1;
+
+  image->samples_per_pixel = 1;
+  image->bits_per_sample_original = 1;
 }
 
 static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
@@ -1933,20 +1874,19 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage>* images, FILE* fp,
         // printf("spp = %d\n", image.samples_per_pixel);
         break;
 
-      case TAG_COMPRESSION:  // Compression
+      case TAG_COMPRESSION:
         image.compression = static_cast<int>(ReadUInt(type, fp, swap_endian));
         // printf("tag-compression = %d\n", image.compression);
         break;
 
-      case TAG_STRIP_OFFSET:              // StripOffset
-      case 513:                           // JpegIFOffset
-        assert(tag == TAG_STRIP_OFFSET);  // @todo { jpeg data }
+      case TAG_STRIP_OFFSET:
+      case TAG_JPEG_IF_OFFSET:
         image.offset = Read4(fp, swap_endian);
         // printf("strip_offset = %d\n", image.offset);
         break;
 
-      case 514:  // JpegIFByteCount
-        // printf("byte count = %d\n", Read4(fp, swap_endian));
+      case TAG_JPEG_IF_BYTE_COUNT:
+        image.jpeg_byte_count = static_cast<int>(Read4(fp, swap_endian));
         break;
 
       case TAG_ORIENTATION:
@@ -2285,8 +2225,7 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
     tinydng::DNGImage* image = &((*images)[i]);
     // printf("compression = %d\n", image->compression);
 
-    size_t data_offset =
-        (image->offset > 0) ? image->offset : image->tile_offset;
+    const size_t data_offset = (image->offset > 0) ? image->offset : image->tile_offset;
     assert(data_offset > 0);
 
     // std::cout << "offt =\n" << image->offset << std::endl;
@@ -2307,6 +2246,33 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
 
       ret = fread(&(image->data.at(0)), 1, len, fp);
       assert(ret == len);
+    } else if (image->compression == 6) {  // jpeg compression
+      image->bits_per_sample = 8;
+      const size_t jpeg_len = static_cast<size_t>(image->jpeg_byte_count);
+      assert(jpeg_len > 0);
+
+      std::vector<unsigned char> buf;
+      buf.resize(jpeg_len);
+      fseek(fp, static_cast<long>(data_offset), SEEK_SET);
+
+      ret = fread(&(buf.at(0)), 1, jpeg_len, fp);
+      assert(ret == jpeg_len);
+      (void)ret;
+
+      // Assume RGB jpeg
+      int w = 0, h = 0, components = 0;
+      unsigned char *decoded_image = stbi_load_from_memory(&buf.at(0), static_cast<int>(jpeg_len), &w, &h, &components, /* desired_channels */3);
+      assert(decoded_image);
+      free(decoded_image);
+
+      std::cout << "w = " << w << ", " << image->width << std::endl;
+
+      assert(w > 0);
+      assert(h > 0);
+
+      image->width = w;
+      image->height = h;
+
     } else if (image->compression ==
                7) {  //  new JPEG(baseline DCT JPEG or lossless JPEG)
 
@@ -2354,6 +2320,11 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
     } else if (image->compression == 34892) {  // lossy JPEG
       if (err) {
         ss << "lossy JPEG compression is not supported." << std::endl;
+        (*err) = ss.str();
+      }
+    } else if (image->compression == 34713 {  // NEF lossless?
+      if (err) {
+        ss << "Seems a NEF RAW. This compression is not supported." << std::endl;
         (*err) = ss.str();
       }
     } else {
