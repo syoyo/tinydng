@@ -33,92 +33,110 @@ int main(int argc, char **argv) {
     input_filename = std::string(argv[1]);
   }
 
-  int width, height, bits, components;
   std::string err;
-  tinydng::DNGInfo dng_info;
-  std::vector<unsigned char> data;
-  size_t data_len;
+  std::vector<tinydng::DNGImage> images;
 
-  bool ret = tinydng::LoadDNG(&dng_info, &data, &data_len, &width, &height,
-                              &bits, &components, &err, input_filename.c_str());
+  bool ret = tinydng::LoadDNG(&images, &err, input_filename.c_str());
 
   if (ret) {
-    std::cout << "width = " << width << std::endl;
-    std::cout << "height = " << height << std::endl;
-    std::cout << "bits per piexl = " << bits << std::endl;
-    std::cout << "# of components = " << components << std::endl;
+    for (size_t i = 0; i < images.size(); i++) {
+      const tinydng::DNGImage &image = images[i];
+;
+      std::cout << "width = " << image.width << std::endl;
+      std::cout << "height = " << image.height << std::endl;
+      std::cout << "bits per piexl = " << image.bits_per_sample << std::endl;
+      std::cout << "bits per piexl(original) = " << image.bits_per_sample_original << std::endl;
+      std::cout << "samples per piexl = " << image.samples_per_pixel << std::endl;
 
-    std::cout << "version = " << dng_info.version << std::endl;
-    std::cout << "white_level = " << dng_info.white_level << std::endl;
-    std::cout << "black_level = " << dng_info.black_level << std::endl;
+      std::cout << "version = " << image.version << std::endl;
 
-    std::cout << "tile_width = " << dng_info.tile_width << std::endl;
-    std::cout << "tile_length = " << dng_info.tile_length << std::endl;
-    std::cout << "tile_offset = " << dng_info.tile_offset << std::endl;
+      for (int s = 0; s < image.samples_per_pixel; s++) {
+        std::cout << "white_level[" << s << "] = " << image.white_level[s] << std::endl;
+        std::cout << "black_level[" << s << "] = " << image.black_level[s] << std::endl;
+      }
 
-    std::cout << "tile_offset = " << dng_info.tile_offset << std::endl;
+      std::cout << "tile_width = " << image.tile_width << std::endl;
+      std::cout << "tile_length = " << image.tile_length << std::endl;
+      std::cout << "tile_offset = " << image.tile_offset << std::endl;
 
-    std::cout << "cfa_layout = " << dng_info.cfa_layout << std::endl;
-    std::cout << "cfa_plane_color = "
-              << get_colorname(dng_info.cfa_plane_color[0])
-              << get_colorname(dng_info.cfa_plane_color[1])
-              << get_colorname(dng_info.cfa_plane_color[2])
-              << get_colorname(dng_info.cfa_plane_color[3]) << std::endl;
-    std::cout << "cfa_pattern[2][2] = " << std::endl
-              << dng_info.cfa_pattern[0][0] << ", "
-              << dng_info.cfa_pattern[0][1] << std::endl
-              << dng_info.cfa_pattern[1][0] << ", "
-              << dng_info.cfa_pattern[1][1] << std::endl;
+      std::cout << "tile_offset = " << image.tile_offset << std::endl;
 
-    std::cout << "active_area = " << dng_info.active_area[0] << ", "
-              << dng_info.active_area[1] << ", " << dng_info.active_area[2]
-              << ", " << dng_info.active_area[3] << std::endl;
+      std::cout << "cfa_layout = " << image.cfa_layout << std::endl;
+      std::cout << "cfa_plane_color = "
+                << get_colorname(image.cfa_plane_color[0])
+                << get_colorname(image.cfa_plane_color[1])
+                << get_colorname(image.cfa_plane_color[2])
+                << get_colorname(image.cfa_plane_color[3]) << std::endl;
+      std::cout << "cfa_pattern[2][2] = " << std::endl
+                << image.cfa_pattern[0][0] << ", "
+                << image.cfa_pattern[0][1] << std::endl
+                << image.cfa_pattern[1][0] << ", "
+                << image.cfa_pattern[1][1] << std::endl;
 
-    std::cout << "calibration_illuminant1 = "
-              << dng_info.calibration_illuminant1 << std::endl;
-    std::cout << "calibration_illuminant2 = "
-              << dng_info.calibration_illuminant2 << std::endl;
+      std::cout << "active_area = " << image.active_area[0] << ", "
+                << image.active_area[1] << ", " << image.active_area[2]
+                << ", " << image.active_area[3] << std::endl;
 
-    std::cout << "color_matrix1 = " << std::endl;
-    for (size_t i = 0; i < 3; i++) {
-      std::cout << dng_info.color_matrix1[i][0] << " , "
-                << dng_info.color_matrix1[i][1] << " , "
-                << dng_info.color_matrix1[i][2] << std::endl;
-    }
+      std::cout << "calibration_illuminant1 = "
+                << image.calibration_illuminant1 << std::endl;
+      std::cout << "calibration_illuminant2 = "
+                << image.calibration_illuminant2 << std::endl;
 
-    std::cout << "color_matrix2 = " << std::endl;
-    for (size_t i = 0; i < 3; i++) {
-      std::cout << dng_info.color_matrix2[i][0] << " , "
-                << dng_info.color_matrix2[i][1] << " , "
-                << dng_info.color_matrix2[i][2] << std::endl;
-    }
+      std::cout << "color_matrix1 = " << std::endl;
+      for (size_t k = 0; k < 3; k++) {
+        std::cout << image.color_matrix1[k][0] << " , "
+                  << image.color_matrix1[k][1] << " , "
+                  << image.color_matrix1[k][2] << std::endl;
+      }
 
-    std::cout << "forward_matrix1 = " << std::endl;
-    for (size_t i = 0; i < 3; i++) {
-      std::cout << dng_info.forward_matrix1[i][0] << " , "
-                << dng_info.forward_matrix1[i][1] << " , "
-                << dng_info.forward_matrix1[i][2] << std::endl;
-    }
+      std::cout << "color_matrix2 = " << std::endl;
+      for (size_t k = 0; k < 3; k++) {
+        std::cout << image.color_matrix2[k][0] << " , "
+                  << image.color_matrix2[k][1] << " , "
+                  << image.color_matrix2[k][2] << std::endl;
+      }
 
-    std::cout << "forward_matrix2 = " << std::endl;
-    for (size_t i = 0; i < 3; i++) {
-      std::cout << dng_info.forward_matrix2[i][0] << " , "
-                << dng_info.forward_matrix2[i][1] << " , "
-                << dng_info.forward_matrix2[i][2] << std::endl;
-    }
+      std::cout << "forward_matrix1 = " << std::endl;
+      for (size_t k = 0; k < 3; k++) {
+        std::cout << image.forward_matrix1[k][0] << " , "
+                  << image.forward_matrix1[k][1] << " , "
+                  << image.forward_matrix1[k][2] << std::endl;
+      }
 
-    std::cout << "camera_calibration1 = " << std::endl;
-    for (size_t i = 0; i < 3; i++) {
-      std::cout << dng_info.camera_calibration1[i][0] << " , "
-                << dng_info.camera_calibration1[i][1] << " , "
-                << dng_info.camera_calibration1[i][2] << std::endl;
-    }
+      std::cout << "forward_matrix2 = " << std::endl;
+      for (size_t k = 0; k < 3; k++) {
+        std::cout << image.forward_matrix2[k][0] << " , "
+                  << image.forward_matrix2[k][1] << " , "
+                  << image.forward_matrix2[k][2] << std::endl;
+      }
 
-    std::cout << "camera_calibration2 = " << std::endl;
-    for (size_t i = 0; i < 3; i++) {
-      std::cout << dng_info.camera_calibration2[i][0] << " , "
-                << dng_info.camera_calibration2[i][1] << " , "
-                << dng_info.camera_calibration2[i][2] << std::endl;
+      std::cout << "camera_calibration1 = " << std::endl;
+      for (size_t k = 0; k < 3; k++) {
+        std::cout << image.camera_calibration1[k][0] << " , "
+                  << image.camera_calibration1[k][1] << " , "
+                  << image.camera_calibration1[k][2] << std::endl;
+      }
+
+      std::cout << "camera_calibration2 = " << std::endl;
+      for (size_t k = 0; k < 3; k++) {
+        std::cout << image.camera_calibration2[k][0] << " , "
+                  << image.camera_calibration2[k][1] << " , "
+                  << image.camera_calibration2[k][2] << std::endl;
+      }
+
+      if (image.has_analog_balance) {
+        std::cout << "analog_balance = "
+                  << image.analog_balance[0] << " , "
+                  << image.analog_balance[1] << " , "
+                  << image.analog_balance[2] << std::endl;
+      }
+
+      if (image.has_as_shot_neutral) {
+        std::cout << "as_shot_neutral = "
+                  << image.as_shot_neutral[0] << " , "
+                  << image.as_shot_neutral[1] << " , "
+                  << image.as_shot_neutral[2] << std::endl;
+      }
     }
 
   } else {

@@ -147,13 +147,13 @@ typedef struct {
   int height;
   int bits;
   int components;
-  tinydng::DNGInfo dng_info;
+  int largest_idx;
 
-  // Decoded RAW data.
-  std::vector<unsigned char> data;
+  // Decoded image.
+  tinydng::DNGImage image;
 
   // HDR RAW data
-  std::vector<float> image;
+  std::vector<float> hdr_image;
 
   // Developed image.
   std::vector<float> framebuffer;
@@ -770,16 +770,16 @@ static double color_correction(std::vector<float>& out,
 }
 
 void DecodeToHDR(RAWImage* raw, bool swap_endian) {
-  raw->image.resize(raw->width * raw->height);
+  raw->hdr_image.resize(raw->width * raw->height);
 
   if (raw->bits == 12) {
-    decode12_hdr(raw->image, raw->data.data(), raw->width, raw->height,
+    decode12_hdr(raw->hdr_image, raw->image.data.data(), raw->width, raw->height,
                  swap_endian);
   } else if (raw->bits == 14) {
-    decode14_hdr(raw->image, raw->data.data(), raw->width, raw->height,
+    decode14_hdr(raw->hdr_image, raw->image.data.data(), raw->width, raw->height,
                  swap_endian);
   } else if (raw->bits == 16) {
-    decode16_hdr(raw->image, raw->data.data(), raw->width, raw->height,
+    decode16_hdr(raw->hdr_image, raw->image.data.data(), raw->width, raw->height,
                  swap_endian);
   } else {
     assert(0);
@@ -799,11 +799,11 @@ void Develop(RAWImage* raw, const UIParam& param) {
   }
 
   const float inv_scale =
-      1.0f / (raw->dng_info.white_level - raw->dng_info.black_level);
+      1.0f / (raw->image.white_level[0] - raw->image.black_level[0]);
 
   std::vector<float> pre_color_corrected;
-  pre_color_correction(pre_color_corrected, raw->image,
-                       raw->dng_info.black_level, raw->dng_info.white_level,
+  pre_color_correction(pre_color_corrected, raw->hdr_image,
+                       raw->image.black_level[0], raw->image.white_level[0],
                        param.color_matrix, raw->width, raw->height,
                        /* scale */ 1.0f);
 
@@ -812,7 +812,7 @@ void Develop(RAWImage* raw, const UIParam& param) {
           param.cfa_offset);
 
   double srgb_color_matrix[3][3];
-  compute_color_matrix(srgb_color_matrix, raw->dng_info.color_matrix1,
+  compute_color_matrix(srgb_color_matrix, raw->image.color_matrix1,
                        param.raw_white_balance);
 
   std::vector<float> color_corrected;
@@ -854,7 +854,7 @@ void inspect_pixel(int x, int y) {
   if (y >= gRAWImage.height) y = gRAWImage.height - 1;
   if (y < 0) y = 0;
 
-  float value = gRAWImage.image[y * gRAWImage.width + x];
+  float value = gRAWImage.image.data[y * gRAWImage.width + x];
 
   gUIParam.inspect_raw_value = value;
   gUIParam.inspect_pos[0] = x;
@@ -1145,17 +1145,10 @@ int main(int argc, char** argv) {
   }
 
   {
-    int width;
-    int height;
-    int bits;
-    int components;
     std::string err;
-    tinydng::DNGInfo dng_info;
-    std::vector<unsigned char> data;
-    size_t data_len;
+    std::vector<tinydng::DNGImage> images;
     bool ret =
-        tinydng::LoadDNG(&dng_info, &data, &data_len, &width, &height, &bits,
-                         &components, &err, input_filename.c_str());
+        tinydng::LoadDNG(&images, &err, input_filename.c_str());
 
     if (!err.empty()) {
       std::cout << err << std::endl;
@@ -1166,11 +1159,34 @@ int main(int argc, char** argv) {
       return EXIT_FAILURE;
     }
 
-    gRAWImage.width = width;
-    gRAWImage.height = height;
-    gRAWImage.bits = bits;
-    gRAWImage.data = data;
-    gRAWImage.dng_info = dng_info;
+    assert(images.size() > 0);
+
+    // Find largest image(based on width pixels).
+    size_t largest = 0;
+    int largest_width = images[0].width;
+    for (size_t i = 1; i < images.size(); i++) {
+      std::cout << largest_width << ", " << images[i].width << std::endl;
+      if (largest_width < images[i].width) {
+        largest = i;
+        largest_width = images[i].width;
+      } 
+    }
+
+    std::cout << "largest = " << largest << std::endl;
+
+    gRAWImage.largest_idx = largest;
+    gRAWImage.width = images[largest].width;
+    gRAWImage.height = images[largest].height;
+    gRAWImage.bits = images[largest].bits_per_sample;
+    //gRAWImage.data = images[largest].data;
+
+    gRAWImage.image = images[largest];
+
+    std::cout << "width " << gRAWImage.width << std::endl;
+    std::cout << "height " << gRAWImage.height << std::endl;
+    std::cout << "bits " << gRAWImage.bits << std::endl;
+
+    //gRAWImage.dng_info = dng_info;
 
     DecodeToHDR(&gRAWImage, /* endian*/ false);  // @fixme { detect endian }
   }
@@ -1186,25 +1202,27 @@ int main(int argc, char** argv) {
     gUIParam.cfa_offset[0] = 0;
     gUIParam.cfa_offset[1] = 0;
 
-    gUIParam.cfa_pattern[0] = gRAWImage.dng_info.cfa_pattern[0][0];
-    gUIParam.cfa_pattern[1] = gRAWImage.dng_info.cfa_pattern[0][1];
-    gUIParam.cfa_pattern[2] = gRAWImage.dng_info.cfa_pattern[1][0];
-    gUIParam.cfa_pattern[3] = gRAWImage.dng_info.cfa_pattern[1][1];
+    assert(gRAWImage.largest_idx >= 0);
+
+    gUIParam.cfa_pattern[0] = gRAWImage.image.cfa_pattern[0][0];
+    gUIParam.cfa_pattern[1] = gRAWImage.image.cfa_pattern[0][1];
+    gUIParam.cfa_pattern[2] = gRAWImage.image.cfa_pattern[1][0];
+    gUIParam.cfa_pattern[3] = gRAWImage.image.cfa_pattern[1][1];
 
     gUIParam.raw_white_balance[0] = 1.0;
     gUIParam.raw_white_balance[1] = 1.0;
     gUIParam.raw_white_balance[2] = 1.0;
 
-    gUIParam.as_shot_neutral[0] = gRAWImage.dng_info.as_shot_neutral[0];
-    gUIParam.as_shot_neutral[1] = gRAWImage.dng_info.as_shot_neutral[1];
-    gUIParam.as_shot_neutral[2] = gRAWImage.dng_info.as_shot_neutral[2];
+    gUIParam.as_shot_neutral[0] = gRAWImage.image.as_shot_neutral[0];
+    gUIParam.as_shot_neutral[1] = gRAWImage.image.as_shot_neutral[1];
+    gUIParam.as_shot_neutral[2] = gRAWImage.image.as_shot_neutral[2];
 
     gUIParam.use_as_shot_neutral =
-        (gRAWImage.dng_info.has_as_shot_neutral) ? true : false;
+        (gRAWImage.image.has_as_shot_neutral) ? true : false;
 
     for (int j = 0; j < 3; j++) {
       for (int i = 0; i < 3; i++) {
-        gUIParam.color_matrix[j][i] = gRAWImage.dng_info.color_matrix1[j][i];
+        gUIParam.color_matrix[j][i] = gRAWImage.image.color_matrix1[j][i];
       }
     }
 
@@ -1276,8 +1294,10 @@ int main(int argc, char** argv) {
       ImGui::Text("  debayer          : %f [msecs]", gUIParam.debayer_msec);
       ImGui::Text("  color correction : %f [msecs]", gUIParam.color_correction_msec);
 
-      ImGui::Text("black level : %d", gRAWImage.dng_info.black_level);
-      ImGui::Text("white level : %d", gRAWImage.dng_info.white_level);
+      for (int s = 0; s < gRAWImage.image.samples_per_pixel; s++) {
+        ImGui::Text("black level[%d] : %d", s, gRAWImage.image.black_level[s]);
+        ImGui::Text("white level[%d] : %d", s, gRAWImage.image.white_level[s]);
+      }
 
       ImGui::Text("(%d x %d) RAW value = : %f", gUIParam.inspect_pos[0],
                   gUIParam.inspect_pos[1], gUIParam.inspect_raw_value);
@@ -1323,7 +1343,7 @@ int main(int argc, char** argv) {
                               0.0, 5.0)) {
         Develop(&gRAWImage, gUIParam);
       }
-      if (gRAWImage.dng_info.has_as_shot_neutral) {
+      if (gRAWImage.image.has_as_shot_neutral) {
         if (ImGui::Checkbox("Use as shot neutral",
                             &gUIParam.use_as_shot_neutral)) {
           Develop(&gRAWImage, gUIParam);
