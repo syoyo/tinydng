@@ -2322,7 +2322,7 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
         ss << "lossy JPEG compression is not supported." << std::endl;
         (*err) = ss.str();
       }
-    } else if (image->compression == 34713 {  // NEF lossless?
+    } else if (image->compression == 34713) {  // NEF lossless?
       if (err) {
         ss << "Seems a NEF RAW. This compression is not supported." << std::endl;
         (*err) = ss.str();
