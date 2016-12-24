@@ -1857,7 +1857,9 @@ static bool ParseTIFFIFD(tinydng::DNGInfo* dng_info, TIFFInfo infos[16],
         if (readLen > 16) readLen = 16;
         // Assume 2x2 CFAPattern.
         assert(readLen == 4);
-        fread(buf, 1, readLen, fp);
+        size_t n = fread(buf, 1, readLen, fp);
+        assert(n == readLen);
+        (void)n;
         infos[idx].cfa_pattern[0][0] = buf[0];
         infos[idx].cfa_pattern[0][1] = buf[1];
         infos[idx].cfa_pattern[1][0] = buf[2];
@@ -1879,7 +1881,9 @@ static bool ParseTIFFIFD(tinydng::DNGInfo* dng_info, TIFFInfo infos[16],
         char buf[4];
         size_t readLen = len;
         if (readLen > 4) readLen = 4;
-        fread(buf, 1, readLen, fp);
+        size_t n = fread(buf, 1, readLen, fp);
+        assert(n == readLen);
+        (void)n;
         for (size_t i = 0; i < readLen; i++) {
           infos[idx].cfa_plane_color[i] = buf[i];
         }
