@@ -178,15 +178,24 @@ main(int argc, char **argv)
 {
   size_t image_idx = static_cast<size_t>(-1); // -1 = use largest image.
   if (argc < 3) {
-    std::cout << "dng2exr input.dng output.exr (image_idx)" << std::endl;
+    std::cout << "dng2exr input.dng output.exr (normalize_intensity) (image_idx)" << std::endl;
+    std::cout << "  options" << std::endl;
+    std::cout << "    normalize_intensity : Normalize RAW pixel value to [0.0, 1.0] range. `0` or `1`. Default = `1`(true)" << std::endl;
+    std::cout << "    image_idx           : The index of image to use(For DNG containing multiple images). Default = auto detect(choose the largest image)." << std::endl;
     return EXIT_FAILURE;
   }
 
   std::string input_filename = std::string(argv[1]);
   std::string output_filename = std::string(argv[2]);
 
+  bool do_normalize = true;
+
   if (argc > 3) {
-    image_idx = static_cast<size_t>(atoi(argv[3]));
+    do_normalize = static_cast<bool>(atoi(argv[3]));
+  }
+
+  if (argc > 4) {
+    image_idx = static_cast<size_t>(atoi(argv[4]));
   }
 
   std::vector<tinydng::DNGImage> images;
@@ -237,13 +246,51 @@ main(int argc, char **argv)
     std::cerr << "Unsupported bits_per_sample" << std::endl;
     exit(-1);
   }
-  
-  int ret = SaveEXR(&(hdr.at(0)), images[image_idx].width, images[image_idx].height, spp, output_filename.c_str());
-  if (ret != TINYEXR_SUCCESS) {
-    std::cout << "Save EXR failure: err code = " << ret << std::endl;
+
+  if (spp == 3) {
+
+    if (do_normalize) {
+      float inv_scale = 1.0f / static_cast<float>((1 << images[image_idx].bits_per_sample));
+      for (size_t i = 0; i < hdr.size(); i++) {
+        hdr[i] *= inv_scale;
+      }
+    }
+
+    int ret = SaveEXR(&(hdr.at(0)), images[image_idx].width, images[image_idx].height, spp, output_filename.c_str());
+    if (ret != TINYEXR_SUCCESS) {
+      std::cout << "Save EXR failure: err code = " << ret << std::endl;
+      return EXIT_FAILURE;
+    }
+    std::cout << "Saved to " << output_filename << std::endl;
+
+  } else if (spp == 1) {
+
+    // Create grayscale image & normalize intensity.
+    std::vector<float> tmp;
+    tmp.resize(static_cast<size_t>(images[image_idx].width * images[image_idx].height * 3));
+
+    float inv_scale = 1.0f;
+    if (do_normalize) {
+      inv_scale = 1.0f / static_cast<float>((1 << images[image_idx].bits_per_sample));
+    }
+    for (size_t i = 0; i < static_cast<size_t>(images[image_idx].width * images[image_idx].height); i++) {
+      tmp[3 * i + 0] = hdr[i] * inv_scale;
+      tmp[3 * i + 1] = hdr[i] * inv_scale;
+      tmp[3 * i + 2] = hdr[i] * inv_scale;
+    }
+
+    int ret = SaveEXR(&(tmp.at(0)), images[image_idx].width, images[image_idx].height, 3, output_filename.c_str());
+    if (ret != TINYEXR_SUCCESS) {
+      std::cout << "Save EXR failure: err code = " << ret << std::endl;
+      return EXIT_FAILURE;
+    }
+    std::cout << "Saved to " << output_filename << std::endl;
+
+  } else {
+    std::cerr << "Unsupported samples per pixel: " << spp << std::endl;
     return EXIT_FAILURE;
   }
-  std::cout << "Saved to " << output_filename << std::endl;
+    
   return EXIT_SUCCESS;
   
 }
