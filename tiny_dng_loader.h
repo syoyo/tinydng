@@ -64,7 +64,7 @@ typedef enum {
 struct DNGImage {
   int black_level[4];  // for each spp(up to 4)
   int white_level[4];  // for each spp(up to 4)
-  int version;
+  int version;         // DNG version
 
   int samples_per_pixel;
 
@@ -174,7 +174,6 @@ static int clz32(unsigned int x) {
 #endif
 #include "stb_image.h"
 
-
 namespace {
 // Begin liblj92, Lossless JPEG decode/encoder ------------------------------
 
@@ -257,6 +256,8 @@ typedef uint32_t u32;
 //#define SLOW_HUFF
 //#define LJ92_DEBUG
 
+#define LJ92_MAX_COMPONENTS (16)
+
 typedef struct _ljp {
   u8* data;
   u8* dataend;
@@ -275,6 +276,8 @@ typedef struct _ljp {
 
 // Huffman table - only one supported, and probably needed
 #ifdef SLOW_HUFF
+  // NOTE: Huffman table for each components is not supported for SLOW_HUFF code
+  // path.
   int* maxcode;
   int* mincode;
   int* valptr;
@@ -282,8 +285,10 @@ typedef struct _ljp {
   int* huffsize;
   int* huffcode;
 #else
-  u16* hufflut;
-  int huffbits;
+  // Huffman table for each components
+  u16* hufflut[LJ92_MAX_COMPONENTS];
+  int huffbits[LJ92_MAX_COMPONENTS];
+  int curr_huff_idx;
 #endif
   // Parse state
   int cnt;
@@ -445,11 +450,11 @@ static int parseHuff(ljp* self) {
     if (bits[maxbits]) break;
     maxbits--;
   }
-  self->huffbits = maxbits;
+  self->huffbits[self->curr_huff_idx] = maxbits;
   /* Now fill the lut */
   u16* hufflut = (u16*)malloc((1 << maxbits) * sizeof(u16));
   if (hufflut == NULL) return LJ92_ERROR_NO_MEMORY;
-  self->hufflut = hufflut;
+  self->hufflut[self->curr_huff_idx] = hufflut;
   int i = 0;
   int hv = 0;
   int rv = 0;
@@ -487,6 +492,8 @@ static int parseHuff(ljp* self) {
   }
   ret = LJ92_ERROR_NONE;
 #endif
+  self->curr_huff_idx++;
+
   return ret;
 }
 
@@ -563,16 +570,17 @@ static int extend(ljp* self, int v, int t) {
 }
 #endif
 
-inline static int nextdiff(ljp* self, int Px) {
+inline static int nextdiff(ljp* self, int component_idx, int Px) {
 #ifdef SLOW_HUFF
   int t = decode(self);
   int diff = receive(self, t);
   diff = extend(self, diff, t);
 // printf("%d %d %d %x\n",Px+diff,Px,diff,t);//,index,usedbits);
 #else
+  assert(component_idx <= self->curr_huff_idx);
   u32 b = self->b;
   int cnt = self->cnt;
-  int huffbits = self->huffbits;
+  int huffbits = self->huffbits[component_idx];
   int ix = self->ix;
   int next;
   while (cnt < huffbits) {
@@ -590,7 +598,7 @@ inline static int nextdiff(ljp* self, int Px) {
       ix++;
   }
   int index = b >> (cnt - huffbits);
-  u16 ssssused = self->hufflut[index];
+  u16 ssssused = self->hufflut[component_idx][index];
   int usedbits = ssssused & 0xFF;
   int t = ssssused >> 8;
   self->sssshist[t]++;
@@ -654,7 +662,8 @@ static int parsePred6(ljp* self) {
   int linear;
 
   // First pixel
-  diff = nextdiff(self, 0);
+  diff = nextdiff(self, self->curr_huff_idx,
+                  0);  // FIXME(syoyo): Is using self->curr_huff_idx correct?
   Px = 1 << (self->bits - 1);
   left = Px + diff;
   if (self->linearize)
@@ -667,7 +676,7 @@ static int parsePred6(ljp* self) {
   --write;
   int rowcount = self->x - 1;
   while (rowcount--) {
-    diff = nextdiff(self, 0);
+    diff = nextdiff(self, self->curr_huff_idx, 0);
     Px = left;
     left = Px + diff;
     if (self->linearize)
@@ -691,7 +700,7 @@ static int parsePred6(ljp* self) {
   // printf("%x %x\n",thisrow,lastrow);
   while (c < pixels) {
     col = 0;
-    diff = nextdiff(self, 0);
+    diff = nextdiff(self, self->curr_huff_idx, 0);
     Px = lastrow[col];  // Use value above for first pixel in row
     left = Px + diff;
     if (self->linearize) {
@@ -709,7 +718,7 @@ static int parsePred6(ljp* self) {
       write = self->writelen;
     }
     while (rowcount--) {
-      diff = nextdiff(self, 0);
+      diff = nextdiff(self, self->curr_huff_idx, 0);
       Px = lastrow[col] + ((left - lastrow[col - 1]) >> 1);
       left = Px + diff;
       // printf("%d %d %d %d %d
@@ -761,7 +770,10 @@ static int parseScan(ljp* self) {
   // int col = 0;
   // int row = 0;
   int left = 0;
+  // printf("w = %d, h = %d, components = %d, skiplen = %d\n", self->x, self->y,
+  //       self->components, self->skiplen);
   for (int row = 0; row < self->y; row++) {
+    // printf("row = %d / %d\n", row, self->y);
     for (int col = 0; col < self->x; col++) {
       int colx = col * self->components;
       for (int c = 0; c < self->components; c++) {
@@ -804,10 +816,9 @@ static int parseScan(ljp* self) {
               break;
           }
         }
-        diff = nextdiff(self, Px);  // @fixme { Lookup different huffman table
-                                    // for each components }
+        diff = nextdiff(self, c, Px);
         left = Px + diff;
-        // printf("c[%d] Px = %d, diff = %d\n", c, Px, diff);
+        // printf("c[%d] Px = %d, diff = %d, left = %d\n", c, Px, diff, left);
         assert(left >= 0);
         assert(left < (1 << self->bits));
         // printf("pix = %d\n", left);
@@ -822,15 +833,18 @@ static int parseScan(ljp* self) {
 
         // printf("linear = %d\n", linear);
         thisrow[colx + c] = left;
-        out[colx + c] = linear;
-      }  // c
-    }    // col
+        out[colx + c] = linear;  // HACK
+      }                          // c
+    }                            // col
 
     u16* temprow = lastrow;
     lastrow = thisrow;
     thisrow = temprow;
 
     out += self->x * self->components + self->skiplen;
+    // out += self->skiplen;
+    // printf("out = %p, %p, diff = %lld\n", out, self->image, out -
+    // self->image);
 
   }  // row
 
@@ -903,8 +917,10 @@ static void free_memory(ljp* self) {
   free(self->huffcode);
   self->huffcode = NULL;
 #else
-  free(self->hufflut);
-  self->hufflut = NULL;
+  for (int i = 0; i < self->curr_huff_idx; i++) {
+    free(self->hufflut[i]);
+    self->hufflut[i] = NULL;
+  }
 #endif
   free(self->rowcache);
   self->rowcache = NULL;
@@ -918,6 +934,7 @@ int lj92_open(lj92* lj, const uint8_t* data, int datalen, int* width,
   self->data = (u8*)data;
   self->dataend = self->data + datalen;
   self->datalen = datalen;
+  self->curr_huff_idx = 0;
 
   int ret = findSoI(self);
 
@@ -1615,6 +1632,8 @@ static void GetTIFFTag(unsigned short* tag, unsigned short* type,
 }
 
 static void InitializeDNGImage(tinydng::DNGImage* image) {
+  image->version = 0;
+
   image->color_matrix1[0][0] = 1.0;
   image->color_matrix1[0][1] = 0.0;
   image->color_matrix1[0][2] = 0.0;
@@ -1733,6 +1752,29 @@ static void InitializeDNGImage(tinydng::DNGImage* image) {
   image->bits_per_sample_original = 1;
 }
 
+#if 0
+static bool DecompressNikonLosslessCompressed(unsigned short* dst_data, int dst_width,
+                                   const unsigned char* src,
+                                   const size_t src_length, FILE* fp,
+                                   const DNGImage& image_info,
+                                   bool swap_endian) {
+  // Reference: http://lclevy.free.fr/nef/
+  // @todo { Remove FILE dependency. }
+  //
+
+  // Read offset to data location.
+  int offset = static_cast<int>(Read4(fp, swap_endian));
+  // printf("offt = %d\n", offset);
+
+  fseek(fp, offset, SEEK_SET);
+
+  int version0 = fgetc(fp);
+  int version1 = fgetc(fp);
+
+  return true;
+}
+#endif
+
 static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
                                    const unsigned char* src,
                                    const size_t src_length, FILE* fp,
@@ -1740,31 +1782,133 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
                                    bool swap_endian) {
   // @todo { Remove FILE dependency. }
   //
-  (void)dst_data;
   unsigned int tiff_h = 0, tiff_w = 0;
   int offset = 0;
 
-  return true;
+  if ((image_info.tile_width > 0) && (image_info.tile_length > 0)) {
+    // Assume Lossless JPEG data is stored in tiled format.
+    assert(image_info.tile_width > 0);
+    assert(image_info.tile_length > 0);
 
-  // Assume Lossless JPEG data is stored in tiled format.
-  assert(image_info.tile_width > 0);
-  assert(image_info.tile_length > 0);
+    // <-       image width(skip len)           ->
+    // +-----------------------------------------+
+    // |                                         |
+    // |              <- tile w  ->              |
+    // |              +-----------+              |
+    // |              |           | \            |
+    // |              |           | |            |
+    // |              |           | | tile h     |
+    // |              |           | |            |
+    // |              |           | /            |
+    // |              +-----------+              |
+    // |                                         |
+    // |                                         |
+    // +-----------------------------------------+
 
-  // printf("tile = %d, %d\n", image_info.tile_width, image_info.tile_length);
+    // printf("tile = %d, %d\n", image_info.tile_width, image_info.tile_length);
 
-  // @note { It looks width and height information stored in LJPEG header does
-  // not maches with tile width height. Assume actual extent of LJPEG data is
-  // tile width and height. }
-  //
+    // Currently we only support tile data for tile.length == tiff.height.
+    // assert(image_info.tile_length == image_info.height);
 
-  // Currently we only support tile data for tile.length == tiff.height.
-  // assert(image_info.tile_length == image_info.height);
+    size_t column_step = 0;
+    while (tiff_h < static_cast<unsigned int>(image_info.height)) {
+      // Read offset to JPEG data location.
+      offset = static_cast<int>(Read4(fp, swap_endian));
+      // printf("offt = %d\n", offset);
 
-  size_t column_step = 0;
-  while (tiff_h < static_cast<unsigned int>(image_info.height)) {
+      int lj_width = 0;
+      int lj_height = 0;
+      int lj_bits = 0;
+      lj92 ljp;
+
+      size_t input_len = src_length - static_cast<size_t>(offset);
+
+      // @fixme { Parse LJPEG header first and set exact compressed LJPEG data
+      // length to `data_len` arg. }
+      int ret = lj92_open(&ljp, reinterpret_cast<const uint8_t*>(&src[offset]),
+                          /* data_len */ static_cast<int>(input_len), &lj_width,
+                          &lj_height, &lj_bits);
+      // printf("ret = %d\n", ret);
+      assert(ret == LJ92_ERROR_NONE);
+
+      printf("lj %d, %d, %d\n", lj_width, lj_height, lj_bits);
+      printf("ljp x %d, y %d, c %d\n", ljp->x, ljp->y, ljp->components);
+      printf("tile width = %d\n", image_info.tile_width);
+      // printf("col = %d, tiff_w = %d / %d\n", column_step, tiff_w,
+      // image_info.width);
+
+        
+      //assert((lj_width * ljp->components) <= image_info.tile_width);
+      //assert(lj_height == image_info.tile_length);
+
+      // int write_length = image_info.tile_width;
+      // int skip_length = dst_width - image_info.tile_width;
+      // printf("write_len = %d, skip_len = %d\n", write_length, skip_length);
+
+      // size_t dst_offset =
+      //    column_step * static_cast<size_t>(image_info.tile_width) +
+      //    static_cast<unsigned int>(dst_width) * tiff_h;
+
+      // Decode into temporary buffer.
+
+      std::vector<uint16_t> tmpbuf;
+      tmpbuf.resize(
+          static_cast<size_t>(lj_width * lj_height * ljp->components));
+
+      ret = lj92_decode(ljp, tmpbuf.data(), image_info.tile_width, 0, NULL, 0);
+      // ret = lj92_decode(ljp, dst_data + dst_offset, write_length,
+      // skip_length,
+      //                  NULL, 0);
+
+      // Copy to dest buffer.
+      // NOTE: For some DNG file, tiled image may exceed the extent of target
+      // image resolution.
+      for (unsigned int y = 0;
+           y < static_cast<unsigned int>(image_info.tile_length); y++) {
+        unsigned int y_offset = y + tiff_h;
+        if (y_offset >= static_cast<unsigned int>(image_info.height)) {
+          continue;
+        }
+
+        size_t dst_offset =
+            tiff_w + static_cast<unsigned int>(dst_width) * y_offset;
+
+        size_t x_len = static_cast<size_t>(image_info.tile_width);
+        if ((tiff_w + static_cast<unsigned int>(image_info.tile_width)) >=
+            static_cast<unsigned int>(dst_width)) {
+          x_len = static_cast<size_t>(dst_width) - tiff_w;
+        }
+        for (size_t x = 0; x < x_len; x++) {
+          dst_data[dst_offset + x] =
+              tmpbuf[y * static_cast<size_t>(image_info.tile_width) + x];
+        }
+      }
+
+      assert(ret == LJ92_ERROR_NONE);
+
+      lj92_close(ljp);
+
+      tiff_w += static_cast<unsigned int>(image_info.tile_width);
+      column_step++;
+      // printf("col = %d, tiff_w = %d / %d\n", column_step, tiff_w,
+      // image_info.width);
+      if (tiff_w >= static_cast<unsigned int>(image_info.width)) {
+        // tiff_h += static_cast<unsigned int>(image_info.tile_length);
+        tiff_h += static_cast<unsigned int>(image_info.tile_length);
+        // printf("tiff_h = %d\n", tiff_h);
+        tiff_w = 0;
+        column_step = 0;
+      }
+    }
+  } else {
+    // Assume LJPEG data is not stored in tiled format.
+
     // Read offset to JPEG data location.
-    offset = static_cast<int>(Read4(fp, swap_endian));
+    // offset = static_cast<int>(Read4(fp, swap_endian));
     // printf("offt = %d\n", offset);
+
+    assert(image_info.offset > 0);
+    offset = static_cast<int>(image_info.offset);
 
     int lj_width = 0;
     int lj_height = 0;
@@ -1783,31 +1927,14 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
 
     // printf("lj %d, %d, %d\n", lj_width, lj_height, lj_bits);
 
-    int write_length = image_info.tile_width;
-    int skip_length = dst_width - image_info.tile_width;
-    // printf("write_len = %d, skip_len = %d\n", write_length, skip_length);
+    int write_length = image_info.width;
+    int skip_length = 0;
 
-    size_t dst_offset =
-        column_step * static_cast<size_t>(image_info.tile_width) +
-        static_cast<unsigned int>(dst_width) * tiff_h;
-    ret = lj92_decode(ljp, dst_data + dst_offset, write_length, skip_length,
-                      NULL, 0);
+    ret = lj92_decode(ljp, dst_data, write_length, skip_length, NULL, 0);
 
     assert(ret == LJ92_ERROR_NONE);
 
     lj92_close(ljp);
-
-    tiff_w += static_cast<unsigned int>(image_info.tile_width);
-    column_step++;
-    // printf("col = %d, tiff_w = %d / %d\n", column_step, tiff_w,
-    // image_info.width);
-    if (tiff_w >= static_cast<unsigned int>(image_info.width)) {
-      // tiff_h += static_cast<unsigned int>(image_info.tile_length);
-      tiff_h += static_cast<unsigned int>(image_info.tile_length);
-      // printf("tiff_h = %d\n", tiff_h);
-      tiff_w = 0;
-      column_step = 0;
-    }
   }
 
   return true;
@@ -2225,7 +2352,8 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
     tinydng::DNGImage* image = &((*images)[i]);
     // printf("compression = %d\n", image->compression);
 
-    const size_t data_offset = (image->offset > 0) ? image->offset : image->tile_offset;
+    const size_t data_offset =
+        (image->offset > 0) ? image->offset : image->tile_offset;
     assert(data_offset > 0);
 
     // std::cout << "offt =\n" << image->offset << std::endl;
@@ -2261,11 +2389,13 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
 
       // Assume RGB jpeg
       int w = 0, h = 0, components = 0;
-      unsigned char *decoded_image = stbi_load_from_memory(&buf.at(0), static_cast<int>(jpeg_len), &w, &h, &components, /* desired_channels */3);
+      unsigned char* decoded_image =
+          stbi_load_from_memory(&buf.at(0), static_cast<int>(jpeg_len), &w, &h,
+                                &components, /* desired_channels */ 3);
       assert(decoded_image);
       free(decoded_image);
 
-      std::cout << "w = " << w << ", " << image->width << std::endl;
+      // std::cout << "w = " << w << ", " << image->width << std::endl;
 
       assert(w > 0);
       assert(h > 0);
@@ -2278,6 +2408,9 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
 
       // lj92 decodes data into 16bits, so modify bps.
       image->bits_per_sample = 16;
+
+      // std::cout << "w = " << image->width << ", h = " << image->height <<
+      // std::endl;
 
       assert(((image->width * image->height * image->bits_per_sample) % 8) ==
              0);
@@ -2324,7 +2457,8 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
       }
     } else if (image->compression == 34713) {  // NEF lossless?
       if (err) {
-        ss << "Seems a NEF RAW. This compression is not supported." << std::endl;
+        ss << "Seems a NEF RAW. This compression is not supported."
+           << std::endl;
         (*err) = ss.str();
       }
     } else {
