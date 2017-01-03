@@ -216,12 +216,15 @@ main(int argc, char **argv)
   }
   assert(images.size() > 0);
 
+  for (size_t i = 0; i < images.size(); i++) {
+      std::cout << "Image [ " << i << " ] size = " << images[i].width << " x " << images[i].height << std::endl;
+  }
+
   if (image_idx == static_cast<size_t>(-1)) {
     // Find largest image based on width.
     size_t largest = 0;
     int largest_width = images[0].width;
     for (size_t i = 1; i < images.size(); i++) {
-      std::cout << largest_width << ", " << images[i].width << std::endl;
       if (largest_width < images[i].width) {
         largest = i;
         largest_width = images[i].width;
@@ -230,6 +233,8 @@ main(int argc, char **argv)
 
     image_idx = static_cast<size_t>(largest);
   }
+
+  std::cout << "Use image [ " << image_idx << " ] " << std::endl;
 
   // Convert to float.
   std::vector<float> hdr;
