@@ -598,6 +598,7 @@ inline static int nextdiff(ljp* self, int component_idx, int Px) {
       ix++;
   }
   int index = b >> (cnt - huffbits);
+  // printf("component_idx = %d, index = %d\n", component_idx, index);
   u16 ssssused = self->hufflut[component_idx][index];
   int usedbits = ssssused & 0xFF;
   int t = ssssused >> 8;
@@ -661,9 +662,11 @@ static int parsePred6(ljp* self) {
   int left = 0;
   int linear;
 
+  assert(self->curr_huff_idx <= self->components);
   // First pixel
-  diff = nextdiff(self, self->curr_huff_idx,
-                  0);  // FIXME(syoyo): Is using self->curr_huff_idx correct?
+  diff =
+      nextdiff(self, self->curr_huff_idx - 1,
+               0);  // FIXME(syoyo): Is using (self->curr_huff_idx-1) correct?
   Px = 1 << (self->bits - 1);
   left = Px + diff;
   if (self->linearize)
@@ -676,7 +679,7 @@ static int parsePred6(ljp* self) {
   --write;
   int rowcount = self->x - 1;
   while (rowcount--) {
-    diff = nextdiff(self, self->curr_huff_idx, 0);
+    diff = nextdiff(self, self->curr_huff_idx - 1, 0);
     Px = left;
     left = Px + diff;
     if (self->linearize)
@@ -700,7 +703,7 @@ static int parsePred6(ljp* self) {
   // printf("%x %x\n",thisrow,lastrow);
   while (c < pixels) {
     col = 0;
-    diff = nextdiff(self, self->curr_huff_idx, 0);
+    diff = nextdiff(self, self->curr_huff_idx - 1, 0);
     Px = lastrow[col];  // Use value above for first pixel in row
     left = Px + diff;
     if (self->linearize) {
@@ -718,7 +721,7 @@ static int parsePred6(ljp* self) {
       write = self->writelen;
     }
     while (rowcount--) {
-      diff = nextdiff(self, self->curr_huff_idx, 0);
+      diff = nextdiff(self, self->curr_huff_idx - 1, 0);
       Px = lastrow[col] + ((left - lastrow[col - 1]) >> 1);
       left = Px + diff;
       // printf("%d %d %d %d %d
@@ -1831,15 +1834,15 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
       // printf("ret = %d\n", ret);
       assert(ret == LJ92_ERROR_NONE);
 
-      printf("lj %d, %d, %d\n", lj_width, lj_height, lj_bits);
-      printf("ljp x %d, y %d, c %d\n", ljp->x, ljp->y, ljp->components);
-      printf("tile width = %d\n", image_info.tile_width);
+      // printf("lj %d, %d, %d\n", lj_width, lj_height, lj_bits);
+      // printf("ljp x %d, y %d, c %d\n", ljp->x, ljp->y, ljp->components);
+      // printf("tile width = %d\n", image_info.tile_width);
+      // printf("tile height = %d\n", image_info.tile_length);
       // printf("col = %d, tiff_w = %d / %d\n", column_step, tiff_w,
       // image_info.width);
 
-        
-      //assert((lj_width * ljp->components) <= image_info.tile_width);
-      //assert(lj_height == image_info.tile_length);
+      assert((lj_width * ljp->components * lj_height) ==
+             image_info.tile_width * image_info.tile_length);
 
       // int write_length = image_info.tile_width;
       // int skip_length = dst_width - image_info.tile_width;
@@ -1856,6 +1859,7 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
           static_cast<size_t>(lj_width * lj_height * ljp->components));
 
       ret = lj92_decode(ljp, tmpbuf.data(), image_info.tile_width, 0, NULL, 0);
+      (void)ret;
       // ret = lj92_decode(ljp, dst_data + dst_offset, write_length,
       // skip_length,
       //                  NULL, 0);
