@@ -288,7 +288,7 @@ typedef struct _ljp {
   // Huffman table for each components
   u16* hufflut[LJ92_MAX_COMPONENTS];
   int huffbits[LJ92_MAX_COMPONENTS];
-  int curr_huff_idx;
+  int num_huff_idx;
 #endif
   // Parse state
   int cnt;
@@ -450,11 +450,11 @@ static int parseHuff(ljp* self) {
     if (bits[maxbits]) break;
     maxbits--;
   }
-  self->huffbits[self->curr_huff_idx] = maxbits;
+  self->huffbits[self->num_huff_idx] = maxbits;
   /* Now fill the lut */
   u16* hufflut = (u16*)malloc((1 << maxbits) * sizeof(u16));
   if (hufflut == NULL) return LJ92_ERROR_NO_MEMORY;
-  self->hufflut[self->curr_huff_idx] = hufflut;
+  self->hufflut[self->num_huff_idx] = hufflut;
   int i = 0;
   int hv = 0;
   int rv = 0;
@@ -492,7 +492,7 @@ static int parseHuff(ljp* self) {
   }
   ret = LJ92_ERROR_NONE;
 #endif
-  self->curr_huff_idx++;
+  self->num_huff_idx++;
 
   return ret;
 }
@@ -577,7 +577,7 @@ inline static int nextdiff(ljp* self, int component_idx, int Px) {
   diff = extend(self, diff, t);
 // printf("%d %d %d %x\n",Px+diff,Px,diff,t);//,index,usedbits);
 #else
-  assert(component_idx <= self->curr_huff_idx);
+  assert(component_idx <= self->num_huff_idx);
   u32 b = self->b;
   int cnt = self->cnt;
   int huffbits = self->huffbits[component_idx];
@@ -598,7 +598,8 @@ inline static int nextdiff(ljp* self, int component_idx, int Px) {
       ix++;
   }
   int index = b >> (cnt - huffbits);
-  // printf("component_idx = %d, index = %d\n", component_idx, index);
+  //printf("component_idx = %d / %d, index = %d\n", component_idx, self->components, index);
+
   u16 ssssused = self->hufflut[component_idx][index];
   int usedbits = ssssused & 0xFF;
   int t = ssssused >> 8;
@@ -662,11 +663,11 @@ static int parsePred6(ljp* self) {
   int left = 0;
   int linear;
 
-  assert(self->curr_huff_idx <= self->components);
+  assert(self->num_huff_idx <= self->components);
   // First pixel
   diff =
-      nextdiff(self, self->curr_huff_idx - 1,
-               0);  // FIXME(syoyo): Is using (self->curr_huff_idx-1) correct?
+      nextdiff(self, self->num_huff_idx - 1,
+               0);  // FIXME(syoyo): Is using (self->num_huff_idx-1) correct?
   Px = 1 << (self->bits - 1);
   left = Px + diff;
   if (self->linearize)
@@ -679,7 +680,7 @@ static int parsePred6(ljp* self) {
   --write;
   int rowcount = self->x - 1;
   while (rowcount--) {
-    diff = nextdiff(self, self->curr_huff_idx - 1, 0);
+    diff = nextdiff(self, self->num_huff_idx - 1, 0);
     Px = left;
     left = Px + diff;
     if (self->linearize)
@@ -703,7 +704,7 @@ static int parsePred6(ljp* self) {
   // printf("%x %x\n",thisrow,lastrow);
   while (c < pixels) {
     col = 0;
-    diff = nextdiff(self, self->curr_huff_idx - 1, 0);
+    diff = nextdiff(self, self->num_huff_idx - 1, 0);
     Px = lastrow[col];  // Use value above for first pixel in row
     left = Px + diff;
     if (self->linearize) {
@@ -721,7 +722,7 @@ static int parsePred6(ljp* self) {
       write = self->writelen;
     }
     while (rowcount--) {
-      diff = nextdiff(self, self->curr_huff_idx - 1, 0);
+      diff = nextdiff(self, self->num_huff_idx - 1, 0);
       Px = lastrow[col] + ((left - lastrow[col - 1]) >> 1);
       left = Px + diff;
       // printf("%d %d %d %d %d
@@ -819,7 +820,16 @@ static int parseScan(ljp* self) {
               break;
           }
         }
-        diff = nextdiff(self, c, Px);
+
+        int huff_idx = c;
+        if (c >= self->num_huff_idx) {
+          // It looks huffman tables are shared for all components.
+          // Currently we assume # of huffman tables is 1.
+          assert(self->num_huff_idx == 1);
+          huff_idx = 0; // Look up the first huffman table.
+        }
+
+        diff = nextdiff(self, huff_idx, Px);
         left = Px + diff;
         // printf("c[%d] Px = %d, diff = %d, left = %d\n", c, Px, diff, left);
         assert(left >= 0);
@@ -876,7 +886,7 @@ static int parseImage(ljp* self) {
   int ret = LJ92_ERROR_NONE;
   while (1) {
     int nextMarker = find(self);
-    // printf("marker = 0x%08x\n", nextMarker);
+    //printf("marker = 0x%08x\n", nextMarker);
     if (nextMarker == 0xc4)
       ret = parseHuff(self);
     else if (nextMarker == 0xc3)
@@ -920,7 +930,7 @@ static void free_memory(ljp* self) {
   free(self->huffcode);
   self->huffcode = NULL;
 #else
-  for (int i = 0; i < self->curr_huff_idx; i++) {
+  for (int i = 0; i < self->num_huff_idx; i++) {
     free(self->hufflut[i]);
     self->hufflut[i] = NULL;
   }
@@ -937,7 +947,7 @@ int lj92_open(lj92* lj, const uint8_t* data, int datalen, int* width,
   self->data = (u8*)data;
   self->dataend = self->data + datalen;
   self->datalen = datalen;
-  self->curr_huff_idx = 0;
+  self->num_huff_idx = 0;
 
   int ret = findSoI(self);
 
