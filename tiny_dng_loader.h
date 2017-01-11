@@ -140,6 +140,7 @@ bool LoadDNG(std::vector<DNGImage>* images,  // [out] DNG images.
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
+#include <cmath>
 
 namespace tinydng {
 
