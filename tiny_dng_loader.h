@@ -136,11 +136,11 @@ bool LoadDNG(std::vector<DNGImage>* images,  // [out] DNG images.
 
 #include <stdint.h>  // for lj92
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
-#include <cmath>
 
 namespace tinydng {
 
@@ -599,7 +599,8 @@ inline static int nextdiff(ljp* self, int component_idx, int Px) {
       ix++;
   }
   int index = b >> (cnt - huffbits);
-  //printf("component_idx = %d / %d, index = %d\n", component_idx, self->components, index);
+  // printf("component_idx = %d / %d, index = %d\n", component_idx,
+  // self->components, index);
 
   u16 ssssused = self->hufflut[component_idx][index];
   int usedbits = ssssused & 0xFF;
@@ -666,9 +667,8 @@ static int parsePred6(ljp* self) {
 
   assert(self->num_huff_idx <= self->components);
   // First pixel
-  diff =
-      nextdiff(self, self->num_huff_idx - 1,
-               0);  // FIXME(syoyo): Is using (self->num_huff_idx-1) correct?
+  diff = nextdiff(self, self->num_huff_idx - 1,
+                  0);  // FIXME(syoyo): Is using (self->num_huff_idx-1) correct?
   Px = 1 << (self->bits - 1);
   left = Px + diff;
   if (self->linearize)
@@ -827,7 +827,7 @@ static int parseScan(ljp* self) {
           // It looks huffman tables are shared for all components.
           // Currently we assume # of huffman tables is 1.
           assert(self->num_huff_idx == 1);
-          huff_idx = 0; // Look up the first huffman table.
+          huff_idx = 0;  // Look up the first huffman table.
         }
 
         diff = nextdiff(self, huff_idx, Px);
@@ -887,7 +887,7 @@ static int parseImage(ljp* self) {
   int ret = LJ92_ERROR_NONE;
   while (1) {
     int nextMarker = find(self);
-    //printf("marker = 0x%08x\n", nextMarker);
+    // printf("marker = 0x%08x\n", nextMarker);
     if (nextMarker == 0xc4)
       ret = parseHuff(self);
     else if (nextMarker == 0xc3)
@@ -2335,6 +2335,17 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
 
   size_t file_size = static_cast<size_t>(ftell(fp));
 
+  // Buffer to hold whole DNG file data.
+  std::vector<unsigned char> whole_data;
+  {
+    whole_data.resize(file_size);
+    fseek(fp, 0, SEEK_SET);
+    size_t read_len = fread(whole_data.data(), 1, file_size, fp);
+    assert(read_len == file_size);
+
+    fseek(fp, 0, SEEK_SET);
+  }
+
   bool is_dng_big_endian = false;
 
   if (magic == 0x4949) {
@@ -2389,28 +2400,32 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
 
       ret = fread(&(image->data.at(0)), 1, len, fp);
       assert(ret == len);
-    } else if (image->compression == 6) {  // jpeg compression
+    } else if (image->compression == 6) {  // old jpeg compression
       image->bits_per_sample = 8;
-      const size_t jpeg_len = static_cast<size_t>(image->jpeg_byte_count);
+
+      size_t jpeg_len = static_cast<size_t>(image->jpeg_byte_count);
+      if (image->jpeg_byte_count == -1) {
+        // No jpeg datalen. Set to the size of file - offset.
+        assert(file_size > data_offset);
+        jpeg_len = file_size - data_offset;
+      }
       assert(jpeg_len > 0);
-
-      std::vector<unsigned char> buf;
-      buf.resize(jpeg_len);
-      fseek(fp, static_cast<long>(data_offset), SEEK_SET);
-
-      ret = fread(&(buf.at(0)), 1, jpeg_len, fp);
-      assert(ret == jpeg_len);
-      (void)ret;
 
       // Assume RGB jpeg
       int w = 0, h = 0, components = 0;
-      unsigned char* decoded_image =
-          stbi_load_from_memory(&buf.at(0), static_cast<int>(jpeg_len), &w, &h,
-                                &components, /* desired_channels */ 3);
+      unsigned char* decoded_image = stbi_load_from_memory(
+          &whole_data.at(data_offset), static_cast<int>(jpeg_len), &w, &h,
+          &components, /* desired_channels */ 3);
       assert(decoded_image);
+
+      // Currently we just discard JPEG image(since JPEG image would be just a
+      // thumbnail or LDR image of RAW).
+      // TODO(syoyo): Do not discard JPEG image.
       free(decoded_image);
 
-      // std::cout << "w = " << w << ", " << image->width << std::endl;
+      // std::cout << "w = " << w << std::endl;
+      // std::cout << "h = " << w << std::endl;
+      // std::cout << "c = " << components << std::endl;
 
       assert(w > 0);
       assert(h > 0);
