@@ -2,7 +2,7 @@
 
 [![Build Status](https://travis-ci.org/syoyo/tinydngloader.svg?branch=master)](https://travis-ci.org/syoyo/tinydngloader)
 
-Header-only simple&limited DNG(Digital NeGative, subset of TIFF format) loader in C++.
+Header-only simple&limited DNG(Digital NeGative, TIFF format + extension) loader in C++.
 
 Currently TinyDNGLoader only supports lossless RAW DNG and limited lossless JPEG DNG.
 
@@ -13,9 +13,32 @@ Currently TinyDNGLoader only supports lossless RAW DNG and limited lossless JPEG
 
 * [x] RAW DNG data
 * [x] Lossless JPEG
-  * Experimental support. Lossless JPEG decoding is supported through liblj92 lib. https://bitbucket.org/baldand/mlrawviewer.git
+  * Lossless JPEG decoding is supported based on liblj92 lib: https://bitbucket.org/baldand/mlrawviewer.git
 * [x] JPEG
   * Support JPEG image(e.g. thumbnail) through `stb_image.h`.
+* Experimental
+  * Decode Canon RAW(CR2)
+    * [x] RAW
+    * [ ] mRAW
+    * [ ] sRAW
+  * Decode Nikon RAW(NEF)
+    * TODO
+
+## Supported DNG files
+
+Here is the list of supported DNG files.
+
+* [x] Sigma sd Quattro H 
+  * Uncompressed RGB 12bit image.
+* [x] iPhone DNG
+* [x] Black magic DNG
+  * CinemaDNG(lossy compression) is not supported.
+* [x] Canon CR2(experimental)
+  * Since CR2 format is also based on TIFF format : http://lclevy.free.fr/cr2/
+  * RAW only(mRAW and sRAW are not supported)
+* [x] Magic lantern DNG
+  * [x] Uncompressed
+  * [x] lossless JPEG(http://www.magiclantern.fm/forum/index.php?topic=18443.0)
 
 ## Usage
 
@@ -35,34 +58,26 @@ int main(int argc, char **argv) {
     input_filename = std::string(argv[1]);
   }
 
-  int width, height, bits, components;
   std::string err;
-  tinydng::DNGInfo dng_info;
-  std::vector<unsigned char> data;
-  size_t data_len;
+  std::vector<tinydng::DNGImage> images;
 
-  bool ret = tinydng::LoadDNG(&dng_info, &data, &data_len, &width, &height,
-                              &bits, &components, &err, input_filename.c_str());
+  // Loads all images(IFD) in the DNG file to `images` array.
+  bool ret = tinydng::LoadDNG(&images, &err, input_filename.c_str());
+
+  if (!err.empty()) {
+    std::cerr << "Err: " << err << std::endl;
+  }
 
   if (ret) {
-    std::cout << "width = " << width << std::endl;
-    std::cout << "height = " << height << std::endl;
-    std::cout << "bits per piexl = " << bits << std::endl;
-    std::cout << "# of components = " << components << std::endl;
-    std::cout << "white_level = " << dng_info.white_level << std::endl;
-    std::cout << "black_level = " << dng_info.black_level << std::endl;
+    for (size_t i = 0; i < images.size(); i++) {
+      const tinydng::DNGImage &image = images[i];
+;
+      std::cout << "width = " << image.width << std::endl;
+      std::cout << "height = " << image.height << std::endl;
+      std::cout << "bits per piexl = " << image.bits_per_sample << std::endl;
+      std::cout << "bits per piexl(original) = " << image.bits_per_sample_original << std::endl;
+      std::cout << "samples per piexl = " << image.samples_per_pixel << std::endl;
 
-    std::cout << "color_matrix = " << std::endl;
-    for (size_t i = 0; i < 3; i++) {
-      std::cout << dng_info.color_matrix[i][0] << " , "
-                << dng_info.color_matrix[i][1] << " , "
-                << dng_info.color_matrix[i][2] << std::endl;
-    }
-
-  } else {
-    std::cout << "Fail to load DNG " << input_filename << std::endl;
-    if (!err.empty()) {
-      std::cout << "ERR: " << err;
     }
   }
 
@@ -74,25 +89,29 @@ int main(int argc, char **argv) {
 ## Examples
 
 * [examples/viewer](examples/viewer) Simple viewer example with simple debayering.
+* [examples/dng2exr](examples/dng2exr) Simple DNG to OpenEXR converter.
 
 
 ## Resource
 
-Here is the list of great articles on how to develop RAW image.
+Here is the list of great articles on how to decode RAW file and how to develop RAW image.
 
 * Developing a RAW photo file 'by hand' - Part 1 http://www.odelama.com/photo/Developing-a-RAW-Photo-by-hand/
 * Developing a RAW photo file 'by hand' - Part 2 http://www.odelama.com/photo/Developing-a-RAW-Photo-by-hand/Developing-a-RAW-Photo-by-hand_Part-2/
+* Understanding What is stored in a Canon RAW .CR2 file, How and Why http://lclevy.free.fr/cr2/
 
 ## TODO
 
 * [ ] Parse more DNG headers
-* [ ] Support DNG containing multiple images.
 * [ ] lossy DNG
   * Contribution is welcome.
 * [ ] ZIP-compressed DNG
   * Contribution is welcome.
 * [ ] DNG writer?
 * [ ] Support Big TIFF?(4GB+)
+* [ ] Decode Nikon RAW(NEF)
+* [ ] Improve Canon RAW decoding
+* [ ] Optimimze lossless JPEG decoding
 
 ## License
 
