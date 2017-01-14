@@ -66,7 +66,7 @@ typedef enum {
   COMPRESSION_OLD_JPEG = 6,   // JPEG or lossless JPEG
   COMPRESSION_NEW_JPEG = 7,   // Usually lossles JPEG, may be JPEG
   COMPRESSION_LOSSY = 34892,  // Lossy JPEGG
-  COMPRESSION_NEF = 34713    // NIKON RAW
+  COMPRESSION_NEF = 34713     // NIKON RAW
 } Compression;
 
 struct DNGImage {
@@ -154,6 +154,11 @@ bool LoadDNG(std::vector<DNGImage>* images,  // [out] DNG images.
 #include <cstring>
 #include <sstream>
 
+#ifdef TINY_DNG_LOADER_PROFILING
+// Requires C++11 feature
+#include <chrono>
+#endif
+
 namespace tinydng {
 
 // Very simple count leading zero implementation.
@@ -179,6 +184,7 @@ static int clz32(unsigned int x) {
 #pragma clang diagnostic ignored "-Wreserved-id-macro"
 #pragma clang diagnostic ignored "-Wdisabled-macro-expansion"
 #pragma clang diagnostic ignored "-Wdouble-promotion"
+#pragma clang diagnostic ignored "-Wimplicit-fallthrough"
 #endif
 
 // STB image to decode jpeg image.
@@ -218,7 +224,7 @@ enum LJ92_ERRORS {
   LJ92_ERROR_CORRUPT = -1,
   LJ92_ERROR_NO_MEMORY = -2,
   LJ92_ERROR_BAD_HANDLE = -3,
-  LJ92_ERROR_TOO_WIDE = -4,
+  LJ92_ERROR_TOO_WIDE = -4
 };
 
 typedef struct _ljp* lj92;
@@ -466,6 +472,7 @@ static int parseHuff(ljp* self) {
   self->huffbits[self->num_huff_idx] = maxbits;
   /* Now fill the lut */
   u16* hufflut = (u16*)malloc((1 << maxbits) * sizeof(u16));
+  //printf("maxbits = %d\n", maxbits);
   if (hufflut == NULL) return LJ92_ERROR_NO_MEMORY;
   self->hufflut[self->num_huff_idx] = hufflut;
   int i = 0;
@@ -787,7 +794,7 @@ static int parseScan(ljp* self) {
   // int col = 0;
   // int row = 0;
   int left = 0;
-  // printf("w = %d, h = %d, components = %d, skiplen = %d\n", self->x, self->y,
+  //printf("w = %d, h = %d, components = %d, skiplen = %d\n", self->x, self->y,
   //       self->components, self->skiplen);
   for (int row = 0; row < self->y; row++) {
     // printf("row = %d / %d\n", row, self->y);
@@ -899,7 +906,7 @@ static int parseImage(ljp* self) {
   int ret = LJ92_ERROR_NONE;
   while (1) {
     int nextMarker = find(self);
-    //printf("marker = 0x%08x\n", nextMarker);
+    // printf("marker = 0x%08x\n", nextMarker);
     if (nextMarker == 0xc4)
       ret = parseHuff(self);
     else if (nextMarker == 0xc3)
@@ -1522,13 +1529,13 @@ typedef enum {
   TAG_ACTIVE_AREA = 50829,
   TAG_FORWARD_MATRIX1 = 50964,
   TAG_FORWARD_MATRIX2 = 50965,
-  
+
   // CR2 extension
   // http://lclevy.free.fr/cr2/
-  TAG_CR2_META0  = 50648,
-  TAG_CR2_META1  = 50656,
+  TAG_CR2_META0 = 50648,
+  TAG_CR2_META1 = 50656,
   TAG_CR2_SLICES = 50752,
-  TAG_CR2_META2  = 50885,
+  TAG_CR2_META2 = 50885,
 
   TAG_INVALID = 65535
 } TiffTag;
@@ -1816,22 +1823,25 @@ static bool DecompressNikonLosslessCompressed(unsigned short* dst_data, int dst_
 #endif
 
 // Check if JPEG data is lossless JPEG or not(baseline JPEG)
-static bool IsLosslessJPEG(const uint8_t *header_addr, int data_len, int *width, int *height, int *bits, int *components) {
+static bool IsLosslessJPEG(const uint8_t* header_addr, int data_len, int* width,
+                           int* height, int* bits, int* components) {
   int lj_width = 0;
   int lj_height = 0;
   int lj_bits = 0;
   lj92 ljp;
-  int ret = lj92_open(&ljp, header_addr, data_len, &lj_width,
-                      &lj_height, &lj_bits);
+  int ret =
+      lj92_open(&ljp, header_addr, data_len, &lj_width, &lj_height, &lj_bits);
   if (ret == LJ92_ERROR_NONE) {
-    //printf("w = %d, h = %d, bits = %d, components = %d\n", lj_width, lj_height, lj_bits, ljp->components);
+    // printf("w = %d, h = %d, bits = %d, components = %d\n", lj_width,
+    // lj_height, lj_bits, ljp->components);
 
-    if ((lj_width == 0) || (lj_height == 0) || (lj_bits == 0) || (lj_bits == 8)) {
+    if ((lj_width == 0) || (lj_height == 0) || (lj_bits == 0) ||
+        (lj_bits == 8)) {
       // Looks like baseline JPEG
       lj92_close(ljp);
       return false;
     }
-      
+
     if (components) (*components) = ljp->components;
 
     lj92_close(ljp);
@@ -1844,7 +1854,8 @@ static bool IsLosslessJPEG(const uint8_t *header_addr, int data_len, int *width,
 }
 
 // Decompress LosslesJPEG adta.
-// Need to pass whole DNG file content to `src` and `src_length` to support decoding LJPEG in tiled format.
+// Need to pass whole DNG file content to `src` and `src_length` to support
+// decoding LJPEG in tiled format.
 // (i.e, src = the beginning of the file, src_len = file size)
 static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
                                    const unsigned char* src,
@@ -1855,6 +1866,10 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
   //
   unsigned int tiff_h = 0, tiff_w = 0;
   int offset = 0;
+
+#ifdef TINY_DNG_LOADER_PROFILING
+  auto start_t = std::chrono::system_clock::now();
+#endif
 
   if ((image_info.tile_width > 0) && (image_info.tile_length > 0)) {
     // Assume Lossless JPEG data is stored in tiled format.
@@ -1994,7 +2009,7 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
     int ret = lj92_open(&ljp, reinterpret_cast<const uint8_t*>(&src[offset]),
                         /* data_len */ static_cast<int>(input_len), &lj_width,
                         &lj_height, &lj_bits);
-    //printf("ret = %d\n", ret);
+    // printf("ret = %d\n", ret);
     assert(ret == LJ92_ERROR_NONE);
 
     // printf("lj %d, %d, %d\n", lj_width, lj_height, lj_bits);
@@ -2003,12 +2018,19 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
     int skip_length = 0;
 
     ret = lj92_decode(ljp, dst_data, write_length, skip_length, NULL, 0);
-    //printf("ret = %d\n", ret);
+    // printf("ret = %d\n", ret);
 
     assert(ret == LJ92_ERROR_NONE);
 
     lj92_close(ljp);
   }
+
+#ifdef TINY_DNG_LOADER_PROFILING
+  auto end_t = std::chrono::system_clock::now();
+  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_t - start_t);
+  
+  std::cout << "DecompressLosslessJPEG : " << ms.count() << " [ms]" << std::endl;
+#endif
 
   return true;
 }
@@ -2027,7 +2049,6 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage>* images, FILE* fp,
   if (swap_endian) {
     swap2(&num_entries);
   }
-  // printf("num_entries = %d\n", num_entries);
 
   assert(ret == 2);
   if (num_entries == 0) {
@@ -2045,7 +2066,7 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage>* images, FILE* fp,
     unsigned int len;
     unsigned int saved_offt;
     GetTIFFTag(&tag, &type, &len, &saved_offt, fp, swap_endian);
-    //printf("tag = %d\n", tag);
+    // printf("tag = %d\n", tag);
 
     switch (tag) {
       case 2:
@@ -2067,7 +2088,6 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage>* images, FILE* fp,
         // image->samples = len & 7;
         image.bits_per_sample_original =
             static_cast<int>(ReadUInt(type, fp, swap_endian));
-        // printf("bits per pixel = %d\n", image.bits_per_sample_original);
         break;
 
       case TAG_SAMPLES_PER_PIXEL:
@@ -2306,7 +2326,7 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage>* images, FILE* fp,
         image.cr2_slices[0] = Read2(fp, swap_endian);
         image.cr2_slices[1] = Read2(fp, swap_endian);
         image.cr2_slices[2] = Read2(fp, swap_endian);
-        //printf("cr2_slices = %d, %d, %d\n",
+        // printf("cr2_slices = %d, %d, %d\n",
         //  image.cr2_slices[0],
         //  image.cr2_slices[1],
         //  image.cr2_slices[2]);
@@ -2343,13 +2363,13 @@ static bool ParseDNG(std::vector<tinydng::DNGImage>* images, FILE* fp,
   while (offt) {
     fseek(fp, offt, SEEK_SET);
 
-    //printf("Parse TIFF IFD\n");
+    // printf("Parse TIFF IFD\n");
     if (!ParseTIFFIFD(images, fp, swap_endian)) {
       break;
     }
     // Get next IFD offset(0 = end of file).
     ret = fread(&offt, 1, 4, fp);
-    //printf("Next IFD offset = %d\n", offt);
+    // printf("Next IFD offset = %d\n", offt);
     assert(ret == 4);
   }
 
@@ -2449,7 +2469,7 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
 
   for (size_t i = 0; i < images->size(); i++) {
     tinydng::DNGImage* image = &((*images)[i]);
-    //printf("[%lu] compression = %d\n", i, image->compression);
+    // printf("[%lu] compression = %d\n", i, image->compression);
 
     const size_t data_offset =
         (image->offset > 0) ? image->offset : image->tile_offset;
@@ -2468,7 +2488,6 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
         image->width = 0;
         image->height = 0;
       } else {
-
         image->bits_per_sample = image->bits_per_sample_original;
         assert(((image->width * image->height * image->bits_per_sample) % 8) ==
                0);
@@ -2483,17 +2502,20 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
         ret = fread(&(image->data.at(0)), 1, len, fp);
         assert(ret == len);
       }
-    } else if (image->compression == COMPRESSION_OLD_JPEG) {  // old jpeg compression
+    } else if (image->compression ==
+               COMPRESSION_OLD_JPEG) {  // old jpeg compression
 
-      //std::cout << "IFD " << i << std::endl;
+      // std::cout << "IFD " << i << std::endl;
 
       // First check if JPEG is lossless JPEG
       // TODO(syoyo): Compure conservative data_len.
       assert(file_size > data_offset);
       size_t data_len = file_size - data_offset;
       int lj_width = -1, lj_height = -1, lj_bits = -1, lj_components = -1;
-      if (IsLosslessJPEG(&whole_data.at(data_offset), static_cast<int>(data_len), &lj_width, &lj_height, &lj_bits, &lj_components)) {
-        //std::cout << "IFD " << i << " is LJPEG" << std::endl;
+      if (IsLosslessJPEG(&whole_data.at(data_offset),
+                         static_cast<int>(data_len), &lj_width, &lj_height,
+                         &lj_bits, &lj_components)) {
+        // std::cout << "IFD " << i << " is LJPEG" << std::endl;
 
         assert(lj_width > 0);
         assert(lj_height > 0);
@@ -2507,7 +2529,8 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
         image->height = lj_height;
         if (image->cr2_slices[0] != 0) {
           // For CR2 RAW, slices[0] * slices[1] + slices[2] = image width
-          image->width = image->cr2_slices[0] * image->cr2_slices[1] + image->cr2_slices[2];
+          image->width = image->cr2_slices[0] * image->cr2_slices[1] +
+                         image->cr2_slices[2];
         } else {
           image->width = lj_width;
         }
@@ -2523,16 +2546,18 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
             static_cast<size_t>((image->samples_per_pixel * image->width *
                                  image->height * image->bits_per_sample) /
                                 8);
-        //std::cout << "spp = " << image->samples_per_pixel;
-        //std::cout << ", w = " << image->width << ", h = " << image->height << ", bps = " << image->bits_per_sample << std::endl;
+        // std::cout << "spp = " << image->samples_per_pixel;
+        // std::cout << ", w = " << image->width << ", h = " << image->height <<
+        // ", bps = " << image->bits_per_sample << std::endl;
         assert(len > 0);
         image->data.resize(len);
 
         assert(file_size > data_offset);
 
         bool ok = DecompressLosslessJPEG(
-            reinterpret_cast<unsigned short*>(&(image->data.at(0))), image->width,
-            &(whole_data.at(0)), file_size, fp, (*image), swap_endian);
+            reinterpret_cast<unsigned short*>(&(image->data.at(0))),
+            image->width, &(whole_data.at(0)), file_size, fp, (*image),
+            swap_endian);
         if (!ok) {
           if (err) {
             ss << "Failed to decompress LJPEG." << std::endl;
@@ -2540,7 +2565,6 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
           }
           return false;
         }
-        
 
       } else {
         // Baseline 8bit JPEG
@@ -2579,7 +2603,8 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
       }
 
     } else if (image->compression ==
-               COMPRESSION_NEW_JPEG) {  //  new JPEG(baseline DCT JPEG or lossless JPEG)
+               COMPRESSION_NEW_JPEG) {  //  new JPEG(baseline DCT JPEG or
+                                        //  lossless JPEG)
 
       // lj92 decodes data into 16bits, so modify bps.
       image->bits_per_sample = 16;
@@ -2627,7 +2652,8 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
       }
     } else {
       if (err) {
-        ss << "IFD [" << i << "] " << " Unsupported compression type : " << image->compression
+        ss << "IFD [" << i << "] "
+           << " Unsupported compression type : " << image->compression
            << std::endl;
         (*err) = ss.str();
       }
