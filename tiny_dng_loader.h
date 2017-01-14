@@ -472,7 +472,7 @@ static int parseHuff(ljp* self) {
   self->huffbits[self->num_huff_idx] = maxbits;
   /* Now fill the lut */
   u16* hufflut = (u16*)malloc((1 << maxbits) * sizeof(u16));
-  //printf("maxbits = %d\n", maxbits);
+  // printf("maxbits = %d\n", maxbits);
   if (hufflut == NULL) return LJ92_ERROR_NO_MEMORY;
   self->hufflut[self->num_huff_idx] = hufflut;
   int i = 0;
@@ -794,7 +794,7 @@ static int parseScan(ljp* self) {
   // int col = 0;
   // int row = 0;
   int left = 0;
-  //printf("w = %d, h = %d, components = %d, skiplen = %d\n", self->x, self->y,
+  // printf("w = %d, h = %d, components = %d, skiplen = %d\n", self->x, self->y,
   //       self->components, self->skiplen);
   for (int row = 0; row < self->y; row++) {
     // printf("row = %d / %d\n", row, self->y);
@@ -2027,9 +2027,11 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
 
 #ifdef TINY_DNG_LOADER_PROFILING
   auto end_t = std::chrono::system_clock::now();
-  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_t - start_t);
-  
-  std::cout << "DecompressLosslessJPEG : " << ms.count() << " [ms]" << std::endl;
+  auto ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(end_t - start_t);
+
+  std::cout << "DecompressLosslessJPEG : " << ms.count() << " [ms]"
+            << std::endl;
 #endif
 
   return true;
