@@ -159,6 +159,12 @@ bool LoadDNG(std::vector<DNGImage>* images,  // [out] DNG images.
 #include <chrono>
 #endif
 
+#ifdef TINY_DNG_LOADER_DEBUG
+#define DPRINTF(...) printf(__VA_ARGS__)
+#else
+#define DPRINTF(...)
+#endif
+
 namespace tinydng {
 
 // Very simple count leading zero implementation.
@@ -325,11 +331,11 @@ static int find(ljp* self) {
   }
   ix += 2;
   if (ix >= self->datalen) {
-    // printf("idx = %d, datalen = %\d\n", ix, self->datalen);
+    // DPRINTF("idx = %d, datalen = %\d\n", ix, self->datalen);
     return -1;
   }
   self->ix = ix;
-  // printf("ix = %d, data = %d\n", ix, data[ix - 1]);
+  // DPRINTF("ix = %d, data = %d\n", ix, data[ix - 1]);
   return data[ix - 1];
 }
 
@@ -351,7 +357,7 @@ static int parseHuff(ljp* self) {
   for (int hix = 0; hix < (hufflen - 19); hix++) {
     huffval[hix] = self->data[self->ix + 19 + hix];
 #ifdef LJ92_DEBUG
-    printf("huffval[%d]=%d\n", hix, huffval[hix]);
+    DPRINTF("huffval[%d]=%d\n", hix, huffval[hix]);
 #endif
   }
   self->ix += hufflen;
@@ -472,7 +478,7 @@ static int parseHuff(ljp* self) {
   self->huffbits[self->num_huff_idx] = maxbits;
   /* Now fill the lut */
   u16* hufflut = (u16*)malloc((1 << maxbits) * sizeof(u16));
-  // printf("maxbits = %d\n", maxbits);
+  // DPRINTF("maxbits = %d\n", maxbits);
   if (hufflut == NULL) return LJ92_ERROR_NO_MEMORY;
   self->hufflut[self->num_huff_idx] = hufflut;
   int i = 0;
@@ -482,8 +488,8 @@ static int parseHuff(ljp* self) {
   int hcode;
   int bitsused = 1;
 #ifdef LJ92_DEBUG
-  printf("%04x:%x:%d:%x\n", i, huffvals[hv], bitsused,
-         1 << (maxbits - bitsused));
+  DPRINTF("%04x:%x:%d:%x\n", i, huffvals[hv], bitsused,
+          1 << (maxbits - bitsused));
 #endif
   while (i < 1 << maxbits) {
     if (bitsused > maxbits) {
@@ -499,14 +505,14 @@ static int parseHuff(ljp* self) {
       vl++;
       hv++;
 #ifdef LJ92_DEBUG
-      printf("%04x:%x:%d:%x\n", i, huffvals[hv], bitsused,
-             1 << (maxbits - bitsused));
+      DPRINTF("%04x:%x:%d:%x\n", i, huffvals[hv], bitsused,
+              1 << (maxbits - bitsused));
 #endif
       continue;
     }
     hcode = huffvals[hv];
     hufflut[i] = hcode << 8 | bitsused;
-    // printf("%d %d %d\n",i,bitsused,hcode);
+    // DPRINTF("%d %d %d\n",i,bitsused,hcode);
     i++;
     rv++;
   }
@@ -533,7 +539,10 @@ static int parseSof3(ljp* self) {
 
 static int parseBlock(ljp* self, int marker) {
   self->ix += BEH(self->data[self->ix]);
-  if (self->ix >= self->datalen) return LJ92_ERROR_CORRUPT;
+  if (self->ix >= self->datalen) {
+    DPRINTF("parseBlock: ix %d, datalen %d\n", self->ix, self->datalen);
+    return LJ92_ERROR_CORRUPT;
+  }
   return LJ92_ERROR_NONE;
 }
 
@@ -595,7 +604,7 @@ inline static int nextdiff(ljp* self, int component_idx, int Px) {
   int t = decode(self);
   int diff = receive(self, t);
   diff = extend(self, diff, t);
-// printf("%d %d %d %x\n",Px+diff,Px,diff,t);//,index,usedbits);
+// DPRINTF("%d %d %d %x\n",Px+diff,Px,diff,t);//,index,usedbits);
 #else
   assert(component_idx <= self->num_huff_idx);
   u32 b = self->b;
@@ -611,14 +620,14 @@ inline static int nextdiff(ljp* self, int component_idx, int Px) {
     cnt += 16;
     ix += 2;
     if (one == 0xFF) {
-      // printf("%x %x %x %x %d\n",one,two,b,b>>8,cnt);
+      // DPRINTF("%x %x %x %x %d\n",one,two,b,b>>8,cnt);
       b >>= 8;
       cnt -= 8;
     } else if (two == 0xFF)
       ix++;
   }
   int index = b >> (cnt - huffbits);
-  // printf("component_idx = %d / %d, index = %d\n", component_idx,
+  // DPRINTF("component_idx = %d / %d, index = %d\n", component_idx,
   // self->components, index);
 
   u16 ssssused = self->hufflut[component_idx][index];
@@ -652,8 +661,8 @@ inline static int nextdiff(ljp* self, int component_idx, int Px) {
   self->b = b & keepbitsmask;
   self->cnt = cnt;
   self->ix = ix;
-// printf("%d %d\n",t,diff);
-// printf("%d %d %d %x %x %d\n",Px+diff,Px,diff,t,index,usedbits);
+// DPRINTF("%d %d\n",t,diff);
+// DPRINTF("%d %d %d %x %x %d\n",Px+diff,Px,diff,t,index,usedbits);
 #ifdef LJ92_DEBUG
 #endif
 #endif
@@ -661,6 +670,7 @@ inline static int nextdiff(ljp* self, int component_idx, int Px) {
 }
 
 static int parsePred6(ljp* self) {
+  DPRINTF("parsePred6\n");
   int ret = LJ92_ERROR_CORRUPT;
   self->ix = self->scanstart;
   // int compcount = self->data[self->ix+2];
@@ -696,7 +706,10 @@ static int parsePred6(ljp* self) {
     linear = left;
   thisrow[col++] = left;
   out[c++] = linear;
-  if (self->ix >= self->datalen) return ret;
+  if (self->ix >= self->datalen) {
+    DPRINTF("ix = %d, datalen = %d\n", self->ix, self->datalen);
+    return ret;
+  }
   --write;
   int rowcount = self->x - 1;
   while (rowcount--) {
@@ -709,9 +722,12 @@ static int parsePred6(ljp* self) {
       linear = left;
     thisrow[col++] = left;
     out[c++] = linear;
-    // printf("%d %d %d %d
+    // DPRINTF("%d %d %d %d
     // %x\n",col-1,diff,left,thisrow[col-1],&thisrow[col-1]);
-    if (self->ix >= self->datalen) return ret;
+    if (self->ix >= self->datalen) {
+      DPRINTF("a: self->ix = %d, datalen = %d\n", self->ix, self->datalen);
+      return ret;
+    }
     if (--write == 0) {
       out += self->skiplen;
       write = self->writelen;
@@ -721,7 +737,7 @@ static int parsePred6(ljp* self) {
   lastrow = thisrow;
   thisrow = temprow;
   row++;
-  // printf("%x %x\n",thisrow,lastrow);
+  // DPRINTF("%x %x\n",thisrow,lastrow);
   while (c < pixels) {
     col = 0;
     diff = nextdiff(self, self->num_huff_idx - 1, 0);
@@ -733,7 +749,7 @@ static int parsePred6(ljp* self) {
     } else
       linear = left;
     thisrow[col++] = left;
-    // printf("%d %d %d %d\n",col,diff,left,lastrow[col]);
+    // DPRINTF("%d %d %d %d\n",col,diff,left,lastrow[col]);
     out[c++] = linear;
     if (self->ix >= self->datalen) break;
     rowcount = self->x - 1;
@@ -745,7 +761,7 @@ static int parsePred6(ljp* self) {
       diff = nextdiff(self, self->num_huff_idx - 1, 0);
       Px = lastrow[col] + ((left - lastrow[col - 1]) >> 1);
       left = Px + diff;
-      // printf("%d %d %d %d %d
+      // DPRINTF("%d %d %d %d %d
       // %x\n",col,diff,left,lastrow[col],lastrow[col-1],&lastrow[col]);
       if (self->linearize) {
         if (left > self->linlen) return LJ92_ERROR_CORRUPT;
@@ -776,7 +792,7 @@ static int parseScan(ljp* self) {
   int pred = self->data[self->ix + 3 + 2 * compcount];
   if (pred < 0 || pred > 7) return ret;
   if (pred == 6) return parsePred6(self);  // Fast path
-                                           // printf("pref = %d\n", pred);
+                                           // DPRINTF("pref = %d\n", pred);
   self->ix += BEH(self->data[self->ix]);
   self->cnt = 0;
   self->b = 0;
@@ -794,14 +810,15 @@ static int parseScan(ljp* self) {
   // int col = 0;
   // int row = 0;
   int left = 0;
-  // printf("w = %d, h = %d, components = %d, skiplen = %d\n", self->x, self->y,
+  // DPRINTF("w = %d, h = %d, components = %d, skiplen = %d\n", self->x,
+  // self->y,
   //       self->components, self->skiplen);
   for (int row = 0; row < self->y; row++) {
-    // printf("row = %d / %d\n", row, self->y);
+    // DPRINTF("row = %d / %d\n", row, self->y);
     for (int col = 0; col < self->x; col++) {
       int colx = col * self->components;
       for (int c = 0; c < self->components; c++) {
-        // printf("c = %d, col = %d, row = %d\n", c, col, row);
+        // DPRINTF("c = %d, col = %d, row = %d\n", c, col, row);
         if ((col == 0) && (row == 0)) {
           Px = 1 << (self->bits - 1);
         } else if (row == 0) {
@@ -812,7 +829,7 @@ static int parseScan(ljp* self) {
           Px = lastrow[c];  // Use value above for first pixel in row
         } else {
           int prev_colx = (col - 1) * self->components;
-          // printf("pred = %d\n", pred);
+          // DPRINTF("pred = %d\n", pred);
           switch (pred) {
             case 0:
               Px = 0;
@@ -851,11 +868,11 @@ static int parseScan(ljp* self) {
 
         diff = nextdiff(self, huff_idx, Px);
         left = Px + diff;
-        // printf("c[%d] Px = %d, diff = %d, left = %d\n", c, Px, diff, left);
+        // DPRINTF("c[%d] Px = %d, diff = %d, left = %d\n", c, Px, diff, left);
         assert(left >= 0);
         assert(left < (1 << self->bits));
-        // printf("pix = %d\n", left);
-        // printf("%d %d %d\n",c,diff,left);
+        // DPRINTF("pix = %d\n", left);
+        // DPRINTF("%d %d %d\n",c,diff,left);
         int linear;
         if (self->linearize) {
           if (left > self->linlen) return LJ92_ERROR_CORRUPT;
@@ -864,7 +881,7 @@ static int parseScan(ljp* self) {
           linear = left;
         }
 
-        // printf("linear = %d\n", linear);
+        // DPRINTF("linear = %d\n", linear);
         thisrow[colx + c] = left;
         out[colx + c] = linear;  // HACK
       }                          // c
@@ -876,7 +893,7 @@ static int parseScan(ljp* self) {
 
     out += self->x * self->components + self->skiplen;
     // out += self->skiplen;
-    // printf("out = %p, %p, diff = %lld\n", out, self->image, out -
+    // DPRINTF("out = %p, %p, diff = %lld\n", out, self->image, out -
     // self->image);
 
   }  // row
@@ -895,18 +912,18 @@ static int parseScan(ljp* self) {
 
   // if (c >= pixels) ret = LJ92_ERROR_NONE;
   /*for (int h=0;h<17;h++) {
-      printf("ssss:%d=%d
+      DPRINTF("ssss:%d=%d
   (%f)\n",h,self->sssshist[h],(float)self->sssshist[h]/(float)(pixels));
   }*/
   return ret;
 }
 
 static int parseImage(ljp* self) {
-  // printf("parseImage\n");
+  // DPRINTF("parseImage\n");
   int ret = LJ92_ERROR_NONE;
   while (1) {
     int nextMarker = find(self);
-    // printf("marker = 0x%08x\n", nextMarker);
+    DPRINTF("marker = 0x%08x\n", nextMarker);
     if (nextMarker == 0xc4)
       ret = parseHuff(self);
     else if (nextMarker == 0xc3)
@@ -931,7 +948,11 @@ static int parseImage(ljp* self) {
 
 static int findSoI(ljp* self) {
   int ret = LJ92_ERROR_CORRUPT;
-  if (find(self) == 0xd8) ret = parseImage(self);
+  if (find(self) == 0xd8) {
+    ret = parseImage(self);
+  } else {
+    DPRINTF("findSoI: corrupt\n");
+  }
   return ret;
 }
 
@@ -1082,7 +1103,7 @@ int frequencyScan(lje* self) {
     int ssss = 32 - clz32(abs(diff));
     if (diff == 0) ssss = 0;
     self->hist[ssss]++;
-    // printf("%d %d %d %d %d %d\n",col,row,p,Px,diff,ssss);
+    // DPRINTF("%d %d %d %d %d %d\n",col,row,p,Px,diff,ssss);
     pixel++;
     scan--;
     col++;
@@ -1102,7 +1123,7 @@ int frequencyScan(lje* self) {
   int sort[17];
   for (int h = 0; h < 17; h++) {
     sort[h] = h;
-    printf("%d:%d\n", h, self->hist[h]);
+    DPRINTF("%d:%d\n", h, self->hist[h]);
   }
 #endif
   free(rowcache);
@@ -1119,7 +1140,7 @@ void createEncodeTable(lje* self) {
   for (int i = 0; i < 17; i++) {
     freq[i] = (float)(self->hist[i]) / totalpixels;
 #ifdef LJ92_DEBUG
-    printf("%d:%f\n", i, freq[i]);
+    DPRINTF("%d:%f\n", i, freq[i]);
 #endif
     codesize[i] = 0;
     others[i] = -1;
@@ -1141,7 +1162,7 @@ void createEncodeTable(lje* self) {
       }
     }
 #ifdef LJ92_DEBUG
-    printf("v1:%d,%f\n", v1, v1f);
+    DPRINTF("v1:%d,%f\n", v1, v1f);
 #endif
     v2f = 3.0f;
     v2 = -1;
@@ -1178,7 +1199,7 @@ void createEncodeTable(lje* self) {
   }
 #ifdef LJ92_DEBUG
   for (int i = 0; i < 17; i++) {
-    printf("bits:%d,%d,%d\n", i, bits[i], codesize[i]);
+    DPRINTF("bits:%d,%d,%d\n", i, bits[i], codesize[i]);
   }
 #endif
   int* huffval = self->huffval;
@@ -1198,7 +1219,7 @@ void createEncodeTable(lje* self) {
   }
 #ifdef LJ92_DEBUG
   for (i = 0; i < 17; i++) {
-    printf("i=%d,huffval[i]=%x\n", i, huffval[i]);
+    DPRINTF("i=%d,huffval[i]=%x\n", i, huffval[i]);
   }
 #endif
   int maxbits = 16;
@@ -1219,7 +1240,7 @@ void createEncodeTable(lje* self) {
   // int hcode;
   int bitsused = 1;
   int sym = 0;
-  // printf("%04x:%x:%d:%x\n",i,huffvals[hv],bitsused,1<<(maxbits-bitsused));
+  // DPRINTF("%04x:%x:%d:%x\n",i,huffvals[hv],bitsused,1<<(maxbits-bitsused));
   while (i < 1 << maxbits) {
     if (bitsused > maxbits) {
       break;  // Done. Should never get here!
@@ -1233,12 +1254,12 @@ void createEncodeTable(lje* self) {
       rv = 0;
       vl++;
       hv++;
-      // printf("%04x:%x:%d:%x\n",i,huffvals[hv],bitsused,1<<(maxbits-bitsused));
+      // DPRINTF("%04x:%x:%d:%x\n",i,huffvals[hv],bitsused,1<<(maxbits-bitsused));
       continue;
     }
     huffbits[sym] = bitsused;
     huffenc[sym++] = i >> (maxbits - bitsused);
-    // printf("%d %d %d\n",i,bitsused,hcode);
+    // DPRINTF("%d %d %d\n",i,bitsused,hcode);
     i += (1 << (maxbits - bitsused));
     rv = 1 << (maxbits - bitsused);
   }
@@ -1247,8 +1268,8 @@ void createEncodeTable(lje* self) {
       huffsym[huffval[i]] = i;
     }
 #ifdef LJ92_DEBUG
-    printf("huffval[%d]=%d,huffenc[%d]=%x,bits=%d\n", i, huffval[i], i,
-           huffenc[i], huffbits[i]);
+    DPRINTF("huffval[%d]=%d,huffenc[%d]=%x,bits=%d\n", i, huffval[i], i,
+            huffenc[i], huffbits[i]);
 #endif
     if (huffbits[i] > 0) {
       huffsym[huffval[i]] = i;
@@ -1256,7 +1277,7 @@ void createEncodeTable(lje* self) {
   }
 #ifdef LJ92_DEBUG
   for (i = 0; i < 17; i++) {
-    printf("huffsym[%d]=%d\n", i, huffsym[i]);
+    DPRINTF("huffsym[%d]=%d\n", i, huffsym[i]);
   }
 #endif
 }
@@ -1355,7 +1376,7 @@ void writeBody(lje* self) {
     // int ssss = 32 - __builtin_clz(abs(diff));
     int ssss = 32 - clz32(abs(diff));
     if (diff == 0) ssss = 0;
-    // printf("%d %d %d %d %d\n",col,row,Px,diff,ssss);
+    // DPRINTF("%d %d %d %d %d\n",col,row,Px,diff,ssss);
 
     // Write the huffman code for the ssss value
     int huffcode = self->huffsym[ssss];
@@ -1364,7 +1385,7 @@ void writeBody(lje* self) {
     bitcount += huffbits + ssss;
 
     int vt = ssss > 0 ? (1 << (ssss - 1)) : 0;
-// printf("%d %d %d %d\n",rows[1][col],Px,diff,Px+diff);
+// DPRINTF("%d %d %d %d\n",rows[1][col],Px,diff,Px+diff);
 #ifdef LJ92_DEBUG
 #endif
     if (diff < vt) diff += (1 << (ssss)) - 1;
@@ -1403,7 +1424,7 @@ void writeBody(lje* self) {
       }
     }
 
-    // printf("%d %d\n",diff,ssss);
+    // DPRINTF("%d %d\n",diff,ssss);
     pixel++;
     scan--;
     col++;
@@ -1428,9 +1449,9 @@ void writeBody(lje* self) {
   int sort[17];
   for (int h = 0; h < 17; h++) {
     sort[h] = h;
-    printf("%d:%d\n", h, self->hist[h]);
+    DPRINTF("%d:%d\n", h, self->hist[h]);
   }
-  printf("Total bytes: %d\n", bitcount >> 3);
+  DPRINTF("Total bytes: %d\n", bitcount >> 3);
 #endif
   free(rowcache);
   self->encodedWritten = w;
@@ -1476,7 +1497,7 @@ int lj92_encode(uint16_t* image, int width, int height, int bitdepth,
   // Finish
   writePost(self);
 #ifdef LJ92_DEBUG
-  printf("written:%d\n", self->encodedWritten);
+  DPRINTF("written:%d\n", self->encodedWritten);
 #endif
   self->encoded = (uint8_t*)realloc(self->encoded, self->encodedWritten);
   self->encodedLength = self->encodedWritten;
@@ -1811,7 +1832,7 @@ static bool DecompressNikonLosslessCompressed(unsigned short* dst_data, int dst_
 
   // Read offset to data location.
   int offset = static_cast<int>(Read4(fp, swap_endian));
-  // printf("offt = %d\n", offset);
+  // DPRINTF("offt = %d\n", offset);
 
   fseek(fp, offset, SEEK_SET);
 
@@ -1825,6 +1846,7 @@ static bool DecompressNikonLosslessCompressed(unsigned short* dst_data, int dst_
 // Check if JPEG data is lossless JPEG or not(baseline JPEG)
 static bool IsLosslessJPEG(const uint8_t* header_addr, int data_len, int* width,
                            int* height, int* bits, int* components) {
+  DPRINTF("islossless jpeg\n");
   int lj_width = 0;
   int lj_height = 0;
   int lj_bits = 0;
@@ -1832,7 +1854,7 @@ static bool IsLosslessJPEG(const uint8_t* header_addr, int data_len, int* width,
   int ret =
       lj92_open(&ljp, header_addr, data_len, &lj_width, &lj_height, &lj_bits);
   if (ret == LJ92_ERROR_NONE) {
-    // printf("w = %d, h = %d, bits = %d, components = %d\n", lj_width,
+    // DPRINTF("w = %d, h = %d, bits = %d, components = %d\n", lj_width,
     // lj_height, lj_bits, ljp->components);
 
     if ((lj_width == 0) || (lj_height == 0) || (lj_bits == 0) ||
@@ -1891,7 +1913,8 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
     // |                                         |
     // +-----------------------------------------+
 
-    // printf("tile = %d, %d\n", image_info.tile_width, image_info.tile_length);
+    // DPRINTF("tile = %d, %d\n", image_info.tile_width,
+    // image_info.tile_length);
 
     // Currently we only support tile data for tile.length == tiff.height.
     // assert(image_info.tile_length == image_info.height);
@@ -1900,7 +1923,7 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
     while (tiff_h < static_cast<unsigned int>(image_info.height)) {
       // Read offset to JPEG data location.
       offset = static_cast<int>(Read4(fp, swap_endian));
-      // printf("offt = %d\n", offset);
+      DPRINTF("offt = %d\n", offset);
 
       int lj_width = 0;
       int lj_height = 0;
@@ -1914,14 +1937,14 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
       int ret = lj92_open(&ljp, reinterpret_cast<const uint8_t*>(&src[offset]),
                           /* data_len */ static_cast<int>(input_len), &lj_width,
                           &lj_height, &lj_bits);
-      // printf("ret = %d\n", ret);
+      DPRINTF("ret = %d\n", ret);
       assert(ret == LJ92_ERROR_NONE);
 
-      // printf("lj %d, %d, %d\n", lj_width, lj_height, lj_bits);
-      // printf("ljp x %d, y %d, c %d\n", ljp->x, ljp->y, ljp->components);
-      // printf("tile width = %d\n", image_info.tile_width);
-      // printf("tile height = %d\n", image_info.tile_length);
-      // printf("col = %d, tiff_w = %d / %d\n", column_step, tiff_w,
+      // DPRINTF("lj %d, %d, %d\n", lj_width, lj_height, lj_bits);
+      // DPRINTF("ljp x %d, y %d, c %d\n", ljp->x, ljp->y, ljp->components);
+      // DPRINTF("tile width = %d\n", image_info.tile_width);
+      // DPRINTF("tile height = %d\n", image_info.tile_length);
+      // DPRINTF("col = %d, tiff_w = %d / %d\n", column_step, tiff_w,
       // image_info.width);
 
       assert((lj_width * ljp->components * lj_height) ==
@@ -1929,7 +1952,7 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
 
       // int write_length = image_info.tile_width;
       // int skip_length = dst_width - image_info.tile_width;
-      // printf("write_len = %d, skip_len = %d\n", write_length, skip_length);
+      // DPRINTF("write_len = %d, skip_len = %d\n", write_length, skip_length);
 
       // size_t dst_offset =
       //    column_step * static_cast<size_t>(image_info.tile_width) +
@@ -1942,6 +1965,7 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
           static_cast<size_t>(lj_width * lj_height * ljp->components));
 
       ret = lj92_decode(ljp, tmpbuf.data(), image_info.tile_width, 0, NULL, 0);
+      assert(ret == LJ92_ERROR_NONE);
       (void)ret;
       // ret = lj92_decode(ljp, dst_data + dst_offset, write_length,
       // skip_length,
@@ -1977,12 +2001,12 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
 
       tiff_w += static_cast<unsigned int>(image_info.tile_width);
       column_step++;
-      // printf("col = %d, tiff_w = %d / %d\n", column_step, tiff_w,
+      // DPRINTF("col = %d, tiff_w = %d / %d\n", column_step, tiff_w,
       // image_info.width);
       if (tiff_w >= static_cast<unsigned int>(image_info.width)) {
         // tiff_h += static_cast<unsigned int>(image_info.tile_length);
         tiff_h += static_cast<unsigned int>(image_info.tile_length);
-        // printf("tiff_h = %d\n", tiff_h);
+        // DPRINTF("tiff_h = %d\n", tiff_h);
         tiff_w = 0;
         column_step = 0;
       }
@@ -1992,7 +2016,7 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
 
     // Read offset to JPEG data location.
     // offset = static_cast<int>(Read4(fp, swap_endian));
-    // printf("offt = %d\n", offset);
+    // DPRINTF("offt = %d\n", offset);
 
     assert(image_info.offset > 0);
     offset = static_cast<int>(image_info.offset);
@@ -2009,16 +2033,16 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
     int ret = lj92_open(&ljp, reinterpret_cast<const uint8_t*>(&src[offset]),
                         /* data_len */ static_cast<int>(input_len), &lj_width,
                         &lj_height, &lj_bits);
-    // printf("ret = %d\n", ret);
+    // DPRINTF("ret = %d\n", ret);
     assert(ret == LJ92_ERROR_NONE);
 
-    // printf("lj %d, %d, %d\n", lj_width, lj_height, lj_bits);
+    // DPRINTF("lj %d, %d, %d\n", lj_width, lj_height, lj_bits);
 
     int write_length = image_info.width;
     int skip_length = 0;
 
     ret = lj92_decode(ljp, dst_data, write_length, skip_length, NULL, 0);
-    // printf("ret = %d\n", ret);
+    // DPRINTF("ret = %d\n", ret);
 
     assert(ret == LJ92_ERROR_NONE);
 
@@ -2044,10 +2068,10 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage>* images, FILE* fp,
   tinydng::DNGImage image;
   InitializeDNGImage(&image);
 
-  // printf("id = %d\n", idx);
+  // DPRINTF("id = %d\n", idx);
   unsigned short num_entries = 0;
   size_t ret = fread(&num_entries, 1, 2, fp);
-  // printf("ret = %ld\n", ret);
+  // DPRINTF("ret = %ld\n", ret);
   if (swap_endian) {
     swap2(&num_entries);
   }
@@ -2061,28 +2085,28 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage>* images, FILE* fp,
   // TIFFInfo info;
   // InitializeTIFFInfo(&info);
 
-  // printf("----------\n");
+  // DPRINTF("----------\n");
 
   while (num_entries--) {
     unsigned short tag, type;
     unsigned int len;
     unsigned int saved_offt;
     GetTIFFTag(&tag, &type, &len, &saved_offt, fp, swap_endian);
-    // printf("tag = %d\n", tag);
+    // DPRINTF("tag = %d\n", tag);
 
     switch (tag) {
       case 2:
       case TAG_IMAGE_WIDTH:
       case 61441:  // ImageWidth
         image.width = static_cast<int>(ReadUInt(type, fp, swap_endian));
-        // printf("[%d] width = %d\n", idx, info.width);
+        // DPRINTF("[%d] width = %d\n", idx, info.width);
         break;
 
       case 3:
       case TAG_IMAGE_HEIGHT:
       case 61442:  // ImageHeight
         image.height = static_cast<int>(ReadUInt(type, fp, swap_endian));
-        // printf("height = %d\n", image.height);
+        // DPRINTF("height = %d\n", image.height);
         break;
 
       case TAG_BITS_PER_SAMPLE:
@@ -2095,18 +2119,18 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage>* images, FILE* fp,
       case TAG_SAMPLES_PER_PIXEL:
         image.samples_per_pixel = static_cast<int>(Read2(fp, swap_endian));
         assert(image.samples_per_pixel <= 4);
-        // printf("spp = %d\n", image.samples_per_pixel);
+        // DPRINTF("spp = %d\n", image.samples_per_pixel);
         break;
 
       case TAG_COMPRESSION:
         image.compression = static_cast<int>(ReadUInt(type, fp, swap_endian));
-        // printf("tag-compression = %d\n", image.compression);
+        // DPRINTF("tag-compression = %d\n", image.compression);
         break;
 
       case TAG_STRIP_OFFSET:
       case TAG_JPEG_IF_OFFSET:
         image.offset = Read4(fp, swap_endian);
-        // printf("strip_offset = %d\n", image.offset);
+        // DPRINTF("strip_offset = %d\n", image.offset);
         break;
 
       case TAG_JPEG_IF_BYTE_COUNT:
@@ -2119,7 +2143,7 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage>* images, FILE* fp,
 
       case TAG_STRIP_BYTE_COUNTS:
         image.strip_byte_count = static_cast<int>(Read4(fp, swap_endian));
-        // printf("strip_byte_count = %d\n", image->strip_byte_count);
+        // DPRINTF("strip_byte_count = %d\n", image->strip_byte_count);
         break;
 
       case TAG_PLANAR_CONFIGURATION:
@@ -2129,7 +2153,7 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage>* images, FILE* fp,
       case TAG_SUB_IFDS:
 
       {
-        // printf("sub_ifds = %d\n", len);
+        // DPRINTF("sub_ifds = %d\n", len);
         for (size_t k = 0; k < len; k++) {
           unsigned int i = static_cast<unsigned int>(ftell(fp));
           unsigned int offt = Read4(fp, swap_endian);
@@ -2139,25 +2163,25 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage>* images, FILE* fp,
           ParseTIFFIFD(images, fp, swap_endian);  // recursive call
           fseek(fp, i + 4, SEEK_SET);             // rewind
         }
-        // printf("sub_ifds DONE\n");
+        // DPRINTF("sub_ifds DONE\n");
       }
 
       break;
 
       case TAG_TILE_WIDTH:
         image.tile_width = static_cast<int>(ReadUInt(type, fp, swap_endian));
-        // printf("tile_width = %d\n", image.tile_width);
+        // DPRINTF("tile_width = %d\n", image.tile_width);
         break;
 
       case TAG_TILE_LENGTH:
         image.tile_length = static_cast<int>(ReadUInt(type, fp, swap_endian));
-        // printf("tile_length = %d\n", image.tile_length);
+        // DPRINTF("tile_length = %d\n", image.tile_length);
         break;
 
       case TAG_TILE_OFFSETS:
         image.tile_offset = len > 1 ? static_cast<unsigned int>(ftell(fp))
                                     : Read4(fp, swap_endian);
-        // printf("tile_offt = %d\n", image->tile_offset);
+        // DPRINTF("tile_offt = %d\n", image->tile_offset);
         break;
 
       case TAG_TILE_BYTE_COUNTS:
@@ -2252,7 +2276,7 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage>* images, FILE* fp,
 
       case TAG_AS_SHOT_NEUTRAL:
         // Assume RGB
-        // printf("ty = %d\n", type);
+        // DPRINTF("ty = %d\n", type);
         image.as_shot_neutral[0] = ReadReal(type, fp, swap_endian);
         image.as_shot_neutral[1] = ReadReal(type, fp, swap_endian);
         image.as_shot_neutral[2] = ReadReal(type, fp, swap_endian);
@@ -2328,14 +2352,14 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage>* images, FILE* fp,
         image.cr2_slices[0] = Read2(fp, swap_endian);
         image.cr2_slices[1] = Read2(fp, swap_endian);
         image.cr2_slices[2] = Read2(fp, swap_endian);
-        // printf("cr2_slices = %d, %d, %d\n",
+        // DPRINTF("cr2_slices = %d, %d, %d\n",
         //  image.cr2_slices[0],
         //  image.cr2_slices[1],
         //  image.cr2_slices[2]);
       } break;
 
       default:
-        // printf("unknown or unsupported tag = %d\n", tag);
+        // DPRINTF("unknown or unsupported tag = %d\n", tag);
         break;
     }
 
@@ -2345,7 +2369,7 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage>* images, FILE* fp,
   // Add to images.
   images->push_back(image);
 
-  // printf("DONE ---------\n");
+  // DPRINTF("DONE ---------\n");
 
   return true;
 }
@@ -2365,13 +2389,13 @@ static bool ParseDNG(std::vector<tinydng::DNGImage>* images, FILE* fp,
   while (offt) {
     fseek(fp, offt, SEEK_SET);
 
-    // printf("Parse TIFF IFD\n");
+    // DPRINTF("Parse TIFF IFD\n");
     if (!ParseTIFFIFD(images, fp, swap_endian)) {
       break;
     }
     // Get next IFD offset(0 = end of file).
     ret = fread(&offt, 1, 4, fp);
-    // printf("Next IFD offset = %d\n", offt);
+    // DPRINTF("Next IFD offset = %d\n", offt);
     assert(ret == 4);
   }
 
@@ -2471,7 +2495,7 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
 
   for (size_t i = 0; i < images->size(); i++) {
     tinydng::DNGImage* image = &((*images)[i]);
-    // printf("[%lu] compression = %d\n", i, image->compression);
+    // DPRINTF("[%lu] compression = %d\n", i, image->compression);
 
     const size_t data_offset =
         (image->offset > 0) ? image->offset : image->tile_offset;
@@ -2561,10 +2585,12 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
         assert(file_size > data_offset);
 
         std::vector<unsigned short> buf;
-        buf.resize(static_cast<size_t>(image->width * image->height * image->samples_per_pixel));
+        buf.resize(static_cast<size_t>(image->width * image->height *
+                                       image->samples_per_pixel));
 
         bool ok = DecompressLosslessJPEG(&buf.at(0), image->width,
-            &(whole_data.at(0)), file_size, fp, (*image), swap_endian);
+                                         &(whole_data.at(0)), file_size, fp,
+                                         (*image), swap_endian);
         if (!ok) {
           if (err) {
             ss << "Failed to decompress LJPEG." << std::endl;
@@ -2574,19 +2600,23 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
         }
 
         if (is_cr2) {
-          // CR2 stores image in tiled format(image slices. left to right). Convert it to scanline format.
+          // CR2 stores image in tiled format(image slices. left to right).
+          // Convert it to scanline format.
           int nslices = image->cr2_slices[0];
           int slice_width = image->cr2_slices[1];
           int slice_remainder_width = image->cr2_slices[2];
           size_t src_offset = 0;
 
-          unsigned short *dst_ptr = reinterpret_cast<unsigned short*>(image->data.data());
+          unsigned short* dst_ptr =
+              reinterpret_cast<unsigned short*>(image->data.data());
 
           for (int slice = 0; slice < nslices; slice++) {
             int x_offset = slice * slice_width;
             for (int y = 0; y < image->height; y++) {
-              size_t dst_offset = static_cast<size_t>(y * image->width + x_offset);
-              memcpy(&dst_ptr[dst_offset], &buf[src_offset], sizeof(unsigned short) * static_cast<size_t>(slice_width));
+              size_t dst_offset =
+                  static_cast<size_t>(y * image->width + x_offset);
+              memcpy(&dst_ptr[dst_offset], &buf[src_offset],
+                     sizeof(unsigned short) * static_cast<size_t>(slice_width));
               src_offset += static_cast<size_t>(slice_width);
             }
           }
@@ -2595,18 +2625,21 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
           {
             int x_offset = nslices * slice_width;
             for (int y = 0; y < image->height; y++) {
-              size_t dst_offset = static_cast<size_t>(y * image->width + x_offset);
-              //std::cout << "y = " << y << ", dst = " << dst_offset << ", src = " << src_offset << ", len = " << buf.size() << std::endl;
-              memcpy(&dst_ptr[dst_offset], &buf[src_offset], sizeof(unsigned short) * static_cast<size_t>(slice_remainder_width));
+              size_t dst_offset =
+                  static_cast<size_t>(y * image->width + x_offset);
+              // std::cout << "y = " << y << ", dst = " << dst_offset << ", src
+              // = " << src_offset << ", len = " << buf.size() << std::endl;
+              memcpy(&dst_ptr[dst_offset], &buf[src_offset],
+                     sizeof(unsigned short) *
+                         static_cast<size_t>(slice_remainder_width));
               src_offset += static_cast<size_t>(slice_remainder_width);
             }
-
           }
 
         } else {
-          memcpy(image->data.data(), static_cast<void *>(&(buf.at(0))), len);
+          memcpy(image->data.data(), static_cast<void*>(&(buf.at(0))), len);
         }
-        
+
       } else {
         // Baseline 8bit JPEG
 
@@ -2663,6 +2696,8 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
       image->data.resize(len);
 
       assert(file_size > data_offset);
+
+      fseek(fp, static_cast<long>(data_offset), SEEK_SET);
 
       bool ok = DecompressLosslessJPEG(
           reinterpret_cast<unsigned short*>(&(image->data.at(0))), image->width,
