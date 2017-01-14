@@ -187,6 +187,10 @@ typedef struct {
   double color_correction_msec;
   double debayer_msec;
   double develop_msec;
+
+  // Per channel black/white level.
+  int black_level[4];
+  int white_level[4];
   
 } UIParam;
 
@@ -799,11 +803,11 @@ void Develop(RAWImage* raw, const UIParam& param) {
   }
 
   const float inv_scale =
-      1.0f / (raw->image.white_level[0] - raw->image.black_level[0]);
+      1.0f / (param.white_level[0] - param.black_level[0]);
 
   std::vector<float> pre_color_corrected;
   pre_color_correction(pre_color_corrected, raw->hdr_image,
-                       raw->image.black_level[0], raw->image.white_level[0],
+                       param.black_level[0], param.white_level[0],
                        param.color_matrix, raw->width, raw->height,
                        /* scale */ 1.0f);
 
@@ -1236,6 +1240,11 @@ int main(int argc, char** argv) {
     gUIParam.develop_msec = 0.0;
     gUIParam.color_correction_msec = 0.0;
 
+    for (int s = 0; s < gRAWImage.image.samples_per_pixel; s++) {
+      gUIParam.black_level[s] = gRAWImage.image.black_level[s];
+      gUIParam.white_level[s] = gRAWImage.image.white_level[s];
+    }
+
   }
 
   window = new b3gDefaultOpenGLWindow;
@@ -1295,8 +1304,13 @@ int main(int argc, char** argv) {
       ImGui::Text("  color correction : %f [msecs]", gUIParam.color_correction_msec);
 
       for (int s = 0; s < gRAWImage.image.samples_per_pixel; s++) {
-        ImGui::Text("black level[%d] : %d", s, gRAWImage.image.black_level[s]);
-        ImGui::Text("white level[%d] : %d", s, gRAWImage.image.white_level[s]);
+        ImGui::Text("Image [%d]", s);
+        if (ImGui::InputInt("  black level", &(gUIParam.black_level[s]))) {
+          Develop(&gRAWImage, gUIParam);
+        }
+        if (ImGui::InputInt("  white level", &(gUIParam.white_level[s]))) {
+          Develop(&gRAWImage, gUIParam);
+        }
       }
 
       ImGui::Text("(%d x %d) RAW value = : %f", gUIParam.inspect_pos[0],

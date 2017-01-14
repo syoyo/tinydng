@@ -2529,7 +2529,11 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
         assert(image->tile_length == -1);
 
         image->height = lj_height;
-        if (image->cr2_slices[0] != 0) {
+
+        // Is Canon CR2?
+        const bool is_cr2 = (image->cr2_slices[0] != 0) ? true : false;
+
+        if (is_cr2) {
           // For CR2 RAW, slices[0] * slices[1] + slices[2] = image width
           image->width = image->cr2_slices[0] * image->cr2_slices[1] +
                          image->cr2_slices[2];
@@ -2556,10 +2560,11 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
 
         assert(file_size > data_offset);
 
-        bool ok = DecompressLosslessJPEG(
-            reinterpret_cast<unsigned short*>(&(image->data.at(0))),
-            image->width, &(whole_data.at(0)), file_size, fp, (*image),
-            swap_endian);
+        std::vector<unsigned short> buf;
+        buf.resize(static_cast<size_t>(image->width * image->height * image->samples_per_pixel));
+
+        bool ok = DecompressLosslessJPEG(&buf.at(0), image->width,
+            &(whole_data.at(0)), file_size, fp, (*image), swap_endian);
         if (!ok) {
           if (err) {
             ss << "Failed to decompress LJPEG." << std::endl;
@@ -2568,6 +2573,40 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
           return false;
         }
 
+        if (is_cr2) {
+          // CR2 stores image in tiled format(image slices. left to right). Convert it to scanline format.
+          int nslices = image->cr2_slices[0];
+          int slice_width = image->cr2_slices[1];
+          int slice_remainder_width = image->cr2_slices[2];
+          size_t src_offset = 0;
+
+          unsigned short *dst_ptr = reinterpret_cast<unsigned short*>(image->data.data());
+
+          for (int slice = 0; slice < nslices; slice++) {
+            int x_offset = slice * slice_width;
+            for (int y = 0; y < image->height; y++) {
+              size_t dst_offset = static_cast<size_t>(y * image->width + x_offset);
+              memcpy(&dst_ptr[dst_offset], &buf[src_offset], sizeof(unsigned short) * static_cast<size_t>(slice_width));
+              src_offset += static_cast<size_t>(slice_width);
+            }
+          }
+
+          // remainder(the last slice).
+          {
+            int x_offset = nslices * slice_width;
+            for (int y = 0; y < image->height; y++) {
+              size_t dst_offset = static_cast<size_t>(y * image->width + x_offset);
+              //std::cout << "y = " << y << ", dst = " << dst_offset << ", src = " << src_offset << ", len = " << buf.size() << std::endl;
+              memcpy(&dst_ptr[dst_offset], &buf[src_offset], sizeof(unsigned short) * static_cast<size_t>(slice_remainder_width));
+              src_offset += static_cast<size_t>(slice_remainder_width);
+            }
+
+          }
+
+        } else {
+          memcpy(image->data.data(), static_cast<void *>(&(buf.at(0))), len);
+        }
+        
       } else {
         // Baseline 8bit JPEG
 
