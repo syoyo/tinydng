@@ -22,6 +22,11 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 */
 
+#if _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4244 )
+#endif
+
 #define USE_OPENGL2
 #include "OpenGLWindow/OpenGLInclude.h"
 #ifdef _WIN32
@@ -75,8 +80,23 @@ extern "C" {
 #include "imgui.h"
 #include "imgui_impl_btgui.h"
 
+#if _MSC_VER
+#pragma warning(pop)
+#endif
+
 #define TINY_DNG_LOADER_IMPLEMENTATION
 #include "../../tiny_dng_loader.h"
+
+#if _MSC_VER
+#pragma warning(disable : 4101)
+#pragma warning(disable : 4244)
+#pragma warning(disable : 4267)
+#pragma warning(disable : 4305)
+#endif
+
+#ifdef _MSC_VER
+#define strncat strncat_s
+#endif
 
 b3gDefaultOpenGLWindow* window = 0;
 int gWidth = 512;
@@ -256,8 +276,8 @@ static inline unsigned short swap2(unsigned short val) {
   char* buf = reinterpret_cast<char*>(&ret);
 
   short x = val;
-  buf[1] = x;
-  buf[0] = x >> 8;
+  buf[1] = static_cast<char>(x);
+  buf[0] = static_cast<char>(x >> 8);
 
   return ret;
 }

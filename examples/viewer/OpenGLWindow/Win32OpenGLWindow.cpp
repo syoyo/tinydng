@@ -14,6 +14,12 @@ subject to the following restrictions:
 */
 //Originally written by Erwin Coumans
 
+#if _MSC_VER
+#pragma warning(disable : 4101)
+#pragma warning(disable : 4244)
+#pragma warning(disable : 4267)
+#pragma warning(disable : 4305)
+#endif
 
 #include "Win32OpenGLWindow.h"
 
