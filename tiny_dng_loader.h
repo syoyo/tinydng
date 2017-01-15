@@ -159,10 +159,19 @@ bool LoadDNG(std::vector<DNGImage>* images,  // [out] DNG images.
 #include <chrono>
 #endif
 
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wvariadic-macros"
+#endif
+
 #ifdef TINY_DNG_LOADER_DEBUG
 #define DPRINTF(...) printf(__VA_ARGS__)
 #else
 #define DPRINTF(...)
+#endif
+
+#ifdef __clang__
+#pragma clang diagnostic pop
 #endif
 
 namespace tinydng {

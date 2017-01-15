@@ -10,4 +10,4 @@ compiler:
 
 script:
 - make
-- ./test
+- ./test_loader
