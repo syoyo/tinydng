@@ -196,9 +196,12 @@ static int clz32(unsigned int x) {
 #pragma clang diagnostic ignored "-Wunused-function"
 #pragma clang diagnostic ignored "-Wpadded"
 #pragma clang diagnostic ignored "-Wmissing-prototypes"
-#pragma clang diagnostic ignored "-Wreserved-id-macro"
 #pragma clang diagnostic ignored "-Wdisabled-macro-expansion"
+#if (__clang_major__ == 3) && (__clang_minor__ < 5)
+#else
+#pragma clang diagnostic ignored "-Wreserved-id-macro"
 #pragma clang diagnostic ignored "-Wdouble-promotion"
+#endif
 #pragma clang diagnostic ignored "-Wimplicit-fallthrough"
 #endif
 
