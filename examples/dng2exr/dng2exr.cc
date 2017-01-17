@@ -248,7 +248,7 @@ main(int argc, char **argv)
   } else if (images[image_idx].bits_per_sample == 16) {
     decode16_hdr(hdr, &(images[image_idx].data.at(0)), images[image_idx].width, images[image_idx].height * spp, do_swap);
   } else {
-    std::cerr << "Unsupported bits_per_sample" << std::endl;
+    std::cerr << "Unsupported bits_per_sample : " << images[image_idx].samples_per_pixel << std::endl;
     exit(-1);
   }
 

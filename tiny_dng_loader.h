@@ -1820,29 +1820,6 @@ static void InitializeDNGImage(tinydng::DNGImage* image) {
   image->cr2_slices[2] = 0;
 }
 
-#if 0
-static bool DecompressNikonLosslessCompressed(unsigned short* dst_data, int dst_width,
-                                   const unsigned char* src,
-                                   const size_t src_length, FILE* fp,
-                                   const DNGImage& image_info,
-                                   bool swap_endian) {
-  // Reference: http://lclevy.free.fr/nef/
-  // @todo { Remove FILE dependency. }
-  //
-
-  // Read offset to data location.
-  int offset = static_cast<int>(Read4(fp, swap_endian));
-  // DPRINTF("offt = %d\n", offset);
-
-  fseek(fp, offset, SEEK_SET);
-
-  int version0 = fgetc(fp);
-  int version1 = fgetc(fp);
-
-  return true;
-}
-#endif
-
 // Check if JPEG data is lossless JPEG or not(baseline JPEG)
 static bool IsLosslessJPEG(const uint8_t* header_addr, int data_len, int* width,
                            int* height, int* bits, int* components) {
