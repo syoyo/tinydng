@@ -9,6 +9,11 @@
 #include <string.h>
 #include "nfd_common.h"
 
+#ifdef _MSC_VER
+#pragma warning(disable : 4245)
+#pragma warning(disable : 4996)
+#endif
+
 static char g_errorstr[NFD_MAX_STRLEN] = {0};
 
 /* public routines */

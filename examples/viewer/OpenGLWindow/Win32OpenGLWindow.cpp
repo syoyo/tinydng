@@ -21,6 +21,14 @@ subject to the following restrictions:
 
 //#include "Bullet3Common/b3Vector3.h"
 
+
+#ifdef _MSC_VER
+#pragma warning(disable : 4100)
+#pragma warning(disable : 4101)
+#pragma warning(disable : 4244)
+#pragma warning(disable : 4267)
+#endif
+
 #include "Win32InternalWindowData.h"
 #include <stdio.h>
 

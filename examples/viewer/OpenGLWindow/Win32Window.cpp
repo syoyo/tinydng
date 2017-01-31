@@ -15,6 +15,14 @@ subject to the following restrictions:
 //Originally written by Erwin Coumans
 
 
+#ifdef _MSC_VER
+#pragma warning(disable : 4100)
+#pragma warning(disable : 4101)
+#pragma warning(disable : 4189)
+#pragma warning(disable : 4244)
+#pragma warning(disable : 4267)
+#endif
+
 #include "Win32Window.h"
 
 #include "OpenGLInclude.h"

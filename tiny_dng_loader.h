@@ -193,6 +193,13 @@ static int clz32(unsigned int x) {
 #pragma clang diagnostic ignored "-Wimplicit-fallthrough"
 #endif
 
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4100)
+#pragma warning(disable : 4334)
+#pragma warning(disable : 4244)
+#endif
+
 // STB image to decode jpeg image.
 #ifndef STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
@@ -806,7 +813,7 @@ static int parseScan(ljp* self) {
 
   // First pixel predicted from base value
   int diff;
-  int Px;
+  int Px = 0;
   // int col = 0;
   // int row = 0;
   int left = 0;
@@ -1456,6 +1463,8 @@ void writeBody(lje* self) {
   free(rowcache);
   self->encodedWritten = w;
 }
+
+#if 0
 /* Encoder
  * Read tile from an image and encode in one shot
  * Return the encoded data
@@ -1508,11 +1517,16 @@ int lj92_encode(uint16_t* image, int width, int height, int bitdepth,
 
   return ret;
 }
+#endif
 
 // End liblj92 ---------------------------------------------------------
 }  // namespace
 #ifdef __clang__
 #pragma clang diagnostic pop
+#endif
+
+#ifdef _MSC_VER
+#pragma warning(pop)
 #endif
 
 typedef enum {
@@ -2405,7 +2419,12 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
 
   assert(images);
 
+#ifdef _MSC_VER
+  FILE *fp;
+  fopen_s(&fp, filename, "rb");
+#else
   FILE* fp = fopen(filename, "rb");
+#endif
   if (!fp) {
     ss << "File not found or cannot open file " << filename << std::endl;
     if (err) {
@@ -2754,7 +2773,7 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
 
   fclose(fp);
 
-  return ret;
+  return ret ? true : false;
 }
 
 }  // namespace tinydng

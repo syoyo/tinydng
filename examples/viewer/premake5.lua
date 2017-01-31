@@ -41,7 +41,8 @@ solution "ViewerSolution"
       if os.is("Windows") then
          defines { "NOMINMAX" }
          defines { "USE_NATIVEFILEDIALOG" }
-         buildoptions { "/W4" } -- raise compile error level.
+         flags { "FatalCompileWarnings" }
+         warnings "Extra" --  /W4
          files{
             "OpenGLWindow/Win32OpenGLWindow.cpp",
             "OpenGLWindow/Win32OpenGLWindow.h",
