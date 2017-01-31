@@ -86,6 +86,7 @@ extern "C" {
 #include "imgui_impl_btgui.h"
 
 #define TINY_DNG_LOADER_IMPLEMENTATION
+#define STB_IMAGE_IMPLEMENTATION
 #include "../../tiny_dng_loader.h"
 
 b3gDefaultOpenGLWindow* window = 0;

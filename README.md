@@ -47,8 +47,9 @@ Here is the list of supported DNG files.
 #include <cstdlib>
 #include <iostream>
 
-// Do this only one *.cc
+// Define TINY_DNG_LOADER_IMPLEMENTATION and STB_IMAGE_IMPLEMENTATION in only one *.cc
 #define TINY_DNG_LOADER_IMPLEMENTATION
+#define STB_IMAGE_IMPLEMENTATION
 #include "tiny_dng_loader.h"
 
 int main(int argc, char **argv) {

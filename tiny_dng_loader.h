@@ -201,9 +201,7 @@ static int clz32(unsigned int x) {
 #endif
 
 // STB image to decode jpeg image.
-#ifndef STB_IMAGE_IMPLEMENTATION
-#define STB_IMAGE_IMPLEMENTATION
-#endif
+// Assume STB_IMAGE_IMPLEMENTATION is defined elsewhere
 #include "stb_image.h"
 
 namespace {
