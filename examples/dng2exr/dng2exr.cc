@@ -2,6 +2,7 @@
 #include "tinyexr.h"
 
 #define TINY_DNG_LOADER_IMPLEMENTATION
+#define STB_IMAGE_IMPLEMENTATION
 #include "../../tiny_dng_loader.h"
 
 #include <iostream>

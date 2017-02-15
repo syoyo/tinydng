@@ -10,6 +10,12 @@
 #endif
 
 
+#ifdef _MSC_VER
+#pragma warning(disable : 4100)
+#pragma warning(disable : 4189)
+#pragma warning(disable : 4996)
+#endif
+
 #include <wchar.h>
 #include <stdio.h>
 #include <assert.h>

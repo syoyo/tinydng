@@ -22,6 +22,16 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 */
 
+
+#ifdef _MSC_VER
+#pragma warning(disable : 4100)
+#pragma warning(disable : 4101)
+#pragma warning(disable : 4189)
+#pragma warning(disable : 4244)
+#pragma warning(disable : 4267)
+#pragma warning(disable : 4305)
+#endif
+
 #define USE_OPENGL2
 #include "OpenGLWindow/OpenGLInclude.h"
 #ifdef _WIN32
@@ -76,6 +86,7 @@ extern "C" {
 #include "imgui_impl_btgui.h"
 
 #define TINY_DNG_LOADER_IMPLEMENTATION
+#define STB_IMAGE_IMPLEMENTATION
 #include "../../tiny_dng_loader.h"
 
 b3gDefaultOpenGLWindow* window = 0;
