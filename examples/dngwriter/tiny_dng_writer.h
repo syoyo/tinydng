@@ -26,6 +26,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 */
 
+#ifndef TINY_DNG_WRITER_H_
+#define TINY_DNG_WRITER_H_
 
 namespace tinydngwriter {
 
@@ -156,6 +158,8 @@ DNGWriter
 
 }  // namespace tinydng
 
+#endif  // TINY_DNG_WRITER_H_
+
 #ifdef TINY_DNG_WRITER_IMPLEMENTATION
 
 //
@@ -170,6 +174,7 @@ DNGWriter
 #include <sstream>
 #include <fstream>
 #include <iostream>
+#include <algorithm>
 
 namespace tinydngwriter {
 
