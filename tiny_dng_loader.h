@@ -1528,6 +1528,8 @@ int lj92_encode(uint16_t* image, int width, int height, int bitdepth,
 #endif
 
 typedef enum {
+  TAG_NEW_SUBFILE_TYPE = 254,
+  TAG_SUBFILE_TYPE = 255,
   TAG_IMAGE_WIDTH = 256,
   TAG_IMAGE_HEIGHT = 257,
   TAG_BITS_PER_SAMPLE = 258,
@@ -1675,18 +1677,9 @@ static void GetTIFFTag(unsigned short* tag, unsigned short* type,
                        unsigned int* len, unsigned int* saved_offt, FILE* fp,
                        bool swap_endian) {
   size_t ret;
-  ret = fread(tag, 1, 2, fp);
-  assert(ret == 2);
-  ret = fread(type, 1, 2, fp);
-  assert(ret == 2);
-  ret = fread(len, 1, 4, fp);
-  assert(ret == 4);
-
-  if (swap_endian) {
-    swap2(tag);
-    swap2(type);
-    swap4(len);
-  }
+  (*tag) = Read2(fp, swap_endian);
+  (*type) = Read2(fp, swap_endian);
+  (*len) = Read4(fp, swap_endian);
 
   (*saved_offt) = static_cast<unsigned int>(ftell(fp)) + 4;
 
@@ -1694,12 +1687,7 @@ static void GetTIFFTag(unsigned short* tag, unsigned short* type,
 
   if ((*len) * (typesize_table[(*type) < 14 ? (*type) : 0]) > 4) {
     unsigned int base = 0;  // fixme
-    unsigned int offt;
-    ret = fread(&offt, 1, 4, fp);
-    assert(ret == 4);
-    if (swap_endian) {
-      swap4(&offt);
-    }
+    unsigned int offt = Read4(fp, swap_endian);
     fseek(fp, offt + base, SEEK_SET);
   }
 }
@@ -2058,14 +2046,7 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage>* images, FILE* fp,
   InitializeDNGImage(&image);
 
   // DPRINTF("id = %d\n", idx);
-  unsigned short num_entries = 0;
-  size_t ret = fread(&num_entries, 1, 2, fp);
-  // DPRINTF("ret = %ld\n", ret);
-  if (swap_endian) {
-    swap2(&num_entries);
-  }
-
-  assert(ret == 2);
+  unsigned short num_entries = Read2(fp, swap_endian);
   if (num_entries == 0) {
     assert(0);
     return false;  // @fixme
@@ -2074,13 +2055,18 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage>* images, FILE* fp,
   // TIFFInfo info;
   // InitializeTIFFInfo(&info);
 
-  // DPRINTF("----------\n");
+  DPRINTF("----------\n");
+  DPRINTF("num entries %d\n", num_entries);
 
   while (num_entries--) {
     unsigned short tag, type;
     unsigned int len;
     unsigned int saved_offt;
     GetTIFFTag(&tag, &type, &len, &saved_offt, fp, swap_endian);
+
+    DPRINTF("saved_offt %d\n", saved_offt);
+    assert(tag >= TAG_NEW_SUBFILE_TYPE);
+
     // DPRINTF("tag = %d\n", tag);
 
     switch (tag) {
@@ -2365,15 +2351,11 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage>* images, FILE* fp,
 
 static bool ParseDNG(std::vector<tinydng::DNGImage>* images, FILE* fp,
                      bool swap_endian) {
-  int offt;
-  size_t ret = fread(&offt, 1, 4, fp);
-  assert(ret == 4);
-
-  if (swap_endian) {
-    swap4(reinterpret_cast<unsigned int*>(&offt));
-  }
-
   assert(images);
+
+  unsigned int offt = Read4(fp, swap_endian);
+
+  DPRINTF("First IFD offt: %d\n", offt);
 
   while (offt) {
     fseek(fp, offt, SEEK_SET);
@@ -2383,9 +2365,8 @@ static bool ParseDNG(std::vector<tinydng::DNGImage>* images, FILE* fp,
       break;
     }
     // Get next IFD offset(0 = end of file).
-    ret = fread(&offt, 1, 4, fp);
-    // DPRINTF("Next IFD offset = %d\n", offt);
-    assert(ret == 4);
+    offt = Read4(fp, swap_endian);
+    DPRINTF("Next IFD offset = %d\n", offt);
   }
 
   for (size_t i = 0; i < images->size(); i++) {
@@ -2418,7 +2399,7 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
   assert(images);
 
 #ifdef _MSC_VER
-  FILE *fp;
+  FILE* fp;
   fopen_s(&fp, filename, "rb");
 #else
   FILE* fp = fopen(filename, "rb");
@@ -2449,6 +2430,7 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
   size_t file_size = static_cast<size_t>(ftell(fp));
 
   // Buffer to hold whole DNG file data.
+  // TODO(syoyo) Implement mmap() based data access to save memory.
   std::vector<unsigned char> whole_data;
   {
     whole_data.resize(file_size);

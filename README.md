@@ -32,7 +32,7 @@ Here is the list of supported DNG files.
   * Uncompressed RGB 12bit image.
 * [x] iPhone DNG
 * [x] Black magic DNG
-  * CinemaDNG(lossy compression) is not supported.
+  * CinemaDNG(lossy compression) is **not supported**.
 * [x] Canon CR2(experimental)
   * Since CR2 format is also based on TIFF format : http://lclevy.free.fr/cr2/
   * RAW only(mRAW and sRAW are not supported)
@@ -109,7 +109,7 @@ Here is the list of great articles on how to decode RAW file and how to develop 
 * [ ] ZIP-compressed DNG
   * Contribution is welcome.
 * [ ] DNG writer?
-* [ ] Support Big TIFF?(4GB+)
+* [ ] Support Big TIFF(4GB+)
 * [ ] Decode Nikon RAW(NEF)
 * [ ] Improve Canon RAW decoding
 * [ ] Optimimze lossless JPEG decoding
