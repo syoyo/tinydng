@@ -873,12 +873,15 @@ bool DNGWriter::WriteToFile(const char *filename, std::string *err) const {
       return false;
     }
 
-    uint32_t next_ifd_offset = static_cast<uint32_t>(ofs.tellp());
-    //printf("next = %d\n", next_ifd_offset);
+    uint32_t next_ifd_offset = static_cast<uint32_t>(ofs.tellp()) + sizeof(uint32_t);
 
     if (i == (images_.size() - 1)) {
       // Write zero as IFD offset(= end of data)
       next_ifd_offset = 0;
+    }
+
+    if (swap_endian_) {
+      swap4(&next_ifd_offset);
     }
 
     ofs.write(reinterpret_cast<const char*>(&next_ifd_offset), 4);
@@ -887,7 +890,6 @@ bool DNGWriter::WriteToFile(const char *filename, std::string *err) const {
   return true;
   
 }
-
 
 }  // namespace tinydng
 
