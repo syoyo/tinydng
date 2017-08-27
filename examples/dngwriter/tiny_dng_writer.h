@@ -5,7 +5,7 @@
 /*
 The MIT License (MIT)
 
-Copyright (c) 2016 Syoyo Fujita.
+Copyright (c) 2016 - 2017 Syoyo Fujita.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -103,13 +103,12 @@ struct IFDTag
 };
 // 12 bytes.
 
-// TODO(syoyo): Support multiple IFDs.
 class
-DNGWriter
+DNGImage
 {
  public:
-  DNGWriter();
-  ~DNGWriter() {}
+  DNGImage();
+  ~DNGImage() {}
 
   /// Optional: Explicitly specify endian swapness.
   bool SwapEndian(bool swap_endian);
@@ -138,21 +137,56 @@ DNGWriter
   /// Set image data
   bool SetImageData(const unsigned char *data, const size_t data_len);
 
-  /// Write DNG to a file.
-  /// Return error string to `err` when Write() returns false.
-  /// Returns true upon success.
-  bool WriteToFile(const char *filename, std::string *err);
+  size_t GetDataSize() const {
+    return data_os_.str().length();
+  }
+
+  bool WriteDataToStream(std::ostream *ofs, std::string *err) const;
+  bool WriteIFDToStream(const uint32_t ifd_base_offset, std::ostream *ofs, std::string *err) const;
 
  private:
-  std::ostringstream ifd_os_;
   std::ostringstream data_os_;
-  std::ostringstream err_ss_;
   bool is_host_big_endian_;
   bool swap_endian_;
   unsigned short num_fields_;
   unsigned int samples_per_pixels_;
 
   std::vector<IFDTag> ifd_tags_;
+
+};
+
+class
+DNGWriter
+{
+ public:
+  DNGWriter();
+  ~DNGWriter() {}
+
+  /// Optional: Explicitly specify endian swapness.
+  bool SwapEndian(bool swap_endian);
+
+  ///
+  /// Add DNGImage.
+  /// It just retains the pointer of the image, thus
+  /// application must not free resources until `WriteToFile` has been called.
+  ///
+  bool AddImage(const DNGImage *image) {
+    images_.push_back(image);
+
+    return true;
+  }
+
+  /// Write DNG to a file.
+  /// Return error string to `err` when Write() returns false.
+  /// Returns true upon success.
+  bool WriteToFile(const char *filename, std::string *err) const;
+
+ private:
+  bool is_host_big_endian_;
+  bool swap_endian_;
+  char pad[6];
+
+  std::vector<const DNGImage *> images_;
 
 };
 
@@ -186,13 +220,31 @@ namespace tinydngwriter {
 // |    header            |
 // +----------------------+
 // |                      |
-// |  image & other data  |
+// |  image & meta 0      |
 // |                      |
 // +----------------------+
-// |  Sub IFD tables      |
+// |                      |
+// |  image & meta 1      |
+// |                      |
+// +----------------------+
+//    ...                 
 // +----------------------+
 // |                      |
-// |  Main IFD table      |
+// |  image & meta N      |
+// |                      |
+// +----------------------+
+// |                      |
+// |  IFD 0               |
+// |                      |
+// +----------------------+
+// |                      |
+// |  IFD 1               |
+// |                      |
+// +----------------------+
+//    ...                 
+// +----------------------+
+// |                      |
+// |  IFD 2               |
 // |                      |
 // +----------------------+
 //
@@ -384,14 +436,14 @@ static bool WriteTIFFVersionHeader(std::ostringstream *out) {
 
 }
 
-DNGWriter::DNGWriter() : is_host_big_endian_(false), swap_endian_(true), num_fields_(0), samples_per_pixels_(0) {
+DNGImage::DNGImage() : is_host_big_endian_(false), swap_endian_(true), num_fields_(0), samples_per_pixels_(0) {
   // Data is stored in big endian, thus no byteswapping required for big endian machine.
   if (IsBigEndian()) {
     swap_endian_ = false;
   }
 }
 
-bool DNGWriter::SetSubfileType(const unsigned int value) {
+bool DNGImage::SetSubfileType(const unsigned int value) {
   unsigned int count = 1;
 
   unsigned int data = value;
@@ -406,7 +458,7 @@ bool DNGWriter::SetSubfileType(const unsigned int value) {
 }
 
 
-bool DNGWriter::SetImageWidth(const unsigned int width) {
+bool DNGImage::SetImageWidth(const unsigned int width) {
   unsigned int count = 1;
 
   unsigned int data = width;
@@ -420,7 +472,7 @@ bool DNGWriter::SetImageWidth(const unsigned int width) {
   return true;
 }
 
-bool DNGWriter::SetImageLength(const unsigned int length) {
+bool DNGImage::SetImageLength(const unsigned int length) {
   unsigned int count = 1;
 
   const unsigned int data = length;
@@ -434,7 +486,7 @@ bool DNGWriter::SetImageLength(const unsigned int length) {
   return true;
 }
 
-bool DNGWriter::SetRowsPerStrip(const unsigned int rows) {
+bool DNGImage::SetRowsPerStrip(const unsigned int rows) {
 
   if (rows == 0) {
     return false;
@@ -453,7 +505,7 @@ bool DNGWriter::SetRowsPerStrip(const unsigned int rows) {
   return true;
 }
 
-bool DNGWriter::SetSamplesPerPixel(const unsigned short value) {
+bool DNGImage::SetSamplesPerPixel(const unsigned short value) {
 
   if (value > 4) {
     return false;
@@ -474,7 +526,7 @@ bool DNGWriter::SetSamplesPerPixel(const unsigned short value) {
   return true;
 }
 
-bool DNGWriter::SetBitsPerSample(const unsigned short value) {
+bool DNGImage::SetBitsPerSample(const unsigned short value) {
 
   if (value > 32) {
     return false;
@@ -493,7 +545,7 @@ bool DNGWriter::SetBitsPerSample(const unsigned short value) {
   return true;
 }
 
-bool DNGWriter::SetPhotometric(const unsigned short value) {
+bool DNGImage::SetPhotometric(const unsigned short value) {
 
   if ((value == PHOTOMETRIC_LINEARRAW) || (value == PHOTOMETRIC_RGB)) {
     // OK
@@ -514,7 +566,7 @@ bool DNGWriter::SetPhotometric(const unsigned short value) {
   return true;
 }
 
-bool DNGWriter::SetPlanarConfig(const unsigned short value) {
+bool DNGImage::SetPlanarConfig(const unsigned short value) {
 
   unsigned int count = 1;
 
@@ -535,7 +587,7 @@ bool DNGWriter::SetPlanarConfig(const unsigned short value) {
   return true;
 }
 
-bool DNGWriter::SetCompression(const unsigned short value) {
+bool DNGImage::SetCompression(const unsigned short value) {
 
   unsigned int count = 1;
 
@@ -556,7 +608,7 @@ bool DNGWriter::SetCompression(const unsigned short value) {
   return true;
 }
 
-bool DNGWriter::SetOrientation(const unsigned short value) {
+bool DNGImage::SetOrientation(const unsigned short value) {
 
   unsigned int count = 1;
 
@@ -584,7 +636,7 @@ bool DNGWriter::SetOrientation(const unsigned short value) {
   return true;
 }
 
-bool DNGWriter::SetBlackLevelRational(unsigned int num_samples, const double *values) {
+bool DNGImage::SetBlackLevelRational(unsigned int num_samples, const double *values) {
 
   // `SetSamplesPerPixel()` must be called in advance and SPP shoud be equal to `num_samples`.
   if ((num_samples > 0) && (num_samples == samples_per_pixels_)) {
@@ -605,7 +657,7 @@ bool DNGWriter::SetBlackLevelRational(unsigned int num_samples, const double *va
   return true;
 }
 
-bool DNGWriter::SetWhiteLevelRational(unsigned int num_samples, const double *values) {
+bool DNGImage::SetWhiteLevelRational(unsigned int num_samples, const double *values) {
 
   // `SetSamplesPerPixel()` must be called in advance and SPP shoud be equal to `num_samples`.
   if ((num_samples > 0) && (num_samples == samples_per_pixels_)) {
@@ -626,7 +678,7 @@ bool DNGWriter::SetWhiteLevelRational(unsigned int num_samples, const double *va
   return true;
 }
 
-bool DNGWriter::SetActiveArea(const unsigned int values[4]) {
+bool DNGImage::SetActiveArea(const unsigned int values[4]) {
 
   unsigned int count = 4;
 
@@ -642,7 +694,7 @@ bool DNGWriter::SetActiveArea(const unsigned int values[4]) {
 }
 
 
-bool DNGWriter::SetImageData(const unsigned char *data, const size_t data_len) {
+bool DNGImage::SetImageData(const unsigned char *data, const size_t data_len) {
   if ((data == NULL) || (data_len < 1)) {
     return false;
   }
@@ -681,53 +733,101 @@ bool DNGWriter::SetImageData(const unsigned char *data, const size_t data_len) {
 
 static bool IFDComparator(const IFDTag &a, const IFDTag &b) { return (a.tag<b.tag);}
 
-bool DNGWriter::WriteToFile(const char *filename, std::string *err) {
-
-  if ((num_fields_ == 0) || (ifd_tags_.size() < 1) ) {
-    err_ss_ << "No TIFF tag.\n";
+bool DNGImage::WriteDataToStream(std::ostream *ofs, std::string *err) const {
+  if ((data_os_ == 0)) {
     if (err) {
-      (*err) = err_ss_.str();
+      (*err) += "Empty image data.\n";
     }
     return false;
   }
 
+  ofs->write(data_os_.str().c_str(), static_cast<ssize_t>(data_os_.str().length()));
+
+  return true;
+}
+
+bool DNGImage::WriteIFDToStream(const uint32_t ifd_base_offset, std::ostream *ofs, std::string *err) const {
+
+  if ((num_fields_ == 0) || (ifd_tags_.size() < 1) ) {
+    if (err) {
+      (*err) += "No TIFF Tags.\n";
+    }
+    return false;
+  }
+
+  std::ostringstream ifd_os;
+
+  Write2(num_fields_, &ifd_os, swap_endian_); 
+
   // Sort and write IFD tags.
+  // TIFF expects IFD tags are sorted. 
   {
     size_t typesize_table[] = {1, 1, 1, 2, 4, 8, 1, 1, 2, 4, 8, 4, 8, 4};
 
-    std::sort(ifd_tags_.begin(), ifd_tags_.end(), IFDComparator);
-    for (size_t i = 0; i < ifd_tags_.size(); i++) {
-      const IFDTag& ifd = ifd_tags_[i];
-      Write2(ifd.tag, &ifd_os_, swap_endian_);
-      Write2(ifd.type, &ifd_os_, swap_endian_);
-      Write4(ifd.count, &ifd_os_, swap_endian_);
+    std::vector<IFDTag> tags = ifd_tags_;
+
+    std::sort(tags.begin(), tags.end(), IFDComparator);
+    for (size_t i = 0; i < tags.size(); i++) {
+      const IFDTag& ifd = tags[i];
+      Write2(ifd.tag, &ifd_os, swap_endian_);
+      Write2(ifd.type, &ifd_os, swap_endian_);
+      Write4(ifd.count, &ifd_os, swap_endian_);
 
       size_t len = ifd.count * (typesize_table[(ifd.type) < 14 ? (ifd.type) : 0]);
       if (len > 4) {
         // Store offset value.
-        Write4(ifd.offset_or_value, &ifd_os_, swap_endian_);
+        uint32_t ifd_offt = ifd.offset_or_value + ifd_base_offset;
+        Write4(ifd_offt, &ifd_os, swap_endian_);
       } else {
         // less than 4 bytes = store data itself.
         if (len == 1) {
           const unsigned char value = *(reinterpret_cast<const unsigned char*>(&ifd.offset_or_value));
-          Write1(value, &ifd_os_);
+          Write1(value, &ifd_os);
           unsigned char pad = 0;
-          Write1(pad, &ifd_os_);
-          Write1(pad, &ifd_os_);
-          Write1(pad, &ifd_os_);
+          Write1(pad, &ifd_os);
+          Write1(pad, &ifd_os);
+          Write1(pad, &ifd_os);
         } else if (len == 2) {
           const unsigned short value = *(reinterpret_cast<const unsigned short *>(&ifd.offset_or_value));
-          Write2(value, &ifd_os_, swap_endian_);
+          Write2(value, &ifd_os, swap_endian_);
           const unsigned short pad = 0;
-          Write2(pad, &ifd_os_, swap_endian_);
+          Write2(pad, &ifd_os, swap_endian_);
         } else if (len == 4) {
           const unsigned int value = *(reinterpret_cast<const unsigned int *>(&ifd.offset_or_value));
-          Write4(value, &ifd_os_, swap_endian_);
+          Write4(value, &ifd_os, swap_endian_);
         } else {
           assert(0);
         }
       }
     }
+
+    ofs->write(ifd_os.str().c_str(), static_cast<ssize_t>(ifd_os.str().length()));
+  }
+
+  
+
+  return true;
+}
+
+// -------------------------------------------
+
+DNGWriter::DNGWriter() : is_host_big_endian_(false), swap_endian_(true) {
+  // Data is stored in big endian, thus no byteswapping required for big endian machine.
+  if (IsBigEndian()) {
+    swap_endian_ = false;
+  }
+}
+
+bool DNGWriter::WriteToFile(const char *filename, std::string *err) const {
+
+  std::ofstream ofs(filename, std::ostream::binary);
+
+  if (!ofs) {
+    if (err) {
+      (*err) = "Failed to open file.\n";
+    }
+      
+    return false;
   }
 
   std::ostringstream header;
@@ -736,59 +836,58 @@ bool DNGWriter::WriteToFile(const char *filename, std::string *err) {
     return false;
   }
 
-  std::ofstream ofs(filename, std::ostream::binary);
-
-  if (!ofs) {
-    err_ss_ << "Failed to open file.\n";
-    if (err) {
-      (*err) = err_ss_.str();
-    }
-      
-    return false;
+  // 1. Compute offset and data size
+  size_t data_len = 0;
+  std::vector<size_t> offset_table;
+  for (size_t i = 0; i < images_.size(); i++) {
+    offset_table.push_back(data_len);
+    data_len += images_[i]->GetDataSize();
   }
 
-	assert(header.str().length() == 4);
-
 	// 2. Write offset to ifd table.
-	const unsigned int ifd_offset = kHeaderSize + static_cast<unsigned int>(data_os_.str().length());
+	const unsigned int ifd_offset = kHeaderSize + static_cast<unsigned int>(data_len);
 	Write4(ifd_offset, &header, swap_endian_);
 
 	assert(header.str().length() == 8);
 
-	std::cout << "ifd_offset " << ifd_offset << std::endl;
-	std::cout << "data_len " << data_os_.str().length() << std::endl;
-	std::cout << "ifd_len " << ifd_os_.str().length() << std::endl;
-	std::cout << "swap endian " << swap_endian_ << std::endl;
+	//std::cout << "ifd_offset " << ifd_offset << std::endl;
+	//std::cout << "data_len " << data_os_.str().length() << std::endl;
+	//std::cout << "ifd_len " << ifd_os_.str().length() << std::endl;
+	//std::cout << "swap endian " << swap_endian_ << std::endl;
 
-  // 3. Write header and data
+  // 3. Write header
   ofs.write(header.str().c_str(), static_cast<ssize_t>(header.str().length()));
-  ofs.write(data_os_.str().c_str(), static_cast<ssize_t>(data_os_.str().length()));
 
-  assert(num_fields_ == (ifd_os_.str().length() / 12));
-
-  // 4. Write the number of IFD entries.
-  unsigned short num_fields = num_fields_;
-  if (swap_endian_) {
-    swap2(&num_fields);
-  } 
-	std::cout << "num_fields " << num_fields << std::endl;
-  ofs.write(reinterpret_cast<const char*>(&num_fields), 2);
+  // 4. Write image and meta data
+  for (size_t i = 0; i < images_.size(); i++) {
+    bool ok = images_[i]->WriteDataToStream(&ofs, err);
+    if (!ok) {
+      return false;
+    }
+  }
 
   // 5. Write IFD entries;
-  ofs.write(ifd_os_.str().c_str(), static_cast<ssize_t>(ifd_os_.str().length()));
+  for (size_t i = 0; i < images_.size(); i++) {
+    bool ok = images_[i]->WriteIFDToStream(static_cast<uint32_t>(offset_table[i]), &ofs, err);
+    if (!ok) {
+      return false;
+    }
 
-  // 6. Write zero as IFD offset(= end of data)
-  unsigned int zero = 0;
-  ofs.write(reinterpret_cast<const char*>(&zero), 4);
+    uint32_t next_ifd_offset = static_cast<uint32_t>(ofs.tellp());
+    //printf("next = %d\n", next_ifd_offset);
 
-  err_ss_.clear();
-  ifd_os_.clear();
-  data_os_.clear();
-  num_fields_ = 0;
+    if (i == (images_.size() - 1)) {
+      // Write zero as IFD offset(= end of data)
+      next_ifd_offset = 0;
+    }
+
+    ofs.write(reinterpret_cast<const char*>(&next_ifd_offset), 4);
+  }
 
   return true;
   
 }
+
 
 }  // namespace tinydng
 

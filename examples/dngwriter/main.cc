@@ -8,6 +8,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cassert>
 #include <iostream>
 
 int
@@ -15,27 +16,26 @@ main(int argc, char **argv)
 {
   std::string output_filename = "output.dng";
 
-  if (argc < 2) {
-    std::cout << argv[0] << " input.dng <output.dng>" << std::endl;
-    return EXIT_FAILURE;
+  if (argc < 1) {
+    std::cout << argv[0] << " <output.dng>" << std::endl;
   }
 
-  if (argc > 2) {
-    output_filename = std::string(argv[2]);
+  if (argc > 1) {
+    output_filename = std::string(argv[1]);
   }
 
-  tinydngwriter::DNGWriter dng_writer;
+  tinydngwriter::DNGImage dng_image;
   unsigned int image_width = 512;
   unsigned int image_height = 512;
-  dng_writer.SetSubfileType(tinydngwriter::FILETYPE_REDUCEDIMAGE);
-  dng_writer.SetImageWidth(image_width);
-  dng_writer.SetImageLength(image_height);
-  dng_writer.SetRowsPerStrip(image_height);
-  dng_writer.SetBitsPerSample(16);
-  dng_writer.SetPlanarConfig(tinydngwriter::PLANARCONFIG_CONTIG);
-  dng_writer.SetCompression(tinydngwriter::COMPRESSION_NONE);
-  dng_writer.SetPhotometric(tinydngwriter::PHOTOMETRIC_RGB);
-  dng_writer.SetSamplesPerPixel(3);
+  dng_image.SetSubfileType(tinydngwriter::FILETYPE_REDUCEDIMAGE);
+  dng_image.SetImageWidth(image_width);
+  dng_image.SetImageLength(image_height);
+  dng_image.SetRowsPerStrip(image_height);
+  dng_image.SetBitsPerSample(16);
+  dng_image.SetPlanarConfig(tinydngwriter::PLANARCONFIG_CONTIG);
+  dng_image.SetCompression(tinydngwriter::COMPRESSION_NONE);
+  dng_image.SetPhotometric(tinydngwriter::PHOTOMETRIC_RGB);
+  dng_image.SetSamplesPerPixel(3);
 
   std::vector<unsigned short> buf;
   buf.resize(image_width * image_height * 3);
@@ -48,7 +48,13 @@ main(int argc, char **argv)
     }
   }
 
-  dng_writer.SetImageData(reinterpret_cast<unsigned char *>(buf.data()), buf.size() * sizeof(unsigned short));
+  dng_image.SetImageData(reinterpret_cast<unsigned char *>(buf.data()), buf.size() * sizeof(unsigned short));
+
+
+  //std::cout << "datalen = " << dng_image.GetDataSize() << std::endl;
+  
+  tinydngwriter::DNGWriter dng_writer;
+  assert(dng_writer.AddImage(&dng_image));
 
   std::string err;
   bool ret = dng_writer.WriteToFile(output_filename.c_str(), &err);
