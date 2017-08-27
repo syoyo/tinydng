@@ -62,8 +62,11 @@ int main(int argc, char **argv) {
   std::string err;
   std::vector<tinydng::DNGImage> images;
 
+  // List of custom field infos. This is optional and can be empty.
+  std::vector<tinydng::FieldInfo> custom_field_lists;
+
   // Loads all images(IFD) in the DNG file to `images` array.
-  bool ret = tinydng::LoadDNG(&images, &err, input_filename.c_str());
+  bool ret = tinydng::LoadDNG(input_filename.c_str(), custom_field_lists, &images, &err);
 
   if (!err.empty()) {
     std::cerr << "Err: " << err << std::endl;

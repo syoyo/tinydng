@@ -139,6 +139,12 @@ int main(int argc, char **argv) {
                   << image.as_shot_neutral[1] << " , "
                   << image.as_shot_neutral[2] << std::endl;
       }
+
+      // Custom fields
+      for (size_t c = 0; c < image.custom_fields.size(); c++) {
+        std::cout << "Custom field: name = " << image.custom_fields[c].name << std::endl;
+        std::cout << "Custom field: type = " << image.custom_fields[c].type << std::endl;
+      }
     }
 
   } else {

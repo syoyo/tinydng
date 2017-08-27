@@ -69,6 +69,55 @@ typedef enum {
   COMPRESSION_NEF = 34713     // NIKON RAW
 } Compression;
 
+typedef enum {
+  TYPE_NOTYPE = 0,
+  TYPE_BYTE = 1,
+  TYPE_ASCII = 2,  // null-terminated string
+  TYPE_SHORT = 3,
+  TYPE_LONG = 4,
+  TYPE_RATIONAL = 5,  // 64-bit unsigned fraction
+  TYPE_SBYTE = 6,
+  TYPE_UNDEFINED = 7,  // 8-bit untyped data */
+  TYPE_SSHORT = 8,
+  TYPE_SLONG = 9,
+  TYPE_SRATIONAL = 10,  // 64-bit signed fraction
+  TYPE_FLOAT = 11,
+  TYPE_DOUBLE = 12,
+  TYPE_IFD = 13,     // 32-bit unsigned integer (offset)
+  TYPE_LONG8 = 16,   // BigTIFF 64-bit unsigned
+  TYPE_SLONG8 = 17,  // BigTIFF 64-bit signed
+  TYPE_IFD8 = 18     // BigTIFF 64-bit unsigned integer (offset)
+} DataType;
+
+struct FieldInfo {
+  int tag;
+  short read_count;
+  short write_count;
+  DataType type;
+  unsigned short bit;
+  unsigned char ok_to_change;
+  unsigned char pass_count;
+  std::string name;
+
+  FieldInfo()
+      : tag(0),
+        read_count(-1),
+        write_count(-1),
+        type(TYPE_NOTYPE),
+        bit(0),
+        ok_to_change(0),
+        pass_count(0) {}
+};
+
+struct FieldData {
+  int tag;
+  DataType type;
+  std::string name;
+  std::vector<unsigned char> data;
+
+  FieldData() : tag(0), type(TYPE_NOTYPE) {}
+};
+
 struct DNGImage {
   int black_level[4];  // for each spp(up to 4)
   int white_level[4];  // for each spp(up to 4)
@@ -132,15 +181,28 @@ struct DNGImage {
 
   std::vector<unsigned char>
       data;  // Decoded pixel data(len = spp * width * height * bps / 8)
+
+  // Custom fields
+  std::vector<FieldData> custom_fields;
 };
 
-// When DNG contains multiple images(e.g. full-res image + thumnail image),
-// The function creates `DNGImage` data strucure for each images.
-// Returns true upon success.
-// Returns false upon failure and store error message into `err`.
-bool LoadDNG(std::vector<DNGImage>* images,  // [out] DNG images.
-             std::string* err,               // [out] error message.
-             const char* filename);
+///
+/// Loads DNG image and store it to `images`
+///
+/// If DNG contains multiple images(e.g. full-res image + thumnail image),
+/// The function creates `DNGImage` data strucure for each images.
+///
+/// @param[in] filename DNG filename.
+/// @param[in] custom_fields List of custom fields to parse(optional. can be
+/// empty).
+/// @param[out] images Loaded DNG images.
+/// @param[out] err Error message.
+///
+/// @return true upon success.
+/// @return false upon failure and store error message into `err`.
+///
+bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
+             std::vector<DNGImage>* images, std::string* err);
 
 }  // namespace tinydng
 
@@ -159,10 +221,19 @@ bool LoadDNG(std::vector<DNGImage>* images,  // [out] DNG images.
 #include <chrono>
 #endif
 
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wvariadic-macros"
+#endif
+
 #ifdef TINY_DNG_LOADER_DEBUG
 #define DPRINTF(...) printf(__VA_ARGS__)
 #else
 #define DPRINTF(...)
+#endif
+
+#ifdef __clang__
+#pragma clang diagnostic pop
 #endif
 
 namespace tinydng {
@@ -191,6 +262,15 @@ static int clz32(unsigned int x) {
 #pragma clang diagnostic ignored "-Wdisabled-macro-expansion"
 #pragma clang diagnostic ignored "-Wdouble-promotion"
 #pragma clang diagnostic ignored "-Wimplicit-fallthrough"
+#ifdef __APPLE__
+#if __clang_major__ >= 8 && __clang_minor__ >= 1
+#pragma clang diagnostic ignored "-Wcomma"
+#endif
+#else
+#if (__clang_major__ >= 4) || (__clang_major__ >= 3 && __clang_minor__ > 8)
+#pragma clang diagnostic ignored "-Wcomma"
+#endif
+#endif
 #endif
 
 #ifdef _MSC_VER
@@ -1655,14 +1735,15 @@ static unsigned int ReadUInt(int type, FILE* fp, bool swap) {
 }
 
 static double ReadReal(int type, FILE* fp, bool swap) {
-  assert(type == 5 || type == 10);  // @todo { Support more types. }
+  assert(type == TYPE_RATIONAL ||
+         type == TYPE_SRATIONAL);  // @todo { Support more types. }
 
-  if (type == 5) {
+  if (type == TYPE_RATIONAL) {
     unsigned int num = static_cast<unsigned int>(Read4(fp, swap));
     unsigned int denom = static_cast<unsigned int>(Read4(fp, swap));
 
     return static_cast<double>(num) / static_cast<double>(denom);
-  } else if (type == 10) {
+  } else if (type == TYPE_SRATIONAL) {
     int num = static_cast<int>(Read4(fp, swap));
     int denom = static_cast<int>(Read4(fp, swap));
 
@@ -1676,7 +1757,6 @@ static double ReadReal(int type, FILE* fp, bool swap) {
 static void GetTIFFTag(unsigned short* tag, unsigned short* type,
                        unsigned int* len, unsigned int* saved_offt, FILE* fp,
                        bool swap_endian) {
-  size_t ret;
   (*tag) = Read2(fp, swap_endian);
   (*type) = Read2(fp, swap_endian);
   (*len) = Read4(fp, swap_endian);
@@ -2038,9 +2118,68 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
   return true;
 }
 
+// Parse custom TIFF field
+static bool ParseCustomField(const std::vector<FieldInfo>& field_lists,
+                             const unsigned short tag,
+                             const unsigned short type, const unsigned int len,
+                             const bool swap_endian, FILE* fp,
+                             FieldData* data) {
+  bool found = false;
+
+  (void)len;
+
+  // Simple linear search.
+  // TODO(syoyo): Use binary search for faster procesing.
+  for (size_t i = 0; i < field_lists.size(); i++) {
+    if ((field_lists[i].tag > TAG_NEW_SUBFILE_TYPE) &&
+        (field_lists[i].tag == tag) && (field_lists[i].type == type)) {
+      if ((type == TYPE_BYTE) || (type == TYPE_SBYTE)) {
+        data->name = field_lists[i].name;
+        data->type = static_cast<DataType>(type);
+        unsigned char val;
+        size_t n = fread(&val, 1, 1, fp);
+        assert(n == 1);
+        data->data.resize(1);
+        data->data[0] = val;
+        found = true;
+      } else if ((type == TYPE_SHORT) || (type == TYPE_SSHORT)) {
+        data->name = field_lists[i].name;
+        data->type = static_cast<DataType>(type);
+        unsigned short val = Read2(fp, swap_endian);
+        data->data.resize(sizeof(short));
+        memcpy(data->data.data(), &val, sizeof(short));
+        found = true;
+      } else if ((type == TYPE_LONG) || (type == TYPE_SLONG) ||
+                 (type == TYPE_FLOAT)) {
+        data->name = field_lists[i].name;
+        data->type = static_cast<DataType>(type);
+        unsigned int val = Read4(fp, swap_endian);
+        data->data.resize(sizeof(int));
+        memcpy(data->data.data(), &val, sizeof(int));
+        found = true;
+      } else if ((type == TYPE_RATIONAL) || (type == TYPE_SRATIONAL)) {
+        data->name = field_lists[i].name;
+        data->type = static_cast<DataType>(type);
+        unsigned int num = Read4(fp, swap_endian);
+        unsigned int denom = Read4(fp, swap_endian);
+        data->data.resize(sizeof(int) * 2);
+
+        // Store rational value as is.
+        memcpy(&data->data[0], &num, 4);
+        memcpy(&data->data[4], &denom, 4);
+      } else {
+        // TODO(syoyo): Support more data types.
+      }
+    }
+  }
+
+  return found;
+}
+
 // Parse TIFF IFD.
 // Returns true upon success, false if failed to parse.
-static bool ParseTIFFIFD(std::vector<tinydng::DNGImage>* images, FILE* fp,
+static bool ParseTIFFIFD(const std::vector<FieldInfo>& custom_field_lists,
+                         std::vector<tinydng::DNGImage>* images, FILE* fp,
                          bool swap_endian) {
   tinydng::DNGImage image;
   InitializeDNGImage(&image);
@@ -2135,8 +2274,9 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage>* images, FILE* fp,
           unsigned int base = 0;  // @fixme
           fseek(fp, offt + base, SEEK_SET);
 
-          ParseTIFFIFD(images, fp, swap_endian);  // recursive call
-          fseek(fp, i + 4, SEEK_SET);             // rewind
+          ParseTIFFIFD(custom_field_lists, images, fp,
+                       swap_endian);   // recursive call
+          fseek(fp, i + 4, SEEK_SET);  // rewind
         }
         // DPRINTF("sub_ifds DONE\n");
       }
@@ -2333,9 +2473,15 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage>* images, FILE* fp,
         //  image.cr2_slices[2]);
       } break;
 
-      default:
+      default: {
+        FieldData data;
+        bool found = ParseCustomField(custom_field_lists, tag, type, len,
+                                      swap_endian, fp, &data);
+        if (found) {
+          image.custom_fields.push_back(data);
+        }
         // DPRINTF("unknown or unsupported tag = %d\n", tag);
-        break;
+      }
     }
 
     fseek(fp, saved_offt, SEEK_SET);
@@ -2349,7 +2495,8 @@ static bool ParseTIFFIFD(std::vector<tinydng::DNGImage>* images, FILE* fp,
   return true;
 }
 
-static bool ParseDNG(std::vector<tinydng::DNGImage>* images, FILE* fp,
+static bool ParseDNG(const std::vector<FieldInfo>& custom_fields,
+                     std::vector<tinydng::DNGImage>* images, FILE* fp,
                      bool swap_endian) {
   assert(images);
 
@@ -2361,7 +2508,7 @@ static bool ParseDNG(std::vector<tinydng::DNGImage>* images, FILE* fp,
     fseek(fp, offt, SEEK_SET);
 
     // DPRINTF("Parse TIFF IFD\n");
-    if (!ParseTIFFIFD(images, fp, swap_endian)) {
+    if (!ParseTIFFIFD(custom_fields, images, fp, swap_endian)) {
       break;
     }
     // Get next IFD offset(0 = end of file).
@@ -2392,8 +2539,8 @@ static bool IsBigEndian() {
   return (c[0] == 1);
 }
 
-bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
-             const char* filename) {
+bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
+             std::vector<DNGImage>* images, std::string* err) {
   std::stringstream ss;
 
   assert(images);
@@ -2462,7 +2609,7 @@ bool LoadDNG(std::vector<DNGImage>* images, std::string* err,
   fseek(fp, 4, SEEK_SET);
 
   const bool swap_endian = (is_dng_big_endian && (!IsBigEndian()));
-  ret = ParseDNG(images, fp, swap_endian);
+  ret = ParseDNG(custom_fields, images, fp, swap_endian);
 
   if (!ret) {
     fclose(fp);
