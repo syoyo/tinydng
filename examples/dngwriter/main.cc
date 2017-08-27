@@ -35,7 +35,7 @@ main(int argc, char **argv)
   dng_writer.SetPlanarConfig(tinydngwriter::PLANARCONFIG_CONTIG);
   dng_writer.SetCompression(tinydngwriter::COMPRESSION_NONE);
   dng_writer.SetPhotometric(tinydngwriter::PHOTOMETRIC_RGB);
-  dng_writer.SetSamplesPerPixel(1);
+  dng_writer.SetSamplesPerPixel(3);
 
   std::vector<unsigned short> buf;
   buf.resize(image_width * image_height * 3);
