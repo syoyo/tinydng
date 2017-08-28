@@ -2557,8 +2557,13 @@ static bool ParseDNG(const std::vector<FieldInfo>& custom_fields,
       if (image->white_level[s] == -1) {
         // Set white level with (2 ** BitsPerSample) according to the DNG spec.
         assert(image->bits_per_sample_original > 0);
-        assert(image->bits_per_sample_original < 32);
-        image->white_level[s] = (1 << image->bits_per_sample_original);
+
+        if (image->bits_per_sample_original >= 32) { // workaround for 32bit floating point TIFF.
+          image->white_level[s] = -1;
+        } else {
+          assert(image->bits_per_sample_original < 32);
+          image->white_level[s] = (1 << image->bits_per_sample_original);
+        }
       }
     }
   }
