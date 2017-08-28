@@ -749,7 +749,7 @@ static bool IFDComparator(const IFDTag &a, const IFDTag &b) {
 }
 
 bool DNGImage::WriteDataToStream(std::ostream *ofs, std::string *err) const {
-  if ((data_os_ == 0)) {
+  if ((data_os_.str().length() == 0)) {
     if (err) {
       (*err) += "Empty image data.\n";
     }
