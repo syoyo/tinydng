@@ -224,6 +224,7 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 #ifdef __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wvariadic-macros"
+#pragma clang diagnostic ignored "-Wc++98-compat-pedantic"
 #endif
 
 #ifdef TINY_DNG_LOADER_DEBUG
@@ -1679,6 +1680,7 @@ static unsigned short Read2(FILE* fp, bool swap) {
   unsigned short val;
   size_t ret = fread(&val, 1, 2, fp);
   assert(ret == 2);
+  (void)ret;
   if (swap) {
     swap2(&val);
   }
@@ -1689,6 +1691,7 @@ static unsigned int Read4(FILE* fp, bool swap) {
   unsigned int val;
   size_t ret = fread(&val, 1, 4, fp);
   assert(ret == 4);
+  (void)ret;
   if (swap) {
     swap4(&val);
   }
@@ -1701,6 +1704,7 @@ static unsigned int ReadUInt(int type, FILE* fp, bool swap) {
     unsigned short val;
     size_t ret = fread(&val, 1, 2, fp);
     assert(ret == 2);
+    (void)ret;
     if (swap) {
       swap2(&val);
     }
@@ -1709,6 +1713,7 @@ static unsigned int ReadUInt(int type, FILE* fp, bool swap) {
     unsigned int val0;
     size_t ret = fread(&val0, 1, 4, fp);
     assert(ret == 4);
+    (void)ret;
     if (swap) {
       swap4(&val0);
     }
@@ -1716,6 +1721,7 @@ static unsigned int ReadUInt(int type, FILE* fp, bool swap) {
     unsigned int val1;
     ret = fread(&val1, 1, 4, fp);
     assert(ret == 4);
+    (void)ret;
     if (swap) {
       swap4(&val1);
     }
@@ -1727,6 +1733,7 @@ static unsigned int ReadUInt(int type, FILE* fp, bool swap) {
     unsigned int val;
     size_t ret = fread(&val, 1, 4, fp);
     assert(ret == 4);
+    (void)ret;
     if (swap) {
       swap4(&val);
     }
@@ -2139,6 +2146,7 @@ static bool ParseCustomField(const std::vector<FieldInfo>& field_lists,
         unsigned char val;
         size_t n = fread(&val, 1, 1, fp);
         assert(n == 1);
+        (void)n;
         data->data.resize(1);
         data->data[0] = val;
         found = true;
@@ -2584,6 +2592,7 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
     fseek(fp, 0, SEEK_SET);
     size_t read_len = fread(whole_data.data(), 1, file_size, fp);
     assert(read_len == file_size);
+    (void)read_len;
 
     fseek(fp, 0, SEEK_SET);
   }
