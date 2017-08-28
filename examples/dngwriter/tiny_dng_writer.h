@@ -348,7 +348,7 @@ static bool WriteTIFFTag(const unsigned short tag, const unsigned short type,
     ifd.offset_or_value = offset;
 
     data_out->write(reinterpret_cast<const char *>(data),
-                    static_cast<ssize_t>(len));
+                    static_cast<std::streamsize>(len));
 
   } else {
     ifd.offset_or_value = 0;
@@ -671,7 +671,7 @@ bool DNGImage::SetImageData(const unsigned char *data, const size_t data_len) {
       static_cast<unsigned int>(data_os_.str().length()) + kHeaderSize;
 
   data_os_.write(reinterpret_cast<const char *>(data),
-                 static_cast<ssize_t>(data_len));
+                 static_cast<std::streamsize>(data_len));
 
   {
     unsigned int count = 1;
@@ -757,7 +757,7 @@ bool DNGImage::WriteDataToStream(std::ostream *ofs, std::string *err) const {
   }
 
   ofs->write(data_os_.str().c_str(),
-             static_cast<ssize_t>(data_os_.str().length()));
+             static_cast<std::streamsize>(data_os_.str().length()));
 
   return true;
 }
@@ -822,7 +822,7 @@ bool DNGImage::WriteIFDToStream(const unsigned int ifd_base_offset,
     }
 
     ofs->write(ifd_os.str().c_str(),
-               static_cast<ssize_t>(ifd_os.str().length()));
+               static_cast<std::streamsize>(ifd_os.str().length()));
   }
 
   return true;
@@ -876,7 +876,7 @@ bool DNGWriter::WriteToFile(const char *filename, std::string *err) const {
   // std::cout << "swap endian " << swap_endian_ << std::endl;
 
   // 3. Write header
-  ofs.write(header.str().c_str(), static_cast<ssize_t>(header.str().length()));
+  ofs.write(header.str().c_str(), static_cast<std::streamsize>(header.str().length()));
 
   // 4. Write image and meta data
   for (size_t i = 0; i < images_.size(); i++) {
