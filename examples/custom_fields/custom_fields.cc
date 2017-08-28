@@ -2,9 +2,14 @@
 #include <cstdlib>
 #include <iostream>
 
+#define TINY_DNG_WRITER_IMPLEMENTATION
+#include "../dngwriter/tiny_dng_writer.h"
+
 #define TINY_DNG_LOADER_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
 #include "tiny_dng_loader.h"
+
+#define MY_TAG (21264)
 
 static char get_colorname(int c) {
   switch (c) {
@@ -27,18 +32,92 @@ static char get_colorname(int c) {
   }
 }
 
+static void CreateImage(tinydngwriter::DNGImage *dng_image, const unsigned short basecol, const int intvalue)
+{
+    unsigned int image_width = 512;
+    unsigned int image_height = 512;
+    dng_image->SetSubfileType(tinydngwriter::FILETYPE_REDUCEDIMAGE);
+    dng_image->SetImageWidth(image_width);
+    dng_image->SetImageLength(image_height);
+    dng_image->SetRowsPerStrip(image_height);
+    dng_image->SetBitsPerSample(16);
+    dng_image->SetPlanarConfig(tinydngwriter::PLANARCONFIG_CONTIG);
+    dng_image->SetCompression(tinydngwriter::COMPRESSION_NONE);
+    dng_image->SetPhotometric(tinydngwriter::PHOTOMETRIC_RGB);
+    dng_image->SetSamplesPerPixel(3);
+
+    dng_image->SetCustomFieldLong(MY_TAG, intvalue);
+
+    std::vector<unsigned short> buf;
+    buf.resize(image_width * image_height * 3);
+
+    for (size_t y = 0; y < image_height; y++) {
+      for (size_t x = 0; x < image_width; x++) {
+        buf[3 * (y * image_width + x) + 0] = static_cast<unsigned short>(x % 512);
+        buf[3 * (y * image_width + x) + 1] = static_cast<unsigned short>(y % 512);
+        buf[3 * (y * image_width + x) + 2] = basecol;
+      }
+    }
+
+    dng_image->SetImageData(reinterpret_cast<unsigned char *>(buf.data()), buf.size() * sizeof(unsigned short));
+}
+
+static bool WriteDNG(const std::string &filename, const int custom_value)
+{
+  tinydngwriter::DNGImage dng_image0;
+  tinydngwriter::DNGImage dng_image1;
+
+  CreateImage(&dng_image0, 12000, custom_value);
+  CreateImage(&dng_image1, 42000, 456);
+
+  tinydngwriter::DNGWriter dng_writer;
+  assert(dng_writer.AddImage(&dng_image0));
+  assert(dng_writer.AddImage(&dng_image1));
+
+  std::string err;
+  bool ret = dng_writer.WriteToFile(filename.c_str(), &err);
+
+  if (!err.empty()) {
+    std::cerr << err;
+  }
+
+  if (!ret) {
+    return false;
+  }
+
+  std::cout << "Wrote : " << filename << std::endl;
+
+  return true;
+}
+
 int main(int argc, char **argv) {
-  std::string input_filename = "colorchart.dng";
+
+  std::string filename = "test.dng";
+  int custom_value = 123;
 
   if (argc > 1) {
-    input_filename = std::string(argv[1]);
+    custom_value = atoi(argv[1]);
+  }
+
+  if (!WriteDNG(filename, custom_value)) {
+    return EXIT_FAILURE;
   }
 
   std::string err;
   std::vector<tinydng::DNGImage> images;
   std::vector<tinydng::FieldInfo> custom_fields;
 
-  bool ret = tinydng::LoadDNG(input_filename.c_str(), custom_fields, &images, &err);
+  // Setup custom field lists for reading.
+  {
+    tinydng::FieldInfo field;
+    field.tag = MY_TAG;
+    field.type = tinydng::TYPE_SLONG;
+    field.name = "my_tag";
+
+    custom_fields.push_back(field);
+  }
+
+  bool ret = tinydng::LoadDNG(filename.c_str(), custom_fields, &images, &err);
 
   if (ret) {
     for (size_t i = 0; i < images.size(); i++) {
@@ -141,14 +220,25 @@ int main(int argc, char **argv) {
       }
 
       // Custom fields
+      std::cout << "# of custo fields : " << image.custom_fields.size() << std::endl;
       for (size_t c = 0; c < image.custom_fields.size(); c++) {
         std::cout << "Custom field: name = " << image.custom_fields[c].name << std::endl;
         std::cout << "Custom field: type = " << image.custom_fields[c].type << std::endl;
+
+        if (image.custom_fields[c].type == tinydng::TYPE_LONG) {
+          const unsigned int value = *(reinterpret_cast<const unsigned int *>(image.custom_fields[c].data.data()));
+          std::cout << "  uint value : " << value << std::endl;
+        } else if (image.custom_fields[c].type == tinydng::TYPE_SLONG) {
+          const int value = *(reinterpret_cast<const int *>(image.custom_fields[c].data.data()));
+          std::cout << "  int value : " << value << std::endl;
+        } else {
+          // TODO(syoyo): Implement more data types.
+        }
       }
     }
 
   } else {
-    std::cout << "Fail to load DNG " << input_filename << std::endl;
+    std::cout << "Fail to load DNG " << filename << std::endl;
     if (!err.empty()) {
       std::cout << "ERR: " << err;
     }

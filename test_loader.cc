@@ -46,8 +46,8 @@ int main(int argc, char **argv) {
 ;
       std::cout << "width = " << image.width << std::endl;
       std::cout << "height = " << image.height << std::endl;
-      std::cout << "bits per piexl = " << image.bits_per_sample << std::endl;
-      std::cout << "bits per piexl(original) = " << image.bits_per_sample_original << std::endl;
+      std::cout << "bits per pixel = " << image.bits_per_sample << std::endl;
+      std::cout << "bits per pixel(original) = " << image.bits_per_sample_original << std::endl;
       std::cout << "samples per piexl = " << image.samples_per_pixel << std::endl;
 
       std::cout << "version = " << image.version << std::endl;
