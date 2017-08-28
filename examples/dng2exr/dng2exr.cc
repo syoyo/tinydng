@@ -202,8 +202,9 @@ main(int argc, char **argv)
   std::vector<tinydng::DNGImage> images;
   {
     std::string err;
+    std::vector<tinydng::FieldInfo> custom_field_list;
     bool ret =
-        tinydng::LoadDNG(&images, &err, input_filename.c_str());
+        tinydng::LoadDNG(input_filename.c_str(), custom_field_list, &images, &err);
 
     if (!err.empty()) {
       std::cout << err << std::endl;
