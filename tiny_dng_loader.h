@@ -89,6 +89,15 @@ typedef enum {
   TYPE_IFD8 = 18     // BigTIFF 64-bit unsigned integer (offset)
 } DataType;
 
+typedef enum {
+  SAMPLEFORMAT_UINT = 1,
+  SAMPLEFORMAT_INT = 2,
+  SAMPLEFORMAT_IEEEFP = 3,  // floating point
+  SAMPLEFORMAT_VOID = 4,
+  SAMPLEFORMAT_COMPLEXINT = 5,
+  SAMPLEFORMAT_COMPLEXIEEEFP = 6
+} SampleFormat;
+
 struct FieldInfo {
   int tag;
   short read_count;
@@ -174,6 +183,9 @@ struct DNGImage {
   int strip_byte_count;
   int jpeg_byte_count;
   int planar_configuration;  // 1: chunky, 2: planar
+
+  SampleFormat sample_format;
+  int pad_sf;
 
   // CR2 specific
   unsigned short cr2_slices[3];
@@ -1625,6 +1637,7 @@ typedef enum {
   TAG_TILE_LENGTH = 323,
   TAG_TILE_OFFSETS = 324,
   TAG_TILE_BYTE_COUNTS = 325,
+  TAG_SAMPLE_FORMAT = 339,
   TAG_JPEG_IF_OFFSET = 513,
   TAG_JPEG_IF_BYTE_COUNT = 514,
   TAG_CFA_PATTERN_DIM = 33421,
@@ -1898,6 +1911,8 @@ static void InitializeDNGImage(tinydng::DNGImage* image) {
 
   image->samples_per_pixel = 1;
   image->bits_per_sample_original = 1;
+
+  image->sample_format = SAMPLEFORMAT_UINT;
 
   image->compression = COMPRESSION_NONE;
 
@@ -2270,6 +2285,17 @@ static bool ParseTIFFIFD(const std::vector<FieldInfo>& custom_field_lists,
 
       case TAG_PLANAR_CONFIGURATION:
         image.planar_configuration = Read2(fp, swap_endian);
+        break;
+
+      case TAG_SAMPLE_FORMAT:
+        {
+          short format = short(Read2(fp, swap_endian));
+          if ((format == SAMPLEFORMAT_INT) ||
+              (format == SAMPLEFORMAT_UINT) ||
+              (format == SAMPLEFORMAT_IEEEFP)) {
+            image.sample_format = static_cast<SampleFormat>(format);
+          }
+        }
         break;
 
       case TAG_SUB_IFDS:

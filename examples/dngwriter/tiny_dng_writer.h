@@ -48,6 +48,8 @@ typedef enum {
   TIFFTAG_PLANAR_CONFIG = 284,
   TIFFTAG_ORIENTATION = 274,
 
+  TIFFTAG_SAMPLEFORMAT = 339,
+
   // DNG extension
   TIFFTAG_CFA_REPEAT_PATTERN_DIM = 33421,
   TIFFTAG_CFA_PATTERN = 33422,
@@ -97,6 +99,12 @@ static const int PHOTOMETRIC_RGB = 2;            // Default
 static const int PHOTOMETRIC_CFA = 32893;        // DNG ext
 static const int PHOTOMETRIC_LINEARRAW = 34892;  // DNG ext
 
+// Sample format
+static const int SAMPLEFORMAT_UINT = 1;          // Default
+static const int SAMPLEFORMAT_INT  = 2;
+static const int SAMPLEFORMAT_IEEEFP = 3;        // floating point
+
+
 struct IFDTag {
   unsigned short tag;
   unsigned short type;
@@ -123,6 +131,7 @@ class DNGImage {
   bool SetPlanarConfig(unsigned short value);
   bool SetOrientation(unsigned short value);
   bool SetCompression(unsigned short value);
+  bool SetSampleFormat(unsigned short value);
 
   bool SetActiveArea(const unsigned int values[4]);
 
@@ -516,7 +525,7 @@ bool DNGImage::SetPhotometric(const unsigned short value) {
 
   unsigned int count = 1;
 
-  const unsigned int data = value;
+  const unsigned short data = value;
   bool ret = WriteTIFFTag(
       static_cast<unsigned short>(TIFFTAG_PHOTOMETRIC), TIFF_SHORT, count,
       reinterpret_cast<const unsigned char *>(&data), &ifd_tags_, &data_os_);
@@ -538,7 +547,7 @@ bool DNGImage::SetPlanarConfig(const unsigned short value) {
     return false;
   }
 
-  const unsigned int data = value;
+  const unsigned short data = value;
   bool ret = WriteTIFFTag(
       static_cast<unsigned short>(TIFFTAG_PLANAR_CONFIG), TIFF_SHORT, count,
       reinterpret_cast<const unsigned char *>(&data), &ifd_tags_, &data_os_);
@@ -560,9 +569,33 @@ bool DNGImage::SetCompression(const unsigned short value) {
     return false;
   }
 
-  const unsigned int data = value;
+  const unsigned short data = value;
   bool ret = WriteTIFFTag(
       static_cast<unsigned short>(TIFFTAG_COMPRESSION), TIFF_SHORT, count,
+      reinterpret_cast<const unsigned char *>(&data), &ifd_tags_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGImage::SetSampleFormat(const unsigned short value) {
+  unsigned int count = 1;
+
+  if ((value == SAMPLEFORMAT_UINT) ||
+      (value == SAMPLEFORMAT_INT) ||
+      (value == SAMPLEFORMAT_IEEEFP)) {
+    // OK
+  } else {
+    return false;
+  }
+
+  const unsigned short data = value;
+  bool ret = WriteTIFFTag(
+      static_cast<unsigned short>(TIFFTAG_SAMPLEFORMAT), TIFF_SHORT, count,
       reinterpret_cast<const unsigned char *>(&data), &ifd_tags_, &data_os_);
 
   if (!ret) {
