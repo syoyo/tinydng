@@ -23,6 +23,7 @@ Currently TinyDNGLoader only supports lossless RAW DNG and limited lossless JPEG
     * [ ] sRAW
   * Decode Nikon RAW(NEF)
     * TODO
+  * Reading custom TIFF tags.
 
 ## Supported DNG files
 
@@ -107,6 +108,7 @@ Here is the list of great articles on how to decode RAW file and how to develop 
 ## TODO
 
 * [ ] Parse more DNG headers
+* [ ] Parse more custom DNG(TIFF) tags
 * [ ] lossy DNG
   * Contribution is welcome.
 * [ ] ZIP-compressed DNG
