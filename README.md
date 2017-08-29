@@ -81,7 +81,7 @@ int main(int argc, char **argv) {
       std::cout << "height = " << image.height << std::endl;
       std::cout << "bits per piexl = " << image.bits_per_sample << std::endl;
       std::cout << "bits per piexl(original) = " << image.bits_per_sample_original << std::endl;
-      std::cout << "samples per piexl = " << image.samples_per_pixel << std::endl;
+      std::cout << "samples per pixel = " << image.samples_per_pixel << std::endl;
 
     }
   }
@@ -113,7 +113,8 @@ Here is the list of great articles on how to decode RAW file and how to develop 
   * Contribution is welcome.
 * [ ] ZIP-compressed DNG
   * Contribution is welcome.
-* [ ] DNG writer?
+* [ ] Improve DNG writer
+  * [ ] Support compression
 * [ ] Support Big TIFF(4GB+)
 * [ ] Decode Nikon RAW(NEF)
 * [ ] Improve Canon RAW decoding
