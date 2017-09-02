@@ -59,11 +59,14 @@ main(int argc, char **argv)
   CreateImage(&dng_image1, 42000);
 
   tinydngwriter::DNGWriter dng_writer;
-  assert(dng_writer.AddImage(&dng_image0));
-  assert(dng_writer.AddImage(&dng_image1));
+  bool ret = dng_writer.AddImage(&dng_image0);
+  assert(ret);
+
+  ret = dng_writer.AddImage(&dng_image1);
+  assert(ret);
 
   std::string err;
-  bool ret = dng_writer.WriteToFile(output_filename.c_str(), &err);
+  ret = dng_writer.WriteToFile(output_filename.c_str(), &err);
 
   if (!err.empty()) {
     std::cerr << err;

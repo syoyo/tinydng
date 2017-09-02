@@ -153,7 +153,7 @@ class DNGImage {
   size_t GetDataSize() const { return data_os_.str().length(); }
 
   bool WriteDataToStream(std::ostream *ofs, std::string *err) const;
-  bool WriteIFDToStream(const unsigned int ifd_base_offset, std::ostream *ofs,
+  bool WriteIFDToStream(const unsigned int data_base_offset, std::ostream *ofs,
                         std::string *err) const;
 
  private:
@@ -350,6 +350,11 @@ static bool WriteTIFFTag(const unsigned short tag, const unsigned short type,
 
   size_t len = count * (typesize_table[(type) < 14 ? (type) : 0]);
   if (len > 4) {
+    assert(data_out);
+    if (!data_out) {
+      return false;
+    }
+
     // Store offset value.
 
     unsigned int offset =
@@ -700,26 +705,10 @@ bool DNGImage::SetImageData(const unsigned char *data, const size_t data_len) {
     return false;
   }
 
-  const unsigned int offset =
-      static_cast<unsigned int>(data_os_.str().length()) + kHeaderSize;
-
   data_os_.write(reinterpret_cast<const char *>(data),
                  static_cast<std::streamsize>(data_len));
 
-  {
-    unsigned int count = 1;
-
-    bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_STRIP_OFFSET),
-                            TIFF_LONG, count,
-                            reinterpret_cast<const unsigned char *>(&offset),
-                            &ifd_tags_, &data_os_);
-
-    if (!ret) {
-      return false;
-    }
-
-    num_fields_++;
-  }
+  // NOTE: STRIP_OFFSET tag will be written at `WriteIFDToStream()`.
 
   {
     unsigned int count = 1;
@@ -728,7 +717,7 @@ bool DNGImage::SetImageData(const unsigned char *data, const size_t data_len) {
     bool ret = WriteTIFFTag(
         static_cast<unsigned short>(TIFFTAG_STRIP_BYTE_COUNTS), TIFF_LONG,
         count, reinterpret_cast<const unsigned char *>(&bytes), &ifd_tags_,
-        &data_os_);
+        NULL);
 
     if (!ret) {
       return false;
@@ -795,7 +784,7 @@ bool DNGImage::WriteDataToStream(std::ostream *ofs, std::string *err) const {
   return true;
 }
 
-bool DNGImage::WriteIFDToStream(const unsigned int ifd_base_offset,
+bool DNGImage::WriteIFDToStream(const unsigned int data_base_offset,
                                 std::ostream *ofs, std::string *err) const {
   if ((num_fields_ == 0) || (ifd_tags_.size() < 1)) {
     if (err) {
@@ -804,18 +793,32 @@ bool DNGImage::WriteIFDToStream(const unsigned int ifd_base_offset,
     return false;
   }
 
+  // add STRIP_OFFSET tag and sort IFD tags.
+  std::vector<IFDTag> tags = ifd_tags_;
+  {
+    // For STRIP_OFFSET we need the actual offset value to data(image),
+    // thus write STRIP_OFFSET here.
+    unsigned int offset = data_base_offset + kHeaderSize;
+    IFDTag ifd;
+    ifd.tag = TIFFTAG_STRIP_OFFSET;
+    ifd.type = TIFF_LONG;
+    ifd.count = 1;
+    ifd.offset_or_value = offset;
+    tags.push_back(ifd);
+  }
+
+  // TIFF expects IFD tags are sorted.
+  std::sort(tags.begin(), tags.end(), IFDComparator);
+
   std::ostringstream ifd_os;
 
-  Write2(num_fields_, &ifd_os, swap_endian_);
+  unsigned short num_fields = static_cast<unsigned short>(tags.size());
 
-  // Sort and write IFD tags.
-  // TIFF expects IFD tags are sorted.
+  Write2(num_fields, &ifd_os, swap_endian_);
+
   {
     size_t typesize_table[] = {1, 1, 1, 2, 4, 8, 1, 1, 2, 4, 8, 4, 8, 4};
 
-    std::vector<IFDTag> tags = ifd_tags_;
-
-    std::sort(tags.begin(), tags.end(), IFDComparator);
     for (size_t i = 0; i < tags.size(); i++) {
       const IFDTag &ifd = tags[i];
       Write2(ifd.tag, &ifd_os, swap_endian_);
@@ -826,10 +829,11 @@ bool DNGImage::WriteIFDToStream(const unsigned int ifd_base_offset,
           ifd.count * (typesize_table[(ifd.type) < 14 ? (ifd.type) : 0]);
       if (len > 4) {
         // Store offset value.
-        unsigned int ifd_offt = ifd.offset_or_value + ifd_base_offset;
+        unsigned int ifd_offt = ifd.offset_or_value + data_base_offset;
         Write4(ifd_offt, &ifd_os, swap_endian_);
       } else {
         // less than 4 bytes = store data itself.
+
         if (len == 1) {
           const unsigned char value =
               *(reinterpret_cast<const unsigned char *>(&ifd.offset_or_value));
@@ -888,6 +892,14 @@ bool DNGWriter::WriteToFile(const char *filename, std::string *err) const {
     return false;
   }
 
+  if (images_.size() == 0) {
+    if (err) {
+      (*err) = "No image added for writing.\n";
+    }
+
+    return false;
+  }
+
   // 1. Compute offset and data size
   size_t data_len = 0;
   std::vector<size_t> offset_table;
@@ -921,6 +933,7 @@ bool DNGWriter::WriteToFile(const char *filename, std::string *err) const {
 
   // 5. Write IFD entries;
   for (size_t i = 0; i < images_.size(); i++) {
+
     bool ok = images_[i]->WriteIFDToStream(
         static_cast<unsigned int>(offset_table[i]), &ofs, err);
     if (!ok) {
