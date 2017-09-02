@@ -175,7 +175,7 @@ typedef struct {
   float intensity;
   bool flip_y;
 
-  int view_offset[2];
+  float view_offset[2];
   int view_scale;  // percentage.
   float display_gamma;
   int cfa_offset[2];  // CFA offset.
@@ -234,10 +234,12 @@ static const char gFragmentShaderStr[] =
     "uniform vec2  uOffset;\n"
     "uniform vec2  uTexsize;\n"
     "uniform float uScale;\n"
+    "uniform float uIntensity;\n"
     "uniform sampler2D tex;\n"
     "void main() {\n"
-    "    vec2 tcoord = uScale * (vTexcoord + uOffset); // uTexsize;\n"
-    "    vec3 col = texture2D(tex, tcoord).rgb;\n"
+    "    vec2 tcoord = (vTexcoord + uOffset) - vec2(0.5, 0.5);\n"
+    "    tcoord = uScale * tcoord + vec2(0.5, 0.5);\n"
+    "    vec3 col = uIntensity * texture2D(tex, tcoord).rgb;\n"
     "    col = clamp(pow(col, vec3(1.0f / uGamma)), 0.0, 1.0);\n"
     "    gl_FragColor = vec4(col, 1.0);\n"
     "}\n";
@@ -251,6 +253,7 @@ typedef struct {
   GLint texcoord_attrib;
 
   GLint gamma_loc;
+  GLint intensity_loc;
   GLint uv_offset_loc;
   GLint uv_scale_loc;
   GLint texture_size_loc;
@@ -983,6 +986,7 @@ void InitGLDisplay(GLContext* ctx, int width, int height) {
   BindUniform(ctx->gamma_loc, ctx->program, "uGamma");
   BindUniform(ctx->uv_offset_loc, ctx->program, "uOffset");
   BindUniform(ctx->uv_scale_loc, ctx->program, "uScale");
+  BindUniform(ctx->intensity_loc, ctx->program, "uIntensity");
   BindUniform(ctx->texture_size_loc, ctx->program, "uTexsize");
 
   // Init texture for display.
@@ -1038,8 +1042,10 @@ void mouseMoveCallback(float x, float y) {
     int dx = (int)x - gMousePosX;
     int dy = (int)y - gMousePosY;
 
-    gUIParam.view_offset[0] -= dx;
-    gUIParam.view_offset[1] += dy;
+    gUIParam.view_offset[0] -= float(dx) / float(gWidth);
+    gUIParam.view_offset[1] += float(dy) / float(gHeight);
+
+    std::cout << "view_offt " << gUIParam.view_offset[0] << std::endl;
   }
 
   int px = clamp(x + gUIParam.view_offset[0], 0, gRAWImage.width - 1);
@@ -1116,10 +1122,11 @@ void Display(const GLContext& ctx, const UIParam& param) {
   CheckGLError("use_program");
 
   glUniform2f(ctx.uv_offset_loc,
-              (float)param.view_offset[0],
-              (float)param.view_offset[1]);
-  glUniform1f(ctx.uv_scale_loc, (float)param.view_scale / (float)(100.0f));
+              param.view_offset[0],
+              param.view_offset[1]);
+  glUniform1f(ctx.uv_scale_loc, (float)(100.0f) / (float)param.view_scale);
   glUniform1f(ctx.gamma_loc, param.display_gamma);
+  glUniform1f(ctx.intensity_loc, param.intensity);
   glUniform2f(ctx.texture_size_loc, gRAWImage.width, gRAWImage.height);
   CheckGLError("uniform");
 
@@ -1267,6 +1274,9 @@ int main(int argc, char** argv) {
 #endif
   ci.m_width = gRAWImage.width;
   ci.m_height = gRAWImage.height;
+
+  gWidth = gRAWImage.width;
+  gHeight = gRAWImage.height;
   window->createWindow(ci);
 
   window->setWindowTitle("view");
@@ -1335,7 +1345,7 @@ int main(int argc, char** argv) {
       }
 
       if (ImGui::SliderFloat("intensity", &gUIParam.intensity, 0.0f, 32.0f)) {
-        Develop(&gRAWImage, gUIParam);
+        //Develop(&gRAWImage, gUIParam);
       }
       if (ImGui::Checkbox("flip Y", &gUIParam.flip_y)) {
         Develop(&gRAWImage, gUIParam);
@@ -1344,7 +1354,7 @@ int main(int argc, char** argv) {
         Develop(&gRAWImage, gUIParam);
       }
       if (ImGui::SliderInt("zoom(%%)", &gUIParam.view_scale, 1, 1600)) {
-        Develop(&gRAWImage, gUIParam);
+        //Develop(&gRAWImage, gUIParam);
       }
       if (ImGui::InputFloat3("color mat 0", gUIParam.color_matrix[0])) {
         Develop(&gRAWImage, gUIParam);
