@@ -275,14 +275,8 @@ static int clz32(unsigned int x) {
 #pragma clang diagnostic ignored "-Wdisabled-macro-expansion"
 #pragma clang diagnostic ignored "-Wdouble-promotion"
 #pragma clang diagnostic ignored "-Wimplicit-fallthrough"
-#ifdef __APPLE__
-#if __clang_major__ >= 8 && __clang_minor__ >= 1
+#if __has_warning("-Wcomma")
 #pragma clang diagnostic ignored "-Wcomma"
-#endif
-#else
-#if (__clang_major__ >= 4) || (__clang_major__ >= 3 && __clang_minor__ > 8)
-#pragma clang diagnostic ignored "-Wcomma"
-#endif
 #endif
 #endif
 
