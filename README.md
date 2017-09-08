@@ -40,6 +40,8 @@ Here is the list of supported DNG files.
 * [x] Magic lantern DNG
   * [x] Uncompressed
   * [x] lossless JPEG(http://www.magiclantern.fm/forum/index.php?topic=18443.0)
+* [ ] 8-bit TIFF image
+  * [x] LZW compressed 8-bit image.
 
 ## Usage
 
@@ -128,4 +130,5 @@ TinyDNGLoader uses the following third party libraries.
 
 * liblj92(Lossless JPEG library) : (c) Andrew Baldwin 2014. MIT license.  https://bitbucket.org/baldand/mlrawviewer.git
 * stb_image : Public domain image loader.
+* lzw.hpp : Author: Guilherme R. Lampert. Public domain LZW decoder.
 
