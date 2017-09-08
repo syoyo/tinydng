@@ -63,6 +63,7 @@ typedef enum {
 
 typedef enum {
   COMPRESSION_NONE = 1,
+  COMPRESSION_LZW = 5,        // LZW
   COMPRESSION_OLD_JPEG = 6,   // JPEG or lossless JPEG
   COMPRESSION_NEW_JPEG = 7,   // Usually lossles JPEG, may be JPEG
   COMPRESSION_LOSSY = 34892,  // Lossy JPEGG
@@ -133,6 +134,7 @@ struct DNGImage {
   int version;         // DNG version
 
   int samples_per_pixel;
+  int rows_per_strip;
 
   int bits_per_sample_original;  // BitsPerSample in stored file.
   int bits_per_sample;  // Bits per sample after reading(decoding) DNG image.
@@ -151,12 +153,11 @@ struct DNGImage {
   unsigned int tile_offset;
   unsigned int tile_byte_count;  // (compressed) size
 
-  double analog_balance[3];
   int pad0;
+  double analog_balance[3];
   bool has_analog_balance;
   unsigned char pad1[7];
 
-  int pad2;
   double as_shot_neutral[3];
   int pad3;
   bool has_as_shot_neutral;
@@ -186,6 +187,12 @@ struct DNGImage {
 
   SampleFormat sample_format;
   int pad_sf;
+
+  // For an image with multiple strips.
+  int strips_per_image;
+  int pad_strip;
+  std::vector<unsigned int> strip_byte_counts;
+  std::vector<unsigned int> strip_offsets;
 
   // CR2 specific
   unsigned short cr2_slices[3];
@@ -239,6 +246,7 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 #pragma clang diagnostic ignored "-Wc++98-compat-pedantic"
 #endif
 
+#define TINY_DNG_LOADER_DEBUG (1)
 #ifdef TINY_DNG_LOADER_DEBUG
 #define DPRINTF(...) printf(__VA_ARGS__)
 #else
@@ -1624,6 +1632,7 @@ typedef enum {
   TAG_STRIP_OFFSET = 273,
   TAG_ORIENTATION = 274,
   TAG_SAMPLES_PER_PIXEL = 277,
+  TAG_ROWS_PER_STRIP = 278,
   TAG_STRIP_BYTE_COUNTS = 279,
   TAG_PLANAR_CONFIGURATION = 284,
   TAG_SUB_IFDS = 330,
@@ -1904,11 +1913,16 @@ static void InitializeDNGImage(tinydng::DNGImage* image) {
   image->strip_byte_count = -1;
 
   image->samples_per_pixel = 1;
+  image->rows_per_strip = -1; // 2^32 - 1
   image->bits_per_sample_original = 1;
 
   image->sample_format = SAMPLEFORMAT_UINT;
 
   image->compression = COMPRESSION_NONE;
+
+  image->orientation = 1;
+
+  image->strips_per_image = -1; // 2^32 - 1
 
   // CR2 specific
   image->cr2_slices[0] = 0;
@@ -2214,6 +2228,10 @@ static bool ParseTIFFIFD(const std::vector<FieldInfo>& custom_field_lists,
   DPRINTF("----------\n");
   DPRINTF("num entries %d\n", num_entries);
 
+  // For delayed reading of strip offsets and strip byte counts.
+  long offt_strip_offset = 0;
+  long offt_strip_byte_counts = 0;
+
   while (num_entries--) {
     unsigned short tag, type;
     unsigned int len;
@@ -2253,6 +2271,17 @@ static bool ParseTIFFIFD(const std::vector<FieldInfo>& custom_field_lists,
         // DPRINTF("spp = %d\n", image.samples_per_pixel);
         break;
 
+      case TAG_ROWS_PER_STRIP:
+        // The TIFF Spec says data type may be SHORT, but assume LONG for a while.
+        image.rows_per_strip = static_cast<int>(Read4(fp, swap_endian));
+        assert(image.height > 0);
+
+        // http://www.awaresystems.be/imaging/tiff/tifftags/rowsperstrip.html
+        image.strips_per_image = static_cast<int>(floor(double(image.height + image.rows_per_strip - 1) / double(image.rows_per_strip))); 
+        DPRINTF("rows_per_strip = %d\n", image.samples_per_pixel);
+        DPRINTF("strips_per_image = %d\n", image.strips_per_image);
+        break;
+
       case TAG_COMPRESSION:
         image.compression = static_cast<int>(ReadUInt(type, fp, swap_endian));
         // DPRINTF("tag-compression = %d\n", image.compression);
@@ -2260,6 +2289,7 @@ static bool ParseTIFFIFD(const std::vector<FieldInfo>& custom_field_lists,
 
       case TAG_STRIP_OFFSET:
       case TAG_JPEG_IF_OFFSET:
+        offt_strip_offset = ftell(fp);
         image.offset = Read4(fp, swap_endian);
         // DPRINTF("strip_offset = %d\n", image.offset);
         break;
@@ -2273,24 +2303,22 @@ static bool ParseTIFFIFD(const std::vector<FieldInfo>& custom_field_lists,
         break;
 
       case TAG_STRIP_BYTE_COUNTS:
+        offt_strip_byte_counts = ftell(fp);
         image.strip_byte_count = static_cast<int>(Read4(fp, swap_endian));
-        // DPRINTF("strip_byte_count = %d\n", image->strip_byte_count);
+        DPRINTF("strip_byte_count = %d\n", image.strip_byte_count);
         break;
 
       case TAG_PLANAR_CONFIGURATION:
         image.planar_configuration = Read2(fp, swap_endian);
         break;
 
-      case TAG_SAMPLE_FORMAT:
-        {
-          short format = short(Read2(fp, swap_endian));
-          if ((format == SAMPLEFORMAT_INT) ||
-              (format == SAMPLEFORMAT_UINT) ||
-              (format == SAMPLEFORMAT_IEEEFP)) {
-            image.sample_format = static_cast<SampleFormat>(format);
-          }
+      case TAG_SAMPLE_FORMAT: {
+        short format = short(Read2(fp, swap_endian));
+        if ((format == SAMPLEFORMAT_INT) || (format == SAMPLEFORMAT_UINT) ||
+            (format == SAMPLEFORMAT_IEEEFP)) {
+          image.sample_format = static_cast<SampleFormat>(format);
         }
-        break;
+      } break;
 
       case TAG_SUB_IFDS:
 
@@ -2515,6 +2543,38 @@ static bool ParseTIFFIFD(const std::vector<FieldInfo>& custom_field_lists,
     fseek(fp, saved_offt, SEEK_SET);
   }
 
+  // Delayed read of strip offsets and strip byte counts
+  if (image.strips_per_image > 0) {
+    image.strip_byte_counts.clear();
+    image.strip_offsets.clear();
+
+    long curr_offt = ftell(fp);
+
+    if (offt_strip_byte_counts > 0) {
+      fseek(fp, offt_strip_byte_counts, SEEK_SET);
+      
+      for (int k = 0; k < image.strips_per_image; k++) {
+        unsigned int strip_byte_count = Read4(fp, swap_endian);
+        DPRINTF("strip_byte_counts[%d] = %u\n", k, strip_byte_count);
+        image.strip_byte_counts.push_back(strip_byte_count);
+      }
+    }
+    
+    if (offt_strip_offset > 0) {
+      fseek(fp, offt_strip_offset, SEEK_SET);
+      
+      for (int k = 0; k < image.strips_per_image; k++) {
+        unsigned int strip_offset = Read4(fp, swap_endian);
+        DPRINTF("strip_offset[%d] = %u\n", k, strip_offset);
+        image.strip_offsets.push_back(strip_offset);
+      }
+    }
+    
+
+    fseek(fp, curr_offt, SEEK_SET);
+  }
+  //
+
   // Add to images.
   images->push_back(image);
 
@@ -2552,7 +2612,8 @@ static bool ParseDNG(const std::vector<FieldInfo>& custom_fields,
         // Set white level with (2 ** BitsPerSample) according to the DNG spec.
         assert(image->bits_per_sample_original > 0);
 
-        if (image->bits_per_sample_original >= 32) { // workaround for 32bit floating point TIFF.
+        if (image->bits_per_sample_original >=
+            32) {  // workaround for 32bit floating point TIFF.
           image->white_level[s] = -1;
         } else {
           assert(image->bits_per_sample_original < 32);
@@ -2684,6 +2745,17 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 
         ret = fread(&(image->data.at(0)), 1, len, fp);
         assert(ret == len);
+      }
+    } else if (image->compression == COMPRESSION_LZW) {  // lzw compression
+      image->bits_per_sample = image->bits_per_sample_original;
+      DPRINTF("bps = %d\n", image->bits_per_sample);
+      DPRINTF("counts = %d\n", int(image->strip_byte_counts.size()));
+      DPRINTF("offsets = %d\n", int(image->strip_offsets.size()));
+
+      if ((image->strip_byte_counts.size() > 0) && (image->strip_byte_counts.size() == image->strip_offsets.size())) {
+        DPRINTF("TODO");
+      } else {
+        assert(0); // TODO
       }
     } else if (image->compression ==
                COMPRESSION_OLD_JPEG) {  // old jpeg compression
