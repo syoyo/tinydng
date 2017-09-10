@@ -2832,7 +2832,7 @@ static bool outputByte(int code, unsigned char*& output, int outputSizeBytes,
 static bool outputSequence(const Dictionary& dict, int code,
                            unsigned char*& output, int outputSizeBytes,
                            int& bytesDecodedSoFar, int& firstByte) {
-  const int MaxDictEntries = 4096;
+  //const int MaxDictEntries = 4096;
 
   // A sequence is stored backwards, so we have to write
   // it to a temp then output the buffer in reverse.
@@ -2861,7 +2861,7 @@ static int easyDecode(const unsigned char* compressed,
   // const int MaxDictBits    = 12;
   const int StartBits = 9;
 
-  if (compressed == nullptr || uncompressed == nullptr) {
+  if (compressed == NULL || uncompressed == NULL) {
     // LZW_ERROR("lzw::easyDecode(): Null data pointer(s)!");
     return 0;
   }
@@ -3078,6 +3078,7 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
               image->bits_per_sample /* FIXME(syoyo): Is this correct? */,
               dst.data(), int(dst_len));
           assert(decoded_bytes > 0);
+          (void)decoded_bytes;
         }
       } else {
         assert(0);  // TODO
