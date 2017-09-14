@@ -247,7 +247,6 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 #pragma clang diagnostic ignored "-Wc++98-compat-pedantic"
 #endif
 
-#define TINY_DNG_LOADER_DEBUG (1)
 #ifdef TINY_DNG_LOADER_DEBUG
 #define DPRINTF(...) printf(__VA_ARGS__)
 #else
@@ -2636,8 +2635,8 @@ static bool IsBigEndian() {
   return (c[0] == 1);
 }
 
-// C++03 port of https://github.com/glampert/compression-algorithms
-// ===================================================================
+// C++03 and tiff lzw port of https://github.com/glampert/compression-algorithms
+// =============================================================================
 //
 // File: lzw.hpp
 // Author: Guilherme R. Lampert
@@ -2658,13 +2657,17 @@ class Dictionary {
   };
 
   // Dictionary entries 0-255 are always reserved to the byte/ASCII range.
-  int size;
-  Entry entries[4096];
+  int size_;
+  Entry entries_[4096];
 
   Dictionary();
   int findIndex(int code, int value) const;
   bool add(int code, int value);
   bool flush(int& codeBitsWidth);
+  void init();
+	int size() {
+		return size_;
+	}
 };
 
 // ========================================================
@@ -2672,14 +2675,21 @@ class Dictionary {
 // ========================================================
 
 Dictionary::Dictionary() {
+	init();
+}
+
+void Dictionary::init() {
   // First 256 dictionary entries are reserved to the byte/ASCII
   // range. Additional entries follow for the character sequences
   // found in the input. Up to 4096 - 256 (MaxDictEntries - FirstCode).
-  size = 256;
-  for (int i = 0; i < size; ++i) {
-    entries[i].code = -1;
-    entries[i].value = i;
+  size_ = 256;
+  for (int i = 0; i < size_; ++i) {
+    entries_[i].code = -1;
+    entries_[i].value = i;
   }
+
+  // 256 is reserved for ClearCode, 257 is reserved for end of stream, thus FistCode starts with 258
+	size_ = 258; // = 256 + 2
 }
 
 int Dictionary::findIndex(const int code, const int value) const {
@@ -2689,8 +2699,8 @@ int Dictionary::findIndex(const int code, const int value) const {
 
   // Linear search for now.
   // TODO: Worth optimizing with a proper hash-table?
-  for (int i = 0; i < size; ++i) {
-    if (entries[i].code == code && entries[i].value == value) {
+  for (int i = 0; i < size_; ++i) {
+    if (entries_[i].code == code && entries_[i].value == value) {
       return i;
     }
   }
@@ -2699,25 +2709,29 @@ int Dictionary::findIndex(const int code, const int value) const {
 }
 
 bool Dictionary::add(const int code, const int value) {
-  if (size == 4096) {
-    // LZW_ERROR("Dictionary overflowed!");
+	assert(code <= size_);
+  if (size_ == 4096) {
+    DPRINTF("Dictionary overflowed!");
     return false;
   }
 
-  entries[size].code = code;
-  entries[size].value = value;
-  ++size;
+  DPRINTF("add[%d].code = %d\n", size_, code);
+  DPRINTF("add[%d].value = %d\n", size_, value);
+  entries_[size_].code = code;
+  entries_[size_].value = value;
+  ++size_;
   return true;
 }
 
 bool Dictionary::flush(int& codeBitsWidth) {
-  if (size == (1 << codeBitsWidth)) {
+  if (size_ == ((1 << codeBitsWidth) - 1)) {
     ++codeBitsWidth;
+		DPRINTF("expand: bits %d\n", codeBitsWidth);
     if (codeBitsWidth > 12)  // MaxDictBits
     {
       // Clear the dictionary (except the first 256 byte entries).
       codeBitsWidth = 9;  // StartBits
-      size = 256;         // FistCode
+      size_ = 256 + 2;     // 256 is reserved for ClearCode, 257 is reserved for end of stream, thus FistCode starts with 258
       return true;
     }
   }
@@ -2734,8 +2748,10 @@ class BitStreamReader {
   BitStreamReader(const uint8_t* bitStream, int byteCount, int bitCount);
 
   bool isEndOfStream() const;
-  bool readNextBit(int& bitOut);
-  uint64_t readBitsU64(int bitCount);
+  bool readNextBitLE(int& bitOut); // little endian
+  bool readNextBitBE(int& bitOut); // big endian
+  uint64_t readBitsU64LE(int bitCount); // little endian
+  uint64_t readBitsU64BE(int bitCount); // big endian
   void reset();
 
  private:
@@ -2766,7 +2782,7 @@ BitStreamReader::BitStreamReader(const unsigned char* bitStream,
   reset();
 }
 
-bool BitStreamReader::readNextBit(int& bitOut) {
+bool BitStreamReader::readNextBitLE(int& bitOut) {
   if (numBitsRead >= sizeInBits) {
     return false;  // We are done.
   }
@@ -2782,14 +2798,30 @@ bool BitStreamReader::readNextBit(int& bitOut) {
   return true;
 }
 
-uint64_t BitStreamReader::readBitsU64(const int bitCount) {
+bool BitStreamReader::readNextBitBE(int& bitOut) {
+  if (numBitsRead >= sizeInBits) {
+    return false;  // We are done.
+  }
+
+  const uint32_t mask = uint32_t(1) << (7 - nextBitPos);
+  bitOut = !!(stream[currBytePos] & mask);
+  ++numBitsRead;
+
+  if (++nextBitPos == 8) {
+    nextBitPos = 0;
+    ++currBytePos;
+  }
+  return true;
+}
+
+uint64_t BitStreamReader::readBitsU64LE(const int bitCount) {
   assert(bitCount <= 64);
 
   uint64_t num = 0;
   for (int b = 0; b < bitCount; ++b) {
     int bit;
-    if (!readNextBit(bit)) {
-      // LZW_ERROR("Failed to read bits from stream! Unexpected end.");
+    if (!readNextBitLE(bit)) {
+      DPRINTF("LE: Failed to read bits from stream! Unexpected end.\n");
       break;
     }
 
@@ -2799,6 +2831,29 @@ uint64_t BitStreamReader::readBitsU64(const int bitCount) {
     num = (num & ~mask) | (uint64_t(-bit) & mask);
   }
 
+  return num;
+}
+
+uint64_t BitStreamReader::readBitsU64BE(const int bitCount) {
+  assert(bitCount <= 64);
+
+  uint64_t num = 0;
+  for (int b = 0; b < bitCount; ++b) {
+    int bit;
+    if (!readNextBitBE(bit)) {
+      DPRINTF("BE: Failed to read bits from stream! Unexpected end.");
+      break;
+    }
+
+		DPRINTF("bit[%d](count %d) = %d\n", b, bitCount, bit);
+
+    // Based on a "Stanford bit-hack":
+    // http://graphics.stanford.edu/~seander/bithacks.html#ConditionalSetOrClearBitsWithoutBranching
+    const uint64_t mask = uint64_t(1) << (bitCount - b - 1);
+    num = (num & ~mask) | (uint64_t(-bit) & mask);
+  }
+
+	DPRINTF("num = %d\n", int(num));
   return num;
 }
 
@@ -2832,7 +2887,8 @@ static bool outputByte(int code, unsigned char*& output, int outputSizeBytes,
 static bool outputSequence(const Dictionary& dict, int code,
                            unsigned char*& output, int outputSizeBytes,
                            int& bytesDecodedSoFar, int& firstByte) {
-  //const int MaxDictEntries = 4096;
+  const int MaxDictEntries = 4096;
+  (void)MaxDictEntries;
 
   // A sequence is stored backwards, so we have to write
   // it to a temp then output the buffer in reverse.
@@ -2840,8 +2896,9 @@ static bool outputSequence(const Dictionary& dict, int code,
   unsigned char sequence[4096];
   do {
     assert(i < MaxDictEntries - 1 && code >= 0);
-    sequence[i++] = static_cast<unsigned char>(dict.entries[code].value);
-    code = dict.entries[code].code;
+    DPRINTF("i = %d, ent[%d].value = %d\n", i, code, dict.entries_[code].value);
+    sequence[i++] = static_cast<unsigned char>(dict.entries_[code].value);
+    code = dict.entries_[code].code;
   } while (code >= 0);
 
   firstByte = sequence[--i];
@@ -2856,19 +2913,23 @@ static bool outputSequence(const Dictionary& dict, int code,
 static int easyDecode(const unsigned char* compressed,
                       const int compressedSizeBytes,
                       const int compressedSizeBits, unsigned char* uncompressed,
-                      const int uncompressedSizeBytes) {
+                      const int uncompressedSizeBytes, const bool swap_endian) {
   const int Nil = -1;
-  // const int MaxDictBits    = 12;
+  const int MaxDictBits    = 12;
   const int StartBits = 9;
 
+	// TIFF specific values
+	const int ClearCode = 256;
+	const int EndOfInformation = 257;
+
   if (compressed == NULL || uncompressed == NULL) {
-    // LZW_ERROR("lzw::easyDecode(): Null data pointer(s)!");
+    DPRINTF("lzw::easyDecode(): Null data pointer(s)!\n");
     return 0;
   }
 
   if (compressedSizeBytes <= 0 || compressedSizeBits <= 0 ||
       uncompressedSizeBytes <= 0) {
-    // LZW_ERROR("lzw::easyDecode(): Bad in/out sizes!");
+    DPRINTF("lzw::easyDecode(): Bad in/out sizes!n");
     return 0;
   }
 
@@ -2887,12 +2948,52 @@ static int easyDecode(const unsigned char* compressed,
 
   // We check to avoid an overflow of the user buffer.
   // If the buffer is smaller than the decompressed size,
-  // LZW_ERROR() is called. If that doesn't throw or
+  // DPRINTF() is called. If that doesn't throw or
   // terminate we break the loop and return the current
   // decompression count.
   while (!bitStream.isEndOfStream()) {
-    assert(codeBitsWidth <= 12);  // MaxDictBits
-    code = static_cast<int>(bitStream.readBitsU64(codeBitsWidth));
+    assert(codeBitsWidth <= MaxDictBits);
+    (void)MaxDictBits;
+
+		if (!swap_endian) { // TODO(syoyo): Detect BE or LE depending on endianness in stored format and host endian
+			code = static_cast<int>(bitStream.readBitsU64BE(codeBitsWidth));
+		} else {
+			code = static_cast<int>(bitStream.readBitsU64LE(codeBitsWidth));
+		}
+
+		DPRINTF("code = %d(swap_endian = %d)\n", code, swap_endian);
+
+		assert(code <= dictionary.size());
+
+    if (code == EndOfInformation) {
+			DPRINTF("EoI\n");
+			break;
+		}
+
+		if (code == ClearCode) {
+			// Initialize dict.
+			dictionary.init();
+			codeBitsWidth = StartBits;
+
+			if (!swap_endian) {
+				code = static_cast<int>(bitStream.readBitsU64BE(codeBitsWidth));
+			} else {
+				code = static_cast<int>(bitStream.readBitsU64LE(codeBitsWidth));
+			}
+
+			if (code == EndOfInformation) {
+				DPRINTF("EoI\n");
+				break;
+			}
+
+      if (!outputByte(code, uncompressed, uncompressedSizeBytes,
+                      bytesDecoded)) {
+        break;
+      }
+
+			prevCode = code;
+			continue;
+		}
 
     if (prevCode == Nil) {
       if (!outputByte(code, uncompressed, uncompressedSizeBytes,
@@ -2904,7 +3005,7 @@ static int easyDecode(const unsigned char* compressed,
       continue;
     }
 
-    if (code >= dictionary.size) {
+    if (code >= dictionary.size()) {
       if (!outputSequence(dictionary, prevCode, uncompressed,
                           uncompressedSizeBytes, bytesDecoded, firstByte)) {
         break;
@@ -2922,6 +3023,7 @@ static int easyDecode(const unsigned char* compressed,
 
     dictionary.add(prevCode, firstByte);
     if (dictionary.flush(codeBitsWidth)) {
+			DPRINTF("flush\n");
       prevCode = Nil;
     } else {
       prevCode = code;
@@ -2931,7 +3033,7 @@ static int easyDecode(const unsigned char* compressed,
   return bytesDecoded;
 }
 
-// ===================================================================
+// =============================================================================
 #ifdef __clang__
 #pragma clang diagnostic pop
 #endif
@@ -2995,6 +3097,7 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
   } else if (magic == 0x4d4d) {
     // might be TIFF(DNG, bigendian).
     is_dng_big_endian = true;
+		DPRINTF("DNG is big endian\n");
   } else {
     ss << "Seems the file is not a DNG format." << std::endl;
     if (err) {
@@ -3059,7 +3162,7 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 
       if ((image->strip_byte_counts.size() > 0) &&
           (image->strip_byte_counts.size() == image->strip_offsets.size())) {
-        DPRINTF("TODO");
+        DPRINTF("TODO\n");
 
         for (size_t k = 0; k < image->strip_byte_counts.size(); k++) {
           std::vector<unsigned char> src(image->strip_byte_counts[k]);
@@ -3073,10 +3176,12 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 
           ret = fread(src.data(), 1, image->strip_byte_counts[k], fp);
           assert(ret == image->strip_byte_counts[k]);
+          DPRINTF("easyDecode begin\n");
           int decoded_bytes = lzw::easyDecode(
               src.data(), int(image->strip_byte_counts[k]),
-              image->bits_per_sample /* FIXME(syoyo): Is this correct? */,
-              dst.data(), int(dst_len));
+              int(image->strip_byte_counts[k]) * image->bits_per_sample /* FIXME(syoyo): Is this correct? */,
+              dst.data(), int(dst_len), swap_endian);
+          DPRINTF("easyDecode done\n");
           assert(decoded_bytes > 0);
           (void)decoded_bytes;
         }
