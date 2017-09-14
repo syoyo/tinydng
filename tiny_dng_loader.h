@@ -2665,18 +2665,14 @@ class Dictionary {
   bool add(int code, int value);
   bool flush(int& codeBitsWidth);
   void init();
-	int size() {
-		return size_;
-	}
+  int size() { return size_; }
 };
 
 // ========================================================
 // class Dictionary:
 // ========================================================
 
-Dictionary::Dictionary() {
-	init();
-}
+Dictionary::Dictionary() { init(); }
 
 void Dictionary::init() {
   // First 256 dictionary entries are reserved to the byte/ASCII
@@ -2688,8 +2684,9 @@ void Dictionary::init() {
     entries_[i].value = i;
   }
 
-  // 256 is reserved for ClearCode, 257 is reserved for end of stream, thus FistCode starts with 258
-	size_ = 258; // = 256 + 2
+  // 256 is reserved for ClearCode, 257 is reserved for end of stream, thus
+  // FistCode starts with 258
+  size_ = 258;  // = 256 + 2
 }
 
 int Dictionary::findIndex(const int code, const int value) const {
@@ -2709,7 +2706,7 @@ int Dictionary::findIndex(const int code, const int value) const {
 }
 
 bool Dictionary::add(const int code, const int value) {
-	assert(code <= size_);
+  assert(code <= size_);
   if (size_ == 4096) {
     DPRINTF("Dictionary overflowed!");
     return false;
@@ -2726,12 +2723,13 @@ bool Dictionary::add(const int code, const int value) {
 bool Dictionary::flush(int& codeBitsWidth) {
   if (size_ == ((1 << codeBitsWidth) - 1)) {
     ++codeBitsWidth;
-		DPRINTF("expand: bits %d\n", codeBitsWidth);
+    DPRINTF("expand: bits %d\n", codeBitsWidth);
     if (codeBitsWidth > 12)  // MaxDictBits
     {
       // Clear the dictionary (except the first 256 byte entries).
       codeBitsWidth = 9;  // StartBits
-      size_ = 256 + 2;     // 256 is reserved for ClearCode, 257 is reserved for end of stream, thus FistCode starts with 258
+      size_ = 256 + 2;    // 256 is reserved for ClearCode, 257 is reserved for
+                          // end of stream, thus FistCode starts with 258
       return true;
     }
   }
@@ -2748,10 +2746,10 @@ class BitStreamReader {
   BitStreamReader(const uint8_t* bitStream, int byteCount, int bitCount);
 
   bool isEndOfStream() const;
-  bool readNextBitLE(int& bitOut); // little endian
-  bool readNextBitBE(int& bitOut); // big endian
-  uint64_t readBitsU64LE(int bitCount); // little endian
-  uint64_t readBitsU64BE(int bitCount); // big endian
+  bool readNextBitLE(int& bitOut);       // little endian
+  bool readNextBitBE(int& bitOut);       // big endian
+  uint64_t readBitsU64LE(int bitCount);  // little endian
+  uint64_t readBitsU64BE(int bitCount);  // big endian
   void reset();
 
  private:
@@ -2845,7 +2843,7 @@ uint64_t BitStreamReader::readBitsU64BE(const int bitCount) {
       break;
     }
 
-		DPRINTF("bit[%d](count %d) = %d\n", b, bitCount, bit);
+    DPRINTF("bit[%d](count %d) = %d\n", b, bitCount, bit);
 
     // Based on a "Stanford bit-hack":
     // http://graphics.stanford.edu/~seander/bithacks.html#ConditionalSetOrClearBitsWithoutBranching
@@ -2853,7 +2851,7 @@ uint64_t BitStreamReader::readBitsU64BE(const int bitCount) {
     num = (num & ~mask) | (uint64_t(-bit) & mask);
   }
 
-	DPRINTF("num = %d\n", int(num));
+  DPRINTF("num = %d\n", int(num));
   return num;
 }
 
@@ -2915,12 +2913,12 @@ static int easyDecode(const unsigned char* compressed,
                       const int compressedSizeBits, unsigned char* uncompressed,
                       const int uncompressedSizeBytes, const bool swap_endian) {
   const int Nil = -1;
-  const int MaxDictBits    = 12;
+  const int MaxDictBits = 12;
   const int StartBits = 9;
 
-	// TIFF specific values
-	const int ClearCode = 256;
-	const int EndOfInformation = 257;
+  // TIFF specific values
+  const int ClearCode = 256;
+  const int EndOfInformation = 257;
 
   if (compressed == NULL || uncompressed == NULL) {
     DPRINTF("lzw::easyDecode(): Null data pointer(s)!\n");
@@ -2955,45 +2953,46 @@ static int easyDecode(const unsigned char* compressed,
     assert(codeBitsWidth <= MaxDictBits);
     (void)MaxDictBits;
 
-		if (!swap_endian) { // TODO(syoyo): Detect BE or LE depending on endianness in stored format and host endian
-			code = static_cast<int>(bitStream.readBitsU64BE(codeBitsWidth));
-		} else {
-			code = static_cast<int>(bitStream.readBitsU64LE(codeBitsWidth));
-		}
+    if (!swap_endian) {  // TODO(syoyo): Detect BE or LE depending on endianness
+                         // in stored format and host endian
+      code = static_cast<int>(bitStream.readBitsU64BE(codeBitsWidth));
+    } else {
+      code = static_cast<int>(bitStream.readBitsU64LE(codeBitsWidth));
+    }
 
-		DPRINTF("code = %d(swap_endian = %d)\n", code, swap_endian);
+    DPRINTF("code = %d(swap_endian = %d)\n", code, swap_endian);
 
-		assert(code <= dictionary.size());
+    assert(code <= dictionary.size());
 
     if (code == EndOfInformation) {
-			DPRINTF("EoI\n");
-			break;
-		}
+      DPRINTF("EoI\n");
+      break;
+    }
 
-		if (code == ClearCode) {
-			// Initialize dict.
-			dictionary.init();
-			codeBitsWidth = StartBits;
+    if (code == ClearCode) {
+      // Initialize dict.
+      dictionary.init();
+      codeBitsWidth = StartBits;
 
-			if (!swap_endian) {
-				code = static_cast<int>(bitStream.readBitsU64BE(codeBitsWidth));
-			} else {
-				code = static_cast<int>(bitStream.readBitsU64LE(codeBitsWidth));
-			}
+      if (!swap_endian) {
+        code = static_cast<int>(bitStream.readBitsU64BE(codeBitsWidth));
+      } else {
+        code = static_cast<int>(bitStream.readBitsU64LE(codeBitsWidth));
+      }
 
-			if (code == EndOfInformation) {
-				DPRINTF("EoI\n");
-				break;
-			}
+      if (code == EndOfInformation) {
+        DPRINTF("EoI\n");
+        break;
+      }
 
       if (!outputByte(code, uncompressed, uncompressedSizeBytes,
                       bytesDecoded)) {
         break;
       }
 
-			prevCode = code;
-			continue;
-		}
+      prevCode = code;
+      continue;
+    }
 
     if (prevCode == Nil) {
       if (!outputByte(code, uncompressed, uncompressedSizeBytes,
@@ -3023,7 +3022,7 @@ static int easyDecode(const unsigned char* compressed,
 
     dictionary.add(prevCode, firstByte);
     if (dictionary.flush(codeBitsWidth)) {
-			DPRINTF("flush\n");
+      DPRINTF("flush\n");
       prevCode = Nil;
     } else {
       prevCode = code;
@@ -3097,7 +3096,7 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
   } else if (magic == 0x4d4d) {
     // might be TIFF(DNG, bigendian).
     is_dng_big_endian = true;
-		DPRINTF("DNG is big endian\n");
+    DPRINTF("DNG is big endian\n");
   } else {
     ss << "Seems the file is not a DNG format." << std::endl;
     if (err) {
@@ -3160,10 +3159,10 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
       DPRINTF("counts = %d\n", int(image->strip_byte_counts.size()));
       DPRINTF("offsets = %d\n", int(image->strip_offsets.size()));
 
+      image->data.clear();
+
       if ((image->strip_byte_counts.size() > 0) &&
           (image->strip_byte_counts.size() == image->strip_offsets.size())) {
-        DPRINTF("TODO\n");
-
         for (size_t k = 0; k < image->strip_byte_counts.size(); k++) {
           std::vector<unsigned char> src(image->strip_byte_counts[k]);
           fseek(fp, static_cast<long>(image->strip_offsets[k]), SEEK_SET);
@@ -3179,11 +3178,14 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
           DPRINTF("easyDecode begin\n");
           int decoded_bytes = lzw::easyDecode(
               src.data(), int(image->strip_byte_counts[k]),
-              int(image->strip_byte_counts[k]) * image->bits_per_sample /* FIXME(syoyo): Is this correct? */,
+              int(image->strip_byte_counts[k]) *
+                  image->bits_per_sample /* FIXME(syoyo): Is this correct? */,
               dst.data(), int(dst_len), swap_endian);
           DPRINTF("easyDecode done\n");
           assert(decoded_bytes > 0);
           (void)decoded_bytes;
+
+          std::copy(dst.begin(), dst.end(), std::back_inserter(image->data));
         }
       } else {
         assert(0);  // TODO
