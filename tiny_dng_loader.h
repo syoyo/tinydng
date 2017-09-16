@@ -184,7 +184,8 @@ struct DNGImage {
   int strip_byte_count;
   int jpeg_byte_count;
   int planar_configuration;  // 1: chunky, 2: planar
-  int predictor; // tag 317. 1 = no prediction, 2 = horizontal differencing, 3 = floating point horizontal differencing
+  int predictor;  // tag 317. 1 = no prediction, 2 = horizontal differencing, 3
+                  // = floating point horizontal differencing
 
   SampleFormat sample_format;
   int pad_sf;
@@ -3200,18 +3201,27 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
           if (image->predictor == 1) {
             // no prediction shceme
           } else if (image->predictor == 2) {
-            // horizontal diff.
+            // horizontal accumulate
 
+            const size_t stride = image->width * image->samples_per_pixel;
+            const size_t spp = image->samples_per_pixel;
             for (size_t row = 0; row < image->rows_per_strip; row++) {
-              for (size_t col = image->width - 1; col >= 1; col--) {
-                dst[row * image->width + col] -= dst[row * image->width + col - 1];
+              for (size_t c = 0; c < image->samples_per_pixel; c++) {
+                unsigned int b = dst[row * stride + c];
+                for (size_t col = 1; col < image->width; col++) {
+                  // value may overflow(wrap over), but its expected behavior.
+                  b += dst[stride * row + spp * col + c];
+                  dst[stride * row + spp * col + c] =
+                      static_cast<unsigned char>(b & 0xFF);
+                }
               }
             }
 
           } else if (image->predictor == 3) {
             // fp horizontal diff.
+            assert(0);  // TODO
           } else {
-            assert(0); // invalid predictor
+            assert(0);  // invalid predictor
           }
 
           std::copy(dst.begin(), dst.end(), std::back_inserter(image->data));
