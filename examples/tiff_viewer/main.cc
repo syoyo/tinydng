@@ -216,9 +216,12 @@ static const char gFragmentShaderStr[] =
     "uniform vec2  uTexsize;\n"
     "uniform float uScale;\n"
     "uniform float uIntensity;\n"
+    "uniform int uFlipY;\n"
     "uniform sampler2D tex;\n"
     "void main() {\n"
-    "    vec2 tcoord = (vTexcoord + uOffset) - vec2(0.5, 0.5);\n"
+    "    vec2 tcoord = vTexcoord;\n"
+    "    tcoord.y = (uFlipY > 0) ? (1.0f - tcoord.y) : tcoord.y;\n"
+    "    tcoord = (tcoord + uOffset) - vec2(0.5, 0.5);\n"
     "    tcoord = uScale * tcoord + vec2(0.5, 0.5);\n"
     "    vec3 col = uIntensity * texture2D(tex, tcoord).rgb;\n"
     "    col = clamp(pow(col, vec3(1.0f / uGamma)), 0.0, 1.0);\n"
@@ -239,6 +242,7 @@ typedef struct {
   GLint uv_scale_loc;
   GLint texture_size_loc;
   GLint tex_loc;
+  GLint flip_y_loc;
 
   GLuint tex_id;
 } GLContext;
@@ -418,6 +422,7 @@ void InitGLDisplay(GLContext* ctx, int width, int height) {
   BindUniform(ctx->uv_scale_loc, ctx->program, "uScale");
   BindUniform(ctx->intensity_loc, ctx->program, "uIntensity");
   BindUniform(ctx->texture_size_loc, ctx->program, "uTexsize");
+  BindUniform(ctx->flip_y_loc, ctx->program, "uFlipY");
 
   // Init texture for display.
   {
@@ -558,6 +563,7 @@ void Display(const GLContext& ctx, const UIParam& param) {
   glUniform1f(ctx.gamma_loc, param.display_gamma);
   glUniform1f(ctx.intensity_loc, param.intensity);
   glUniform2f(ctx.texture_size_loc, gRAWImage.width, gRAWImage.height);
+  glUniform1i(ctx.flip_y_loc, param.flip_y);
   CheckGLError("uniform");
 
   glActiveTexture(GL_TEXTURE0);
@@ -587,10 +593,10 @@ void Display(const GLContext& ctx, const UIParam& param) {
 }
 
 int main(int argc, char** argv) {
-  std::string input_filename = "../../colorchart.dng";
+  std::string input_filename = "../../images/lzw-test.tiff";
 
   if (argc < 2) {
-    std::cout << "Needs input.dng" << std::endl;
+    std::cout << "Needs input.tiff" << std::endl;
     // return EXIT_FAILURE;
   } else {
     input_filename = std::string(argv[1]);
@@ -651,7 +657,7 @@ int main(int argc, char** argv) {
     gUIParam.flip_y = true;
     gUIParam.view_offset[0] = 0;
     gUIParam.view_offset[1] = 0;
-    gUIParam.display_gamma = 2.2f;
+    gUIParam.display_gamma = 0.454545f;
     gUIParam.view_scale = 100;  // 100%
 
     assert(gRAWImage.curr_idx >= 0);

@@ -184,6 +184,7 @@ struct DNGImage {
   int strip_byte_count;
   int jpeg_byte_count;
   int planar_configuration;  // 1: chunky, 2: planar
+  int predictor; // tag 317. 1 = no prediction, 2 = horizontal differencing, 3 = floating point horizontal differencing
 
   SampleFormat sample_format;
   int pad_sf;
@@ -247,6 +248,7 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 #pragma clang diagnostic ignored "-Wc++98-compat-pedantic"
 #endif
 
+//#define TINY_DNG_LOADER_DEBUG
 #ifdef TINY_DNG_LOADER_DEBUG
 #define DPRINTF(...) printf(__VA_ARGS__)
 #else
@@ -1635,6 +1637,7 @@ typedef enum {
   TAG_ROWS_PER_STRIP = 278,
   TAG_STRIP_BYTE_COUNTS = 279,
   TAG_PLANAR_CONFIGURATION = 284,
+  TAG_PREDICTOR = 317,
   TAG_SUB_IFDS = 330,
   TAG_TILE_WIDTH = 322,
   TAG_TILE_LENGTH = 323,
@@ -1905,6 +1908,8 @@ static void InitializeDNGImage(tinydng::DNGImage* image) {
   image->tile_offset = 0;
 
   image->planar_configuration = 1;  // chunky
+
+  image->predictor = 1;  // no prediction scheme
 
   image->has_analog_balance = false;
   image->has_as_shot_neutral = false;
@@ -2238,6 +2243,7 @@ static bool ParseTIFFIFD(const std::vector<FieldInfo>& custom_field_lists,
     unsigned int saved_offt;
     GetTIFFTag(&tag, &type, &len, &saved_offt, fp, swap_endian);
 
+    DPRINTF("tag %d\n", tag);
     DPRINTF("saved_offt %d\n", saved_offt);
     assert(tag >= TAG_NEW_SUBFILE_TYPE);
 
@@ -2313,6 +2319,12 @@ static bool ParseTIFFIFD(const std::vector<FieldInfo>& custom_field_lists,
 
       case TAG_PLANAR_CONFIGURATION:
         image.planar_configuration = Read2(fp, swap_endian);
+        break;
+
+      case TAG_PREDICTOR:
+        image.predictor = Read2(fp, swap_endian);
+        assert(image.predictor >= 1);
+        assert(image.predictor <= 3);
         break;
 
       case TAG_SAMPLE_FORMAT: {
@@ -3184,6 +3196,23 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
           DPRINTF("easyDecode done\n");
           assert(decoded_bytes > 0);
           (void)decoded_bytes;
+
+          if (image->predictor == 1) {
+            // no prediction shceme
+          } else if (image->predictor == 2) {
+            // horizontal diff.
+
+            for (size_t row = 0; row < image->rows_per_strip; row++) {
+              for (size_t col = image->width - 1; col >= 1; col--) {
+                dst[row * image->width + col] -= dst[row * image->width + col - 1];
+              }
+            }
+
+          } else if (image->predictor == 3) {
+            // fp horizontal diff.
+          } else {
+            assert(0); // invalid predictor
+          }
 
           std::copy(dst.begin(), dst.end(), std::back_inserter(image->data));
         }
