@@ -192,7 +192,6 @@ struct DNGImage {
 
   // For an image with multiple strips.
   int strips_per_image;
-  int pad_strip;
   std::vector<unsigned int> strip_byte_counts;
   std::vector<unsigned int> strip_offsets;
 
@@ -3201,14 +3200,15 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
           if (image->predictor == 1) {
             // no prediction shceme
           } else if (image->predictor == 2) {
-            // horizontal accumulate
+            // horizontal diff
 
-            const size_t stride = image->width * image->samples_per_pixel;
-            const size_t spp = image->samples_per_pixel;
-            for (size_t row = 0; row < image->rows_per_strip; row++) {
-              for (size_t c = 0; c < image->samples_per_pixel; c++) {
+            const size_t stride =
+                size_t(image->width * image->samples_per_pixel);
+            const size_t spp = size_t(image->samples_per_pixel);
+            for (size_t row = 0; row < size_t(image->rows_per_strip); row++) {
+              for (size_t c = 0; c < size_t(image->samples_per_pixel); c++) {
                 unsigned int b = dst[row * stride + c];
-                for (size_t col = 1; col < image->width; col++) {
+                for (size_t col = 1; col < size_t(image->width); col++) {
                   // value may overflow(wrap over), but its expected behavior.
                   b += dst[stride * row + spp * col + c];
                   dst[stride * row + spp * col + c] =
