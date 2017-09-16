@@ -593,7 +593,7 @@ void Display(const GLContext& ctx, const UIParam& param) {
 }
 
 int main(int argc, char** argv) {
-  std::string input_filename = "../../images/lzw-test.tiff";
+  std::string input_filename = "../../images/lzw-no-predictor.tiff";
 
   if (argc < 2) {
     std::cout << "Needs input.tiff" << std::endl;
