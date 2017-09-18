@@ -16,6 +16,9 @@ Currently TinyDNGLoader only supports lossless RAW DNG and limited lossless JPEG
   * Lossless JPEG decoding is supported based on liblj92 lib: https://bitbucket.org/baldand/mlrawviewer.git
 * [x] JPEG
   * Support JPEG image(e.g. thumbnail) through `stb_image.h`.
+* [x] TIFF
+  * [x] 8bit uncompressed
+  * [x] 8bit LZW compressed(no preditor, horizontal diff predictor)
 * Experimental
   * Decode Canon RAW(CR2)
     * [x] RAW
