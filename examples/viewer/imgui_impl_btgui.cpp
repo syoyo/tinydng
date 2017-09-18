@@ -124,6 +124,7 @@ static const char* ImGui_ImplBtGui_GetClipboardText() {
 }
 
 static void ImGui_ImplBtGui_SetClipboardText(const char* text) {
+  (void)text;
   // @todo
   return;
   // glfwSetClipboardString(g_Window, text);

@@ -276,13 +276,13 @@ static inline float fetch(const std::vector<float>& in, int x, int y, int w,
 
 void Update(RAWImage* raw, const UIParam& param) {
 
-  if (raw->framebuffer.size() != (raw->width * raw->height * 3)) {
+  if (raw->framebuffer.size() != size_t(raw->width * raw->height * 3)) {
     raw->framebuffer.resize(raw->width * raw->height * 3);
   }
 
   std::vector<float> buf(raw->width * raw->height * 3);
   if (raw->bits == 8) {
-    for (size_t i = 0; i < raw->width * raw->height; i++) {
+    for (size_t i = 0; i < size_t(raw->width * raw->height); i++) {
       buf[3 * i + 0] = float(gamma_correct(raw->image.data[3 * i + 0]));
       buf[3 * i + 1] = float(gamma_correct(raw->image.data[3 * i + 1]));
       buf[3 * i + 2] = float(gamma_correct(raw->image.data[3 * i + 2]));
