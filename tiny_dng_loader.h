@@ -5,7 +5,7 @@
 /*
 The MIT License (MIT)
 
-Copyright (c) 2016 Syoyo Fujita.
+Copyright (c) 2016 - 2017 Syoyo Fujita.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -30,6 +30,7 @@ THE SOFTWARE.
 
 // @note {
 // https://www.adobe.com/content/dam/Adobe/en/products/photoshop/pdfs/dng_spec_1.4.0.0.pdf
+// http://lclevy.free.fr/nef/ For NEF file format
 // }
 
 #include <string>
@@ -248,7 +249,7 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 #pragma clang diagnostic ignored "-Wc++98-compat-pedantic"
 #endif
 
-//#define TINY_DNG_LOADER_DEBUG
+#define TINY_DNG_LOADER_DEBUG
 #ifdef TINY_DNG_LOADER_DEBUG
 #define DPRINTF(...) printf(__VA_ARGS__)
 #else
@@ -1648,6 +1649,7 @@ typedef enum {
   TAG_JPEG_IF_BYTE_COUNT = 514,
   TAG_CFA_PATTERN_DIM = 33421,
   TAG_CFA_PATTERN = 33422,
+  TAG_EXIF = 34665,
   TAG_CFA_PLANE_COLOR = 50710,
   TAG_CFA_LAYOUT = 50711,
   TAG_BLACK_LEVEL = 50714,
@@ -1674,6 +1676,30 @@ typedef enum {
 
   TAG_INVALID = 65535
 } TiffTag;
+
+// http://www.awaresystems.be/imaging/tiff/tifftags/privateifd/exif.html
+// TODO(syoyo): Support more EXIF tags.
+typedef enum {
+  EXIF_EXPOSURE_TIME = 33434,
+  EXIF_F_NUMBER = 33437,
+  EXIF_SHUTTER_SPEED_VALUE = 37377,
+  EXIF_MAKER_NOTE = 37500
+} ExifTag;
+
+struct EXIF {
+  double exposure_time;
+  double f_number;
+  double shutter_speed;
+  
+  std::vector<unsigned char> maker_note; // Manufacturer specific information.
+
+  EXIF() :
+    // negative = invalid values.
+    exposure_time(-1.0),
+    f_number(-1.0),
+    shutter_speed(-1.0) {
+  }
+};
 
 static void swap2(unsigned short* val) {
   unsigned short tmp = *val;
@@ -1794,6 +1820,7 @@ static void GetTIFFTag(unsigned short* tag, unsigned short* type,
   if ((*len) * (typesize_table[(*type) < 14 ? (*type) : 0]) > 4) {
     unsigned int base = 0;  // fixme
     unsigned int offt = Read4(fp, swap_endian);
+    DPRINTF("offt = %d\n", int(offt));
     fseek(fp, offt + base, SEEK_SET);
   }
 }
@@ -2153,6 +2180,51 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
   return true;
 }
 
+static bool IsNikonMakerNote(const std::vector<unsigned char> &maker_note)
+{
+  if (maker_note.size() > 16) {
+    if (0 == std::memcmp(maker_note.data(), "Nikon\0", 6)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// Parse some EXIF tag
+static bool ParseEXIFTags(FILE *fp, bool swap_endian, EXIF *exif) {
+
+  unsigned short num_entries = Read2(fp, swap_endian);
+  DPRINTF("EXIF entries = %d\n", num_entries);
+  if (num_entries == 0) {
+    assert(0);
+    return false;  // @fixme
+  }
+
+  while (num_entries--) {
+    unsigned short tag, type;
+    unsigned int len;
+    unsigned int saved_offt;
+    GetTIFFTag(&tag, &type, &len, &saved_offt, fp, swap_endian);
+
+    if (tag == EXIF_MAKER_NOTE) {
+      DPRINTF("maker note! len = %d\n", len);
+
+      exif->maker_note.resize(len);
+      fread(exif->maker_note.data(), 1, len, fp);
+      if (IsNikonMakerNote(exif->maker_note)) {
+        DPRINTF("Nikon NEF\n");
+      }
+    } else {
+      // Unsupported or unimplemented tag.
+    }
+
+    fseek(fp, saved_offt, SEEK_SET);
+  }
+
+  return true;
+}
+
 // Parse custom TIFF field
 static bool ParseCustomField(const std::vector<FieldInfo>& field_lists,
                              const unsigned short tag,
@@ -2244,6 +2316,8 @@ static bool ParseTIFFIFD(const std::vector<FieldInfo>& custom_field_lists,
     GetTIFFTag(&tag, &type, &len, &saved_offt, fp, swap_endian);
 
     DPRINTF("tag %d\n", tag);
+    DPRINTF("type %d\n", type);
+    DPRINTF("len %d\n", len);
     DPRINTF("saved_offt %d\n", saved_offt);
     assert(tag >= TAG_NEW_SUBFILE_TYPE);
 
@@ -2375,6 +2449,19 @@ static bool ParseTIFFIFD(const std::vector<FieldInfo>& custom_field_lists,
                                         : Read4(fp, swap_endian);
         break;
 
+      case TAG_EXIF:
+        {
+          EXIF exif;
+          uint32_t offset = Read4(fp, swap_endian);
+          DPRINTF("exif offset = %d\n", int(offset));
+          fseek(fp, offset, SEEK_SET);
+          bool ret = ParseEXIFTags(fp, swap_endian, &exif);
+          if (!ret) {
+            return false;
+          }
+        }
+        break;
+        
       case TAG_CFA_PATTERN_DIM:
         image.cfa_pattern_dim = Read2(fp, swap_endian);
         break;
@@ -3421,7 +3508,7 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
         ss << "lossy JPEG compression is not supported." << std::endl;
         (*err) = ss.str();
       }
-    } else if (image->compression == 34713) {  // NEF lossless?
+    } else if (image->compression == COMPRESSION_NEF) {  // NEF lossless?
       if (err) {
         ss << "Seems a NEF RAW. This compression is not supported."
            << std::endl;
