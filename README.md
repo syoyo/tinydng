@@ -99,6 +99,7 @@ int main(int argc, char **argv) {
 ## Customizations
 
 * `TINY_DNG_NO_EXCEPTION` : disable C++ exception(abort the program when got an assertion)
+* `TINY_DNG_LOADER_DEBUG` : Enable debug printf(developer only!)
 
 ## Examples
 
