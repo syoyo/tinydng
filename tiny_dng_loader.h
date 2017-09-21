@@ -1690,15 +1690,14 @@ struct EXIF {
   double exposure_time;
   double f_number;
   double shutter_speed;
-  
-  std::vector<unsigned char> maker_note; // Manufacturer specific information.
 
-  EXIF() :
-    // negative = invalid values.
-    exposure_time(-1.0),
-    f_number(-1.0),
-    shutter_speed(-1.0) {
-  }
+  std::vector<unsigned char> maker_note;  // Manufacturer specific information.
+
+  EXIF()
+      :  // negative = invalid values.
+        exposure_time(-1.0),
+        f_number(-1.0),
+        shutter_speed(-1.0) {}
 };
 
 static void swap2(unsigned short* val) {
@@ -2180,8 +2179,7 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
   return true;
 }
 
-static bool IsNikonMakerNote(const std::vector<unsigned char> &maker_note)
-{
+static bool IsNikonMakerNote(const std::vector<unsigned char>& maker_note) {
   if (maker_note.size() > 16) {
     if (0 == std::memcmp(maker_note.data(), "Nikon\0", 6)) {
       return true;
@@ -2192,8 +2190,7 @@ static bool IsNikonMakerNote(const std::vector<unsigned char> &maker_note)
 }
 
 // Parse some EXIF tag
-static bool ParseEXIFTags(FILE *fp, bool swap_endian, EXIF *exif) {
-
+static bool ParseEXIFTags(FILE* fp, bool swap_endian, EXIF* exif) {
   unsigned short num_entries = Read2(fp, swap_endian);
   DPRINTF("EXIF entries = %d\n", num_entries);
   if (num_entries == 0) {
@@ -2449,19 +2446,17 @@ static bool ParseTIFFIFD(const std::vector<FieldInfo>& custom_field_lists,
                                         : Read4(fp, swap_endian);
         break;
 
-      case TAG_EXIF:
-        {
-          EXIF exif;
-          uint32_t offset = Read4(fp, swap_endian);
-          DPRINTF("exif offset = %d\n", int(offset));
-          fseek(fp, offset, SEEK_SET);
-          bool ret = ParseEXIFTags(fp, swap_endian, &exif);
-          if (!ret) {
-            return false;
-          }
+      case TAG_EXIF: {
+        EXIF exif;
+        uint32_t offset = Read4(fp, swap_endian);
+        DPRINTF("exif offset = %d\n", int(offset));
+        fseek(fp, offset, SEEK_SET);
+        bool ret = ParseEXIFTags(fp, swap_endian, &exif);
+        if (!ret) {
+          return false;
         }
-        break;
-        
+      } break;
+
       case TAG_CFA_PATTERN_DIM:
         image.cfa_pattern_dim = Read2(fp, swap_endian);
         break;
