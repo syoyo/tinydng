@@ -100,6 +100,7 @@ int main(int argc, char **argv) {
 
 * `TINY_DNG_NO_EXCEPTION` : disable C++ exception(abort the program when got an assertion)
 * `TINY_DNG_LOADER_DEBUG` : Enable debug printf(developer only!)
+* `TINY_DNG_ENABLE_GPL` : Enable GPL code(for decoding NEF).
 
 ## Examples
 
@@ -134,9 +135,13 @@ Here is the list of great articles on how to decode RAW file and how to develop 
 
 TinyDNGLoader is licensed under MIT license.
 
+Part of NEF decoding code is usnig dcraw, which is licensed under GPL.
+(define `TINY_DNG_ENABLE_GPL`) 
+
 TinyDNGLoader uses the following third party libraries.
 
 * liblj92(Lossless JPEG library) : (c) Andrew Baldwin 2014. MIT license.  https://bitbucket.org/baldand/mlrawviewer.git
 * stb_image : Public domain image loader.
 * lzw.hpp : Author: Guilherme R. Lampert. Public domain LZW decoder.
+* dcraw : Copyright 1997-2015 by Dave Coffin. https://www.cybercom.net/~dcoffin/dcraw/
 
