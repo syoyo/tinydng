@@ -1,11 +1,11 @@
 //
-// TinyDNGLoader, single header only DNG loader.
+// TinyDNGLoader, single header only DNG/TIFF loader.
 //
 
 /*
 The MIT License (MIT)
 
-Copyright (c) 2016 Syoyo Fujita.
+Copyright (c) 2016 - 2017 Syoyo Fujita and many contributors.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -34,7 +34,10 @@ THE SOFTWARE.
 
 #include <string>
 #include <vector>
+
+#if !defined(TINY_DNG_NO_EXCEPTION)
 #include <stdexcept>
+#endif
 
 namespace tinydng {
 
@@ -196,7 +199,7 @@ struct DNGImage {
   std::vector<unsigned int> strip_byte_counts;
   std::vector<unsigned int> strip_offsets;
 
-  // CR2 specific
+  // CR2(Canon RAW) specific
   unsigned short cr2_slices[3];
   unsigned short pad_c;
 
@@ -213,9 +216,11 @@ struct DNGImage {
 /// If DNG contains multiple images(e.g. full-res image + thumnail image),
 /// The function creates `DNGImage` data strucure for each images.
 ///
+/// C++ exception would be trigerred inside the function unless TINY_DNG_NO_EXCEPTION macro is defined.
+///
 /// @param[in] filename DNG filename.
-/// @param[in] custom_fields List of custom fields to parse(optional. can be
-/// empty).
+/// @param[in] custom_fields List of custom fields to parse(optional. can pass
+/// empty array).
 /// @param[out] images Loaded DNG images.
 /// @param[out] err Error message.
 ///
@@ -256,6 +261,7 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 #define DPRINTF(...)
 #endif
 
+#if !defined(TINY_DNG_NO_EXCEPTION)
 #define TINY_DNG_ASSERT(assertion, text)    \
     do                                      \
     {                                       \
@@ -265,6 +271,18 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
         }                                   \
     }                                       \
     while (false)
+#else
+#define TINY_DNG_ASSERT(assertion, text)    \
+    do                                      \
+    {                                       \
+        if ((assertion) == 0)               \
+        {                                   \
+            std::cerr << __FILE__ << ":" << __LINE__ << " " << text << std::endl; \
+            abort();                        \
+        }                                   \
+    }                                       \
+    while (false)
+#endif
 
 #ifdef __clang__
 #pragma clang diagnostic pop

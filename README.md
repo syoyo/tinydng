@@ -96,6 +96,10 @@ int main(int argc, char **argv) {
 
 ```
 
+## Customizations
+
+* `TINY_DNG_NO_EXCEPTION` : disable C++ exception(abort the program when got an assertion)
+
 ## Examples
 
 * [examples/viewer](examples/viewer) Simple viewer example with simple debayering.
