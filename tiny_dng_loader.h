@@ -34,6 +34,7 @@ THE SOFTWARE.
 
 #include <string>
 #include <vector>
+#include <stdexcept>
 
 namespace tinydng {
 
@@ -254,6 +255,16 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 #else
 #define DPRINTF(...)
 #endif
+
+#define TINY_DNG_ASSERT(assertion, text)    \
+    do                                      \
+    {                                       \
+        if ((assertion) == 0)               \
+        {                                   \
+            throw std::runtime_error(text); \
+        }                                   \
+    }                                       \
+    while (false)
 
 #ifdef __clang__
 #pragma clang diagnostic pop
@@ -633,8 +644,7 @@ static int parseSof3(ljp* self) {
   self->components = self->data[self->ix + 7];
   self->ix += BEH(self->data[self->ix]);
 
-  assert(self->components >= 1);
-  assert(self->components < 6);
+  TINY_DNG_ASSERT(self->components >= 1 && self->components < 6, "Invalid number of components.");
 
   return LJ92_ERROR_NONE;
 }
@@ -708,7 +718,7 @@ inline static int nextdiff(ljp* self, int component_idx, int Px) {
   diff = extend(self, diff, t);
 // DPRINTF("%d %d %d %x\n",Px+diff,Px,diff,t);//,index,usedbits);
 #else
-  assert(component_idx <= self->num_huff_idx);
+  TINY_DNG_ASSERT(component_idx <= self->num_huff_idx, "Invalid huff index.");
   u32 b = self->b;
   int cnt = self->cnt;
   int huffbits = self->huffbits[component_idx];
@@ -795,8 +805,7 @@ static int parsePred6(ljp* self) {
   int row = 0;
   int left = 0;
   int linear;
-
-  assert(self->num_huff_idx <= self->components);
+  TINY_DNG_ASSERT(self->num_huff_idx <= self->components, "Invalid number of huff indices.");
   // First pixel
   diff = nextdiff(self, self->num_huff_idx - 1,
                   0);  // FIXME(syoyo): Is using (self->num_huff_idx-1) correct?
@@ -925,7 +934,7 @@ static int parseScan(ljp* self) {
           Px = 1 << (self->bits - 1);
         } else if (row == 0) {
           // Px = left;
-          assert(col > 0);
+          TINY_DNG_ASSERT(col > 0, "Unexpected col.");
           Px = thisrow[(col - 1) * self->components + c];
         } else if (col == 0) {
           Px = lastrow[c];  // Use value above for first pixel in row
@@ -964,15 +973,14 @@ static int parseScan(ljp* self) {
         if (c >= self->num_huff_idx) {
           // It looks huffman tables are shared for all components.
           // Currently we assume # of huffman tables is 1.
-          assert(self->num_huff_idx == 1);
+          TINY_DNG_ASSERT(self->num_huff_idx == 1, "Cannot handle >1 huffman tables.");
           huff_idx = 0;  // Look up the first huffman table.
         }
 
         diff = nextdiff(self, huff_idx, Px);
         left = Px + diff;
         // DPRINTF("c[%d] Px = %d, diff = %d, left = %d\n", c, Px, diff, left);
-        assert(left >= 0);
-        assert(left < (1 << self->bits));
+        TINY_DNG_ASSERT(left >= 0 && left < (1 << self->bits), "Error huffman decoding.");
         // DPRINTF("pix = %d\n", left);
         // DPRINTF("%d %d %d\n",c,diff,left);
         int linear;
@@ -1698,8 +1706,7 @@ static void swap4(unsigned int* val) {
 static unsigned short Read2(FILE* fp, bool swap) {
   unsigned short val;
   size_t ret = fread(&val, 1, 2, fp);
-  assert(ret == 2);
-  (void)ret;
+  TINY_DNG_ASSERT(ret == 2, "Error reading SHORT, expecting 2 bytes.");
   if (swap) {
     swap2(&val);
   }
@@ -1709,8 +1716,7 @@ static unsigned short Read2(FILE* fp, bool swap) {
 static unsigned int Read4(FILE* fp, bool swap) {
   unsigned int val;
   size_t ret = fread(&val, 1, 4, fp);
-  assert(ret == 4);
-  (void)ret;
+  TINY_DNG_ASSERT(ret == 4, "Error reading LONG, expecting 2 bytes.");
   if (swap) {
     swap4(&val);
   }
@@ -1722,8 +1728,7 @@ static unsigned int ReadUInt(int type, FILE* fp, bool swap) {
   if (type == 3) {
     unsigned short val;
     size_t ret = fread(&val, 1, 2, fp);
-    assert(ret == 2);
-    (void)ret;
+    TINY_DNG_ASSERT(ret == 2, "Error reading UINT, expecting 2 bytes.");
     if (swap) {
       swap2(&val);
     }
@@ -1731,16 +1736,14 @@ static unsigned int ReadUInt(int type, FILE* fp, bool swap) {
   } else if (type == 5) {
     unsigned int val0;
     size_t ret = fread(&val0, 1, 4, fp);
-    assert(ret == 4);
-    (void)ret;
+    TINY_DNG_ASSERT(ret == 4, "Error reading UINT, expecting 4 bytes.");
     if (swap) {
       swap4(&val0);
     }
 
     unsigned int val1;
     ret = fread(&val1, 1, 4, fp);
-    assert(ret == 4);
-    (void)ret;
+    TINY_DNG_ASSERT(ret == 4, "Error reading UINT, expecting 4 bytes.");
     if (swap) {
       swap4(&val1);
     }
@@ -1748,11 +1751,10 @@ static unsigned int ReadUInt(int type, FILE* fp, bool swap) {
     return static_cast<unsigned int>(val0 / val1);
 
   } else {  // guess 4.
-    assert(type == 4);
+    TINY_DNG_ASSERT(type == 4, "Unrecognized UINT type.");
     unsigned int val;
     size_t ret = fread(&val, 1, 4, fp);
-    assert(ret == 4);
-    (void)ret;
+    TINY_DNG_ASSERT(ret == 4, "Error reading UINT, expecting 4 bytes.");
     if (swap) {
       swap4(&val);
     }
@@ -1761,8 +1763,8 @@ static unsigned int ReadUInt(int type, FILE* fp, bool swap) {
 }
 
 static double ReadReal(int type, FILE* fp, bool swap) {
-  assert(type == TYPE_RATIONAL ||
-         type == TYPE_SRATIONAL);  // @todo { Support more types. }
+  TINY_DNG_ASSERT(type == TYPE_RATIONAL || type == TYPE_SRATIONAL, "Unrecognized Real type. Expecting either RATIONAL or SRATIONAL.");
+  // @todo { Support more types. }
 
   if (type == TYPE_RATIONAL) {
     unsigned int num = static_cast<unsigned int>(Read4(fp, swap));
@@ -1775,7 +1777,8 @@ static double ReadReal(int type, FILE* fp, bool swap) {
 
     return static_cast<double>(num) / static_cast<double>(denom);
   } else {
-    assert(0);
+    // shouldn't happen, redundant with assert above
+    TINY_DNG_ASSERT(false, "Unrecognized Real type. Expecting either RATIONAL or SRATIONAL.");
     return 0.0;
   }
 }
@@ -1987,8 +1990,8 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
 
   if ((image_info.tile_width > 0) && (image_info.tile_length > 0)) {
     // Assume Lossless JPEG data is stored in tiled format.
-    assert(image_info.tile_width > 0);
-    assert(image_info.tile_length > 0);
+    TINY_DNG_ASSERT(image_info.tile_width > 0, "Invalid tile width.");
+    TINY_DNG_ASSERT(image_info.tile_length > 0, "Invalid tile length.");
 
     // <-       image width(skip len)           ->
     // +-----------------------------------------+
@@ -2030,7 +2033,7 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
                           /* data_len */ static_cast<int>(input_len), &lj_width,
                           &lj_height, &lj_bits);
       DPRINTF("ret = %d\n", ret);
-      assert(ret == LJ92_ERROR_NONE);
+      TINY_DNG_ASSERT(ret == LJ92_ERROR_NONE, "Error opening JPEG stream.");
 
       // DPRINTF("lj %d, %d, %d\n", lj_width, lj_height, lj_bits);
       // DPRINTF("ljp x %d, y %d, c %d\n", ljp->x, ljp->y, ljp->components);
@@ -2039,8 +2042,8 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
       // DPRINTF("col = %d, tiff_w = %d / %d\n", column_step, tiff_w,
       // image_info.width);
 
-      assert((lj_width * ljp->components * lj_height) ==
-             image_info.tile_width * image_info.tile_length);
+      TINY_DNG_ASSERT((lj_width * ljp->components * lj_height) ==
+          image_info.tile_width * image_info.tile_length, "Unexpected JPEG tile size.");
 
       // int write_length = image_info.tile_width;
       // int skip_length = dst_width - image_info.tile_width;
@@ -2057,8 +2060,7 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
           static_cast<size_t>(lj_width * lj_height * ljp->components));
 
       ret = lj92_decode(ljp, tmpbuf.data(), image_info.tile_width, 0, NULL, 0);
-      assert(ret == LJ92_ERROR_NONE);
-      (void)ret;
+      TINY_DNG_ASSERT(ret == LJ92_ERROR_NONE, "Error decoding JPEG stream.");
       // ret = lj92_decode(ljp, dst_data + dst_offset, write_length,
       // skip_length,
       //                  NULL, 0);
@@ -2087,7 +2089,7 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
         }
       }
 
-      assert(ret == LJ92_ERROR_NONE);
+      TINY_DNG_ASSERT(ret == LJ92_ERROR_NONE, "Error opening JPEG stream."); // @fixme: redundant?
 
       lj92_close(ljp);
 
@@ -2110,7 +2112,7 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
     // offset = static_cast<int>(Read4(fp, swap_endian));
     // DPRINTF("offt = %d\n", offset);
 
-    assert(image_info.offset > 0);
+    TINY_DNG_ASSERT(image_info.offset > 0, "Invalid JPEG data offset.");
     offset = static_cast<int>(image_info.offset);
 
     int lj_width = 0;
@@ -2126,7 +2128,7 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
                         /* data_len */ static_cast<int>(input_len), &lj_width,
                         &lj_height, &lj_bits);
     // DPRINTF("ret = %d\n", ret);
-    assert(ret == LJ92_ERROR_NONE);
+    TINY_DNG_ASSERT(ret == LJ92_ERROR_NONE, "Error opening JPEG stream.");
 
     // DPRINTF("lj %d, %d, %d\n", lj_width, lj_height, lj_bits);
 
@@ -2136,7 +2138,7 @@ static bool DecompressLosslessJPEG(unsigned short* dst_data, int dst_width,
     ret = lj92_decode(ljp, dst_data, write_length, skip_length, NULL, 0);
     // DPRINTF("ret = %d\n", ret);
 
-    assert(ret == LJ92_ERROR_NONE);
+    TINY_DNG_ASSERT(ret == LJ92_ERROR_NONE, "Error decoding JPEG stream.");
 
     lj92_close(ljp);
   }
@@ -2173,8 +2175,7 @@ static bool ParseCustomField(const std::vector<FieldInfo>& field_lists,
         data->type = static_cast<DataType>(type);
         unsigned char val;
         size_t n = fread(&val, 1, 1, fp);
-        assert(n == 1);
-        (void)n;
+        TINY_DNG_ASSERT(n == 1, "Cannot parse custom field.");
         data->data.resize(1);
         data->data[0] = val;
         found = true;
@@ -2222,10 +2223,8 @@ static bool ParseTIFFIFD(const std::vector<FieldInfo>& custom_field_lists,
 
   // DPRINTF("id = %d\n", idx);
   unsigned short num_entries = Read2(fp, swap_endian);
-  if (num_entries == 0) {
-    assert(0);
-    return false;  // @fixme
-  }
+
+  TINY_DNG_ASSERT(num_entries != 0, "Cannot have 0 entries.");
 
   // TIFFInfo info;
   // InitializeTIFFInfo(&info);
@@ -2245,7 +2244,7 @@ static bool ParseTIFFIFD(const std::vector<FieldInfo>& custom_field_lists,
 
     DPRINTF("tag %d\n", tag);
     DPRINTF("saved_offt %d\n", saved_offt);
-    assert(tag >= TAG_NEW_SUBFILE_TYPE);
+    TINY_DNG_ASSERT(tag >= TAG_NEW_SUBFILE_TYPE, "Invalid tag.");
 
     // DPRINTF("tag = %d\n", tag);
 
@@ -2273,7 +2272,7 @@ static bool ParseTIFFIFD(const std::vector<FieldInfo>& custom_field_lists,
 
       case TAG_SAMPLES_PER_PIXEL:
         image.samples_per_pixel = static_cast<int>(Read2(fp, swap_endian));
-        assert(image.samples_per_pixel <= 4);
+        TINY_DNG_ASSERT(image.samples_per_pixel <= 4, "Cannot handle >4 samples per pixel.");
         // DPRINTF("spp = %d\n", image.samples_per_pixel);
         break;
 
@@ -2384,10 +2383,9 @@ static bool ParseTIFFIFD(const std::vector<FieldInfo>& custom_field_lists,
         size_t readLen = len;
         if (readLen > 16) readLen = 16;
         // Assume 2x2 CFAPattern.
-        assert(readLen == 4);
+        TINY_DNG_ASSERT(readLen == 4, "Unsupported CFA pattern.");
         size_t n = fread(buf, 1, readLen, fp);
-        assert(n == readLen);
-        (void)n;
+        TINY_DNG_ASSERT(n == readLen, "Error reading CFA pattern.");
         image.cfa_pattern[0][0] = buf[0];
         image.cfa_pattern[0][1] = buf[1];
         image.cfa_pattern[1][0] = buf[2];
@@ -2410,8 +2408,7 @@ static bool ParseTIFFIFD(const std::vector<FieldInfo>& custom_field_lists,
         size_t readLen = len;
         if (readLen > 4) readLen = 4;
         size_t n = fread(buf, 1, readLen, fp);
-        assert(n == readLen);
-        (void)n;
+        TINY_DNG_ASSERT(n == readLen, "Error reading CFA plane color.");
         for (size_t i = 0; i < readLen; i++) {
           image.cfa_plane_color[i] = buf[i];
         }
@@ -2600,7 +2597,7 @@ static bool ParseTIFFIFD(const std::vector<FieldInfo>& custom_field_lists,
 static bool ParseDNG(const std::vector<FieldInfo>& custom_fields,
                      std::vector<tinydng::DNGImage>* images, FILE* fp,
                      bool swap_endian) {
-  assert(images);
+  TINY_DNG_ASSERT(images, "Invalid images pointer.");
 
   unsigned int offt = Read4(fp, swap_endian);
 
@@ -2620,17 +2617,17 @@ static bool ParseDNG(const std::vector<FieldInfo>& custom_fields,
 
   for (size_t i = 0; i < images->size(); i++) {
     tinydng::DNGImage* image = &((*images)[i]);
-    assert(image->samples_per_pixel <= 4);
+    TINY_DNG_ASSERT(image->samples_per_pixel <= 4, "Cannot handle > 4 samples per pixel.");
     for (int s = 0; s < image->samples_per_pixel; s++) {
       if (image->white_level[s] == -1) {
         // Set white level with (2 ** BitsPerSample) according to the DNG spec.
-        assert(image->bits_per_sample_original > 0);
+        TINY_DNG_ASSERT(image->bits_per_sample_original > 0, "White level has to be > 0.");
 
         if (image->bits_per_sample_original >=
             32) {  // workaround for 32bit floating point TIFF.
           image->white_level[s] = -1;
         } else {
-          assert(image->bits_per_sample_original < 32);
+          TINY_DNG_ASSERT(image->bits_per_sample_original < 32, "Cannot handle >= 32 bits per sample.");
           image->white_level[s] = (1 << image->bits_per_sample_original);
         }
       }
@@ -3055,7 +3052,7 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
              std::vector<DNGImage>* images, std::string* err) {
   std::stringstream ss;
 
-  assert(images);
+  TINY_DNG_ASSERT(images, "Invalid images pointer.");
 
 #ifdef _MSC_VER
   FILE* fp;
@@ -3076,15 +3073,15 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 
   size_t ret;
   ret = fread(&magic, 1, 2, fp);
-  assert(ret == 2);
+  TINY_DNG_ASSERT(ret == 2, "Error reading magic number.");
 
   int seek_ret = fseek(fp, 0, SEEK_SET);
-  assert(seek_ret == 0);
+  TINY_DNG_ASSERT(seek_ret == 0, "Error seeking.");
 
   ret = fread(header, 1, 32, fp);
-  assert(ret == 32);
+  TINY_DNG_ASSERT(ret == 32, "Error reading header.");
   seek_ret = fseek(fp, 0, SEEK_END);
-  assert(seek_ret == 0);
+  TINY_DNG_ASSERT(seek_ret == 0, "Error seeking.");
 
   size_t file_size = static_cast<size_t>(ftell(fp));
 
@@ -3095,8 +3092,7 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
     whole_data.resize(file_size);
     fseek(fp, 0, SEEK_SET);
     size_t read_len = fread(whole_data.data(), 1, file_size, fp);
-    assert(read_len == file_size);
-    (void)read_len;
+    TINY_DNG_ASSERT(read_len == file_size, "Unexpected file size.");
 
     fseek(fp, 0, SEEK_SET);
   }
@@ -3136,7 +3132,7 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 
     const size_t data_offset =
         (image->offset > 0) ? image->offset : image->tile_offset;
-    assert(data_offset > 0);
+    TINY_DNG_ASSERT(data_offset > 0, "Unexpected data offset.");
 
     // std::cout << "offt =\n" << image->offset << std::endl;
     // std::cout << "tile_offt = \n" << image->tile_offset << std::endl;
@@ -3152,18 +3148,17 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
         image->height = 0;
       } else {
         image->bits_per_sample = image->bits_per_sample_original;
-        assert(((image->width * image->height * image->bits_per_sample) % 8) ==
-               0);
+        TINY_DNG_ASSERT(((image->width * image->height * image->bits_per_sample) % 8) == 0, "Image size must be multiple of 8.");
         const size_t len =
             static_cast<size_t>((image->samples_per_pixel * image->width *
                                  image->height * image->bits_per_sample) /
                                 8);
-        assert(len > 0);
+        TINY_DNG_ASSERT(len > 0, "Unexpected length.");
         image->data.resize(len);
         fseek(fp, static_cast<long>(data_offset), SEEK_SET);
 
         ret = fread(&(image->data.at(0)), 1, len, fp);
-        assert(ret == len);
+        TINY_DNG_ASSERT(ret == len, "Error reading image data.");
       }
     } else if (image->compression == COMPRESSION_LZW) {  // lzw compression
       image->bits_per_sample = image->bits_per_sample_original;
@@ -3236,7 +3231,7 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 
       // First check if JPEG is lossless JPEG
       // TODO(syoyo): Compure conservative data_len.
-      assert(file_size > data_offset);
+      TINY_DNG_ASSERT(file_size > data_offset, "Unexpected data offset.");
       size_t data_len = file_size - data_offset;
       int lj_width = -1, lj_height = -1, lj_bits = -1, lj_components = -1;
       if (IsLosslessJPEG(&whole_data.at(data_offset),
@@ -3244,14 +3239,11 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
                          &lj_bits, &lj_components)) {
         // std::cout << "IFD " << i << " is LJPEG" << std::endl;
 
-        assert(lj_width > 0);
-        assert(lj_height > 0);
-        assert(lj_bits > 0);
-        assert(lj_components > 0);
+        TINY_DNG_ASSERT(lj_width > 0 && lj_height > 0 &&
+                        lj_bits > 0 && lj_components > 0, "Image dimensions must be > 0.");
 
         // Assume not in tiled format.
-        assert(image->tile_width == -1);
-        assert(image->tile_length == -1);
+        TINY_DNG_ASSERT(image->tile_width == -1 && image->tile_length == -1, "Tiled format not supported tile size.");
 
         image->height = lj_height;
 
@@ -3271,8 +3263,7 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
         // lj92 decodes data into 16bits, so modify bps.
         image->bits_per_sample = 16;
 
-        assert(((image->width * image->height * image->bits_per_sample) % 8) ==
-               0);
+        TINY_DNG_ASSERT(((image->width * image->height * image->bits_per_sample) % 8) == 0, "Image size must be multiple of 8.");
         const size_t len =
             static_cast<size_t>((image->samples_per_pixel * image->width *
                                  image->height * image->bits_per_sample) /
@@ -3280,10 +3271,10 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
         // std::cout << "spp = " << image->samples_per_pixel;
         // std::cout << ", w = " << image->width << ", h = " << image->height <<
         // ", bps = " << image->bits_per_sample << std::endl;
-        assert(len > 0);
+        TINY_DNG_ASSERT(len > 0, "Invalid length.");
         image->data.resize(len);
 
-        assert(file_size > data_offset);
+        TINY_DNG_ASSERT(file_size > data_offset, "Unexpected file size.");
 
         std::vector<unsigned short> buf;
         buf.resize(static_cast<size_t>(image->width * image->height *
@@ -3349,17 +3340,17 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
         size_t jpeg_len = static_cast<size_t>(image->jpeg_byte_count);
         if (image->jpeg_byte_count == -1) {
           // No jpeg datalen. Set to the size of file - offset.
-          assert(file_size > data_offset);
+          TINY_DNG_ASSERT(file_size > data_offset, "Unexpected file size.");
           jpeg_len = file_size - data_offset;
         }
-        assert(jpeg_len > 0);
+        TINY_DNG_ASSERT(jpeg_len > 0, "Invalid length.");
 
         // Assume RGB jpeg
         int w = 0, h = 0, components = 0;
         unsigned char* decoded_image = stbi_load_from_memory(
             &whole_data.at(data_offset), static_cast<int>(jpeg_len), &w, &h,
             &components, /* desired_channels */ 3);
-        assert(decoded_image);
+        TINY_DNG_ASSERT(decoded_image, "Could not decode JPEG image.");
 
         // Currently we just discard JPEG image(since JPEG image would be just a
         // thumbnail or LDR image of RAW).
@@ -3370,8 +3361,7 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
         // std::cout << "h = " << w << std::endl;
         // std::cout << "c = " << components << std::endl;
 
-        assert(w > 0);
-        assert(h > 0);
+        TINY_DNG_ASSERT(w > 0 && h > 0, "Image dimensions must be > 0.");
 
         image->width = w;
         image->height = h;
@@ -3387,16 +3377,15 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
       // std::cout << "w = " << image->width << ", h = " << image->height <<
       // std::endl;
 
-      assert(((image->width * image->height * image->bits_per_sample) % 8) ==
-             0);
+      TINY_DNG_ASSERT(((image->width * image->height * image->bits_per_sample) % 8) == 0, "Image must be multiple of 8.");
       const size_t len =
           static_cast<size_t>((image->samples_per_pixel * image->width *
                                image->height * image->bits_per_sample) /
                               8);
-      assert(len > 0);
+      TINY_DNG_ASSERT(len > 0, "Invalid length.");
       image->data.resize(len);
 
-      assert(file_size > data_offset);
+      TINY_DNG_ASSERT(file_size > data_offset, "Unexpected length.");
 
       fseek(fp, static_cast<long>(data_offset), SEEK_SET);
 
