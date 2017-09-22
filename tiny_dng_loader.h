@@ -323,15 +323,6 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 
 namespace tinydng {
 
-// Very simple count leading zero implementation.
-static int clz32(unsigned int x) {
-  int n;
-  if (x == 0) return 32;
-  for (n = 0; ((x & 0x80000000) == 0); n++, x <<= 1)
-    ;
-  return n;
-}
-
 #ifdef __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wc++11-extensions"
@@ -401,13 +392,13 @@ typedef struct _ljp* lj92;
  * Returns status code.
  * If status == LJ92_ERROR_NONE, handle must be closed with lj92_close
  */
-static int lj92_open(lj92* lj,                    // Return handle here
-                     uint8_t* data, int datalen,  // The encoded data
-                     int* width, int* height,
-                     int* bitdepth);  // Width, height and bitdepth
+int lj92_open(lj92* lj,                          // Return handle here
+              const uint8_t* data, int datalen,  // The encoded data
+              int* width, int* height,
+              int* bitdepth);  // Width, height and bitdepth
 
 /* Release a decoder object */
-static void lj92_close(lj92 lj);
+void lj92_close(lj92 lj);
 
 /*
  * Decode previously opened lossless JPEG (1992) into a 2D tile of memory
@@ -417,22 +408,24 @@ static void lj92_close(lj92 lj);
  * output value to target value
  * Data is only correct if LJ92_ERROR_NONE is returned
  */
-static int lj92_decode(
+int lj92_decode(
     lj92 lj, uint16_t* target, int writeLength,
     int skipLength,  // The image is written to target as a tile
     uint16_t* linearize,
     int linearizeLength);  // If not null, linearize the data using this table
 
+#if 0
 /*
  * Encode a grayscale image supplied as 16bit values within the given bitdepth
  * Read from tile in the image
  * Apply delinearization if given
  * Return the encoded lossless JPEG stream
  */
-static int lj92_encode(uint16_t* image, int width, int height, int bitdepth,
+int lj92_encode(uint16_t* image, int width, int height, int bitdepth,
                        int readLength, int skipLength, uint16_t* delinearize,
                        int delinearizeLength, uint8_t** encoded,
                        int* encodedLength);
+#endif
 
 typedef uint8_t u8;
 typedef uint16_t u16;
@@ -698,6 +691,7 @@ static int parseSof3(ljp* self) {
 }
 
 static int parseBlock(ljp* self, int marker) {
+  (void)marker;
   self->ix += BEH(self->data[self->ix]);
   if (self->ix >= self->datalen) {
     TINY_DNG_DPRINTF("parseBlock: ix %d, datalen %d\n", self->ix,
@@ -761,6 +755,7 @@ static int extend(ljp* self, int v, int t) {
 #endif
 
 inline static int nextdiff(ljp* self, int component_idx, int Px) {
+  (void)Px;
 #ifdef SLOW_HUFF
   int t = decode(self);
   int diff = receive(self, t);
@@ -1201,7 +1196,17 @@ void lj92_close(lj92 lj) {
   free(self);
 }
 
+#if 0  // not used in tinydngloader
 /* Encoder implementation */
+
+// Very simple count leading zero implementation.
+static int clz32(unsigned int x) {
+  int n;
+  if (x == 0) return 32;
+  for (n = 0; ((x & 0x80000000) == 0); n++, x <<= 1)
+    ;
+  return n;
+}
 
 typedef struct _lje {
   uint16_t* image;
@@ -1622,7 +1627,6 @@ void writeBody(lje* self) {
   self->encodedWritten = w;
 }
 
-#if 0
 /* Encoder
  * Read tile from an image and encode in one shot
  * Return the encoded data
