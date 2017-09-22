@@ -241,9 +241,9 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <map>
 #include <sstream>
-#include <iterator>
 
 #ifdef TINY_DNG_LOADER_PROFILING
 // Requires C++11 feature
@@ -270,9 +270,9 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
     }                                    \
   } while (false)
 
-#define TINY_DNG_ABORT(text)             \
-  do {                                   \
-    throw std::runtime_error(text);      \
+#define TINY_DNG_ABORT(text)        \
+  do {                              \
+    throw std::runtime_error(text); \
   } while (false)
 
 #else
@@ -283,10 +283,10 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
       abort();                                                              \
     }                                                                       \
   } while (false)
-#define TINY_DNG_ABORT(text)                                                \
-  do {                                                                      \
-    std::cerr << __FILE__ << ":" << __LINE__ << " " << text << std::endl;   \
-    abort();                                                                \
+#define TINY_DNG_ABORT(text)                                              \
+  do {                                                                    \
+    std::cerr << __FILE__ << ":" << __LINE__ << " " << text << std::endl; \
+    abort();                                                              \
   } while (false)
 #endif
 
@@ -2403,7 +2403,8 @@ static bool ParseTIFFIFD(const std::vector<FieldInfo>& custom_field_lists,
 
       case TAG_PREDICTOR:
         image.predictor = Read2(fp, swap_endian);
-        TINY_DNG_ASSERT((image.predictor >= 1) && (image.predictor <= 3), "Predictor value must be 1, 2 or 3.");
+        TINY_DNG_ASSERT((image.predictor >= 1) && (image.predictor <= 3),
+                        "Predictor value must be 1, 2 or 3.");
         break;
 
       case TAG_SAMPLE_FORMAT: {
@@ -2798,7 +2799,8 @@ int Dictionary::findIndex(const int code, const int value) const {
 }
 
 bool Dictionary::add(const int code, const int value) {
-  TINY_DNG_ASSERT(code <= size_, "`code' must be less than or equal to dictionary size.");
+  TINY_DNG_ASSERT(code <= size_,
+                  "`code' must be less than or equal to dictionary size.");
   if (size_ == 4096) {
     TINY_DNG_DPRINTF("Dictionary overflowed!");
     return false;
@@ -2905,7 +2907,8 @@ bool BitStreamReader::readNextBitBE(int& bitOut) {
 }
 
 uint64_t BitStreamReader::readBitsU64LE(const int bitCount) {
-  TINY_DNG_ASSERT(bitCount <= 64, "`bitCount' must be less than or equal to 64.");
+  TINY_DNG_ASSERT(bitCount <= 64,
+                  "`bitCount' must be less than or equal to 64.");
 
   uint64_t num = 0;
   for (int b = 0; b < bitCount; ++b) {
@@ -2926,7 +2929,8 @@ uint64_t BitStreamReader::readBitsU64LE(const int bitCount) {
 }
 
 uint64_t BitStreamReader::readBitsU64BE(const int bitCount) {
-  TINY_DNG_ASSERT(bitCount <= 64, "`bitCount' must be less than or equal to 64.");
+  TINY_DNG_ASSERT(bitCount <= 64,
+                  "`bitCount' must be less than or equal to 64.");
 
   uint64_t num = 0;
   for (int b = 0; b < bitCount; ++b) {
@@ -2986,7 +2990,8 @@ static bool outputSequence(const Dictionary& dict, int code,
   int i = 0;
   unsigned char sequence[4096];
   do {
-    TINY_DNG_ASSERT(i < MaxDictEntries - 1 && code >= 0, "Invalid value for `i' or `code'.");
+    TINY_DNG_ASSERT(i < MaxDictEntries - 1 && code >= 0,
+                    "Invalid value for `i' or `code'.");
     TINY_DNG_DPRINTF("i = %d, ent[%d].value = %d\n", i, code,
                      dict.entries_[code].value);
     sequence[i++] = static_cast<unsigned char>(dict.entries_[code].value);
@@ -3044,7 +3049,9 @@ static int easyDecode(const unsigned char* compressed,
   // terminate we break the loop and return the current
   // decompression count.
   while (!bitStream.isEndOfStream()) {
-    TINY_DNG_ASSERT(codeBitsWidth <= MaxDictBits, "`codeBitsWidth must be less than or equal to `MaxDictBits'.");
+    TINY_DNG_ASSERT(
+        codeBitsWidth <= MaxDictBits,
+        "`codeBitsWidth must be less than or equal to `MaxDictBits'.");
     (void)MaxDictBits;
 
     if (!swap_endian) {  // TODO(syoyo): Detect BE or LE depending on endianness
@@ -3056,7 +3063,8 @@ static int easyDecode(const unsigned char* compressed,
 
     TINY_DNG_DPRINTF("code = %d(swap_endian = %d)\n", code, swap_endian);
 
-    TINY_DNG_ASSERT(code <= dictionary.size(), "`code' must be less than or equal to dictionary size.");
+    TINY_DNG_ASSERT(code <= dictionary.size(),
+                    "`code' must be less than or equal to dictionary size.");
 
     if (code == EndOfInformation) {
       TINY_DNG_DPRINTF("EoI\n");
@@ -3268,7 +3276,8 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
           std::vector<unsigned char> dst(dst_len);
 
           ret = fread(src.data(), 1, image->strip_byte_counts[k], fp);
-          TINY_DNG_ASSERT(ret == image->strip_byte_counts[k], "Cannot read strip_byte_counts bytes from fp");
+          TINY_DNG_ASSERT(ret == image->strip_byte_counts[k],
+                          "Cannot read strip_byte_counts bytes from fp");
           TINY_DNG_DPRINTF("easyDecode begin\n");
           int decoded_bytes = lzw::easyDecode(
               src.data(), int(image->strip_byte_counts[k]),
@@ -3276,7 +3285,8 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
                   image->bits_per_sample /* FIXME(syoyo): Is this correct? */,
               dst.data(), int(dst_len), swap_endian);
           TINY_DNG_DPRINTF("easyDecode done\n");
-          TINY_DNG_ASSERT(decoded_bytes > 0, "decoded_ bytes must be non-zero positive.");
+          TINY_DNG_ASSERT(decoded_bytes > 0,
+                          "decoded_ bytes must be non-zero positive.");
 
           if (image->predictor == 1) {
             // no prediction shceme
@@ -3300,9 +3310,9 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 
           } else if (image->predictor == 3) {
             // fp horizontal diff.
-            TINY_DNG_ABORT("[TODO] FP horizontal differencing predictor."); 
+            TINY_DNG_ABORT("[TODO] FP horizontal differencing predictor.");
           } else {
-            TINY_DNG_ABORT("Invalid predictor value."); 
+            TINY_DNG_ABORT("Invalid predictor value.");
           }
 
           std::copy(dst.begin(), dst.end(), std::back_inserter(image->data));
