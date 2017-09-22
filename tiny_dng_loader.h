@@ -282,6 +282,45 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 #pragma clang diagnostic pop
 #endif
 
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wc++11-extensions"
+#pragma clang diagnostic ignored "-Wold-style-cast"
+#pragma clang diagnostic ignored "-Wconversion"
+#pragma clang diagnostic ignored "-Wunused-parameter"
+#pragma clang diagnostic ignored "-Wcast-align"
+#pragma clang diagnostic ignored "-Wconditional-uninitialized"
+#pragma clang diagnostic ignored "-Wunused-function"
+#pragma clang diagnostic ignored "-Wpadded"
+#pragma clang diagnostic ignored "-Wmissing-prototypes"
+#pragma clang diagnostic ignored "-Wreserved-id-macro"
+#pragma clang diagnostic ignored "-Wdisabled-macro-expansion"
+#pragma clang diagnostic ignored "-Wdouble-promotion"
+#pragma clang diagnostic ignored "-Wimplicit-fallthrough"
+#if __has_warning("-Wcomma")
+#pragma clang diagnostic ignored "-Wcomma"
+#endif
+#endif
+
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4100)
+#pragma warning(disable : 4334)
+#pragma warning(disable : 4244)
+#endif
+
+// STB image to decode jpeg image.
+// Assume STB_IMAGE_IMPLEMENTATION is defined elsewhere
+#include "stb_image.h"
+
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+
 namespace tinydng {
 
 // Very simple count leading zero implementation.
@@ -319,10 +358,6 @@ static int clz32(unsigned int x) {
 #pragma warning(disable : 4334)
 #pragma warning(disable : 4244)
 #endif
-
-// STB image to decode jpeg image.
-// Assume STB_IMAGE_IMPLEMENTATION is defined elsewhere
-#include "stb_image.h"
 
 namespace {
 // Begin liblj92, Lossless JPEG decode/encoder ------------------------------
@@ -1644,6 +1679,7 @@ int lj92_encode(uint16_t* image, int width, int height, int bitdepth,
 
 // End liblj92 ---------------------------------------------------------
 }  // namespace
+
 #ifdef __clang__
 #pragma clang diagnostic pop
 #endif
