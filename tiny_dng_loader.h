@@ -2020,7 +2020,6 @@ StreamReader
     }
 
     unsigned short val = *(reinterpret_cast<const unsigned short *>(&binary_[idx_]));
-    TINY_DNG_DPRINTF("idx %d\n", int(idx_));
 
     if (swap_endian_) {
       swap2(&val);
@@ -2196,8 +2195,6 @@ class DNGLoader
 
   private:
 
-
-
     ///
     /// Parse custom TIFF field
     ///
@@ -2223,7 +2220,7 @@ class DNGLoader
 		/// Parse Nikon maker note tags
 		/// (Same with TIFF IFD format)
 		///
-		bool ParseNikonMakerNoteTags(const std::vector<unsigned char> &data);
+		bool ParseNikonMakerNoteTags(StreamReader *reader);
 
     ///
     /// Decompress lossless JPEG data into 16bit images.
@@ -2293,96 +2290,112 @@ static bool IsNikonMakerNote(const std::vector<unsigned char>& maker_note) {
   return false;
 }
 
-static unsigned short Read2(const unsigned char *ptr, const bool swap_endian) {
-  unsigned short val = *(reinterpret_cast<const unsigned short *>(ptr));
-  if (swap_endian) {
-    swap2(&val);
-  }
-  return val;
-}
-
-static unsigned int Read4(const unsigned char *ptr, const bool swap_endian) {
-  unsigned int val = *(reinterpret_cast<const unsigned int *>(ptr));
-  if (swap_endian) {
-    swap4(&val);
-  }
-  return val;
-}
-
-static void GetNikonTag(unsigned short* tag, unsigned short* type,
-                       unsigned int* len, unsigned int *offset, const unsigned char *ptr, bool swap_endian) {
-  (*tag) = Read2(ptr, swap_endian);
-  (*type) = Read2(ptr + 2, swap_endian);
-  (*len) = Read4(ptr + 4, swap_endian);
-
-  (*offset) = 8;
-
-  size_t typesize_table[] = {1, 1, 1, 2, 4, 8, 1, 1, 2, 4, 8, 4, 8, 4};
-
-  if ((*len) * (typesize_table[(*type) < 14 ? (*type) : 0]) > 4) {
-    unsigned int offt = Read4(ptr + 8, swap_endian);
-    TINY_DNG_DPRINTF("offt = %d\n", int(offt));
-    (*offset) = offt;
-  }
-}
-
-#if 0
 // Parse Nikon maker note tags
 // (Same with TIFF IFD format)
-static bool ParseNikonMakerNoteTags(const std::vector<unsigned char> &data, const bool swap_endian, NikonMakerNote *maker_note) {
+bool DNGLoader::ParseNikonMakerNoteTags(StreamReader *reader) {
   
   // read version 
-  short ver0 = static_cast<short>(Read2(&data[6], swap_endian));
-  short ver1 = static_cast<short>(Read2(&data[8], swap_endian));
-  (void)ver0;
-  (void)ver1;
+  short ver0;
+  short ver1;
+
+	if (!reader->seek_set(6)) {
+		err_ << "Failed to seek in ParseNikonMakerNoteTags." << std::endl;
+		return false;
+	}
+
+	// [6:7]
+	if (!reader->read2(reinterpret_cast<unsigned short*>(&ver0))) {
+		err_ << "Failed to read ver0." << std::endl;
+		return false;
+	}
+
+	// [8:9]
+	if (!reader->read2(reinterpret_cast<unsigned short*>(&ver1))) {
+		err_ << "Failed to read ver1." << std::endl;
+		return false;
+	}
 
   TINY_DNG_DPRINTF("ver0 %d, ver1 %d\n", ver0, ver1);
 
   // Usually 0x4D4D
-  short byte_order = static_cast<short>(Read2(&data[10], swap_endian));
-  TINY_DNG_DPRINTF("byte_order 0x%08x\n", byte_order);
+	// [10:11]
+  short byte_order;
+	if (!reader->read2(reinterpret_cast<unsigned short*>(&byte_order))) {
+		err_ << "Failed to read byte order." << std::endl;
+		return false;
+	}
+
+  TINY_DNG_DPRINTF("NEF makernote byte_order 0x%08x\n", byte_order);
 
   // [12:13] TIFF magic value.
+	// skip
 
   // [14:17] TIFF offset.
-  unsigned int tiff_offset = Read4(&data[14], swap_endian);
-  TINY_DNG_DPRINTF("tiff_offset 0x%08x\n", tiff_offset); // must be 8
+	if (!reader->seek_set(14)) {
+		err_ << "Failed to seek." << std::endl;
+		return false;
+	}
 
+  unsigned int tiff_offset;
+	if (!reader->read4(&tiff_offset)) {
+		err_ << "Failed to read Nikon MakerNote TIFF offset." << std::endl;
+		return false;
+	}
+
+  TINY_DNG_DPRINTF("NEF makernote tiff_offset 0x%08x\n", tiff_offset); // must be 8
 
   // [18:] First IFD 
-  unsigned short num_entries = Read2(&data[18], swap_endian);
+  unsigned short num_entries;
+	if (!reader->read2(&num_entries)) {
+		err_ << "Failed to read NEF Makernote entries." << std::endl;
+		return false;
+	}
+
   TINY_DNG_DPRINTF("NEF Makernote entries = %d\n", num_entries);
   if (num_entries == 0) {
-    assert(0);
-    return false;  // @fixme
+		err_ << "# of NEF Makernote entries are zero." << std::endl;
+    return false;
   }
 
-  const unsigned char *ptr = &data.at(20);
   while (num_entries--) {
     unsigned short tag, type;
     unsigned int len;
-    unsigned int offset;
-    GetNikonTag(&tag, &type, &len, &offset, ptr, swap_endian);
+    unsigned int saved_offset;
+    if (!reader->GetTIFFTag(&tag, &type, &len, &saved_offset)) {
+			err_ << "Failed to parse Makernote tag." << std::endl;
+			return false;
+		}
+    TINY_DNG_DPRINTF("NEF Makernote tag. tag = %d, type = %d, len = %d\n", tag, type, len);
 
     if (tag == NEF_MAKERNOTE_NEF_COMPRESSION) {
-      unsigned short compression = Read2(ptr + offset, swap_endian);
+      unsigned short compression;
+			if (!reader->read2(&compression)) {
+				err_ << "Failed to read NEF Makernote compression tag." << std::endl;
+				return false;
+			}
       TINY_DNG_DPRINTF("NEF compression = %d\n", compression);
-      maker_note->compression = compression;
+      nikon_maker_note_.compression = compression;
     } else if (tag == NEF_MAKERNOTE_LINEARLIZATION_TABLE) {
+
       TINY_DNG_DPRINTF("NEF linearization table. len = %d\n", len);
-      maker_note->linearization_table.resize(len);
-      memcpy(maker_note->linearization_table.data(), ptr + offset, len);
+      nikon_maker_note_.linearization_table.resize(len);
+
+			if (!reader->read(len, len, reinterpret_cast<unsigned char*>(nikon_maker_note_.linearization_table.data()))) {
+				err_ << "Failed to read linearlization table." << std::endl;
+				return false;
+			}
     } else {
       // TODO(syoyo): Implement
     }
 
-    ptr += 12; // 12 = IFD entry size.
+		if (!reader->seek_set(saved_offset)) {
+			err_ << "Failed to restore position." << std::endl;
+			return false;
+		}
   }
 
   return true;
 }
-#endif
 
 
 // Parse some EXIF tag
@@ -2402,28 +2415,40 @@ bool DNGLoader::ParseEXIFTags(StreamReader *reader) {
   while (num_entries--) {
     unsigned short tag, type;
     unsigned int len;
-    unsigned int saved_offt;
-    reader->GetTIFFTag(&tag, &type, &len, &saved_offt);
+    unsigned int saved_offet;
+    reader->GetTIFFTag(&tag, &type, &len, &saved_offet);
+
+    TINY_DNG_DPRINTF("EXIF tag = %d, type = %d, len = %d\n",
+			tag, type, len);
 
     if (tag == EXIF_MAKER_NOTE) {
       TINY_DNG_DPRINTF("maker note! len = %d\n", len);
 
-#if 0
-      exif->maker_note.resize(len);
-      fread(exif->maker_note.data(), 1, len, fp);
-      if (IsNikonMakerNote(exif->maker_note)) {
+			std::vector<uint8_t> maker_note(len);
+			if (!reader->read(len, len, maker_note.data())) {
+				err_ << "Failed to read Makernote." << std::endl;
+				return false;
+			}
+
+      if (IsNikonMakerNote(maker_note)) {
         TINY_DNG_DPRINTF("Nikon NEF\n");
-        bool ret = ParseNikonMakerNoteTags(exif->maker_note, swap_endian, nikon_maker_note);
+
+				// TODO(syoyo): read byte order from MakerNote header.
+				StreamReader maker_note_reader(maker_note, reader->swap_endian());
+
+        bool ret = ParseNikonMakerNoteTags(&maker_note_reader);
         if (!ret) {
           return false;
         }
       }
-#endif
     } else {
       // Unsupported or unimplemented tag.
     }
 
-    //fseek(fp, saved_offt, SEEK_SET);
+		if (!reader->seek_set(saved_offet)) {
+			err_ << "Failed to restore position." << std::endl;
+			return false;
+		}
   }
 
   return true;
