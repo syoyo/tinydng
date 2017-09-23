@@ -2268,53 +2268,12 @@ typedef enum {
 } NefMakerNoteTag;
 
 typedef struct {
-  int compression;  // 1 = lossy type1
-  std::vector<short> curves;
+  int compression;  // 1 = lossy type1, 2 = uncompressed, 3 = lossy type2
+  std::vector<short> linearization_table;
 } NikonMakerNote;
 
 #if defined(TINY_DNG_ENABLE_GPL)
-
-/*
-   dcraw.c -- Dave Coffin's raw photo decoder
-   Copyright 1997-2016 by Dave Coffin, dcoffin a cybercom o net
-
-   This is a command-line ANSI C program to convert raw photos from
-   any digital camera on any computer running any operating system.
-
-   No license is required to download and use dcraw.c.  However,
-   to lawfully redistribute dcraw, you must either (a) offer, at
-   no extra charge, full source code* for all executable files
-   containing RESTRICTED functions, (b) distribute this code under
-   the GPL Version 2 or later, (c) remove all RESTRICTED functions,
-   re-implement them, or copy them from an earlier, unrestricted
-   Revision of dcraw.c, or (d) purchase a license from the author.
-
-   The functions that process Foveon images have been RESTRICTED
-   since Revision 1.237.  All other code remains free for all uses.
-
-   *If you have not modified dcraw.c in any way, a link to my
-   homepage qualifies as "full source code".
-
-   $Revision: 1.477 $
-   $Date: 2016/05/10 21:30:43 $
- */
-
-// from dcraw
-  static const uchar nikon_tree[][32] = {
-    { 0,1,5,1,1,1,1,1,1,2,0,0,0,0,0,0,  /* 12-bit lossy */
-      5,4,3,6,2,7,1,0,8,9,11,10,12 },
-    { 0,1,5,1,1,1,1,1,1,2,0,0,0,0,0,0,  /* 12-bit lossy after split */
-      0x39,0x5a,0x38,0x27,0x16,5,4,3,2,1,0,11,12,12 },
-    { 0,1,4,2,3,1,2,0,0,0,0,0,0,0,0,0,  /* 12-bit lossless */
-      5,4,6,3,7,2,8,1,9,0,10,11,12 },
-    { 0,1,4,3,1,1,1,1,1,2,0,0,0,0,0,0,  /* 14-bit lossy */
-      5,6,4,7,8,3,9,2,1,0,10,11,12,13,14 },
-    { 0,1,5,1,1,1,1,1,1,1,2,0,0,0,0,0,  /* 14-bit lossy after split */
-      8,0x5c,0x4b,0x3a,0x29,7,6,5,4,3,2,1,0,13,14 },
-    { 0,1,4,2,2,3,1,2,0,0,0,0,0,0,0,0,  /* 14-bit lossless */
-      7,6,8,5,9,4,10,3,11,12,2,0,1,13,14 } };
-
-
+#include "tiny_dng_nef_decoder.inc"
 #endif
 
 static bool IsNikonMakerNote(const std::vector<unsigned char>& maker_note) {
@@ -2362,36 +2321,36 @@ static void GetNikonTag(unsigned short* tag, unsigned short* type,
 
 // Parse Nikon maker note tags
 // (Same with TIFF IFD format)
-static bool ParseNikonMakerNoteTags(const std::vector<unsigned char> &maker_note, const bool swap_endian) {
+static bool ParseNikonMakerNoteTags(const std::vector<unsigned char> &data, const bool swap_endian, NikonMakerNote *maker_note) {
   
   // read version 
-  short ver0 = static_cast<short>(Read2(&maker_note[6], swap_endian));
-  short ver1 = static_cast<short>(Read2(&maker_note[8], swap_endian));
+  short ver0 = static_cast<short>(Read2(&data[6], swap_endian));
+  short ver1 = static_cast<short>(Read2(&data[8], swap_endian));
   (void)ver0;
   (void)ver1;
 
   TINY_DNG_DPRINTF("ver0 %d, ver1 %d\n", ver0, ver1);
 
   // Usually 0x4D4D
-  short byte_order = static_cast<short>(Read2(&maker_note[10], swap_endian));
+  short byte_order = static_cast<short>(Read2(&data[10], swap_endian));
   TINY_DNG_DPRINTF("byte_order 0x%08x\n", byte_order);
 
   // [12:13] TIFF magic value.
 
   // [14:17] TIFF offset.
-  unsigned int tiff_offset = Read4(&maker_note[14], swap_endian);
+  unsigned int tiff_offset = Read4(&data[14], swap_endian);
   TINY_DNG_DPRINTF("tiff_offset 0x%08x\n", tiff_offset); // must be 8
 
 
   // [18:] First IFD 
-  unsigned short num_entries = Read2(&maker_note[18], swap_endian);
+  unsigned short num_entries = Read2(&data[18], swap_endian);
   TINY_DNG_DPRINTF("NEF Makernote entries = %d\n", num_entries);
   if (num_entries == 0) {
     assert(0);
     return false;  // @fixme
   }
 
-  const unsigned char *ptr = &maker_note.at(20);
+  const unsigned char *ptr = &data.at(20);
   while (num_entries--) {
     unsigned short tag, type;
     unsigned int len;
@@ -2401,8 +2360,11 @@ static bool ParseNikonMakerNoteTags(const std::vector<unsigned char> &maker_note
     if (tag == NEF_MAKERNOTE_NEF_COMPRESSION) {
       unsigned short compression = Read2(ptr + offset, swap_endian);
       TINY_DNG_DPRINTF("NEF compression = %d\n", compression);
+      maker_note->compression = compression;
     } else if (tag == NEF_MAKERNOTE_LINEARLIZATION_TABLE) {
       TINY_DNG_DPRINTF("NEF linearization table. len = %d\n", len);
+      maker_note->linearization_table.resize(len);
+      memcpy(maker_note->linearization_table.data(), ptr + offset, len);
     } else {
       // TODO(syoyo): Implement
     }
@@ -2415,7 +2377,7 @@ static bool ParseNikonMakerNoteTags(const std::vector<unsigned char> &maker_note
 
 
 // Parse some EXIF tag
-static bool ParseEXIFTags(FILE* fp, bool swap_endian, EXIF* exif) {
+static bool ParseEXIFTags(FILE* fp, bool swap_endian, EXIF* exif, NikonMakerNote *nikon_maker_note) {
   unsigned short num_entries = Read2(fp, swap_endian);
   TINY_DNG_DPRINTF("EXIF entries = %d\n", num_entries);
   if (num_entries == 0) {
@@ -2436,7 +2398,7 @@ static bool ParseEXIFTags(FILE* fp, bool swap_endian, EXIF* exif) {
       fread(exif->maker_note.data(), 1, len, fp);
       if (IsNikonMakerNote(exif->maker_note)) {
         TINY_DNG_DPRINTF("Nikon NEF\n");
-        bool ret = ParseNikonMakerNoteTags(exif->maker_note, swap_endian);
+        bool ret = ParseNikonMakerNoteTags(exif->maker_note, swap_endian, nikon_maker_note);
         if (!ret) {
           return false;
         }
