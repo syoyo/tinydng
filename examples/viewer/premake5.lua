@@ -83,10 +83,11 @@ solution "ViewerSolution"
 
       configuration "Debug"
          defines { "DEBUG" } -- -DDEBUG
-         flags { "Symbols" }
+         symbols "On"
          targetname "view_debug"
 
       configuration "Release"
          -- defines { "NDEBUG" } -- -NDEBUG
-         flags { "Symbols", "Optimize" }
+         symbols "On"
+         optimize "On"
          targetname "view"
