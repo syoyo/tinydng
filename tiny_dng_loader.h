@@ -242,6 +242,7 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <map>
 #include <sstream>
 
@@ -269,6 +270,12 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
       throw std::runtime_error(text);    \
     }                                    \
   } while (false)
+
+#define TINY_DNG_ABORT(text)        \
+  do {                              \
+    throw std::runtime_error(text); \
+  } while (false)
+
 #else
 #define TINY_DNG_ASSERT(assertion, text)                                    \
   do {                                                                      \
@@ -277,22 +284,16 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
       abort();                                                              \
     }                                                                       \
   } while (false)
+#define TINY_DNG_ABORT(text)                                              \
+  do {                                                                    \
+    std::cerr << __FILE__ << ":" << __LINE__ << " " << text << std::endl; \
+    abort();                                                              \
+  } while (false)
 #endif
 
 #ifdef __clang__
 #pragma clang diagnostic pop
 #endif
-
-namespace tinydng {
-
-// Very simple count leading zero implementation.
-static int clz32(unsigned int x) {
-  int n;
-  if (x == 0) return 32;
-  for (n = 0; ((x & 0x80000000) == 0); n++, x <<= 1)
-    ;
-  return n;
-}
 
 #ifdef __clang__
 #pragma clang diagnostic push
@@ -324,6 +325,43 @@ static int clz32(unsigned int x) {
 // STB image to decode jpeg image.
 // Assume STB_IMAGE_IMPLEMENTATION is defined elsewhere
 #include "stb_image.h"
+
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+
+namespace tinydng {
+
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wc++11-extensions"
+#pragma clang diagnostic ignored "-Wold-style-cast"
+#pragma clang diagnostic ignored "-Wconversion"
+#pragma clang diagnostic ignored "-Wunused-parameter"
+#pragma clang diagnostic ignored "-Wcast-align"
+#pragma clang diagnostic ignored "-Wconditional-uninitialized"
+#pragma clang diagnostic ignored "-Wunused-function"
+#pragma clang diagnostic ignored "-Wpadded"
+#pragma clang diagnostic ignored "-Wmissing-prototypes"
+#pragma clang diagnostic ignored "-Wreserved-id-macro"
+#pragma clang diagnostic ignored "-Wdisabled-macro-expansion"
+#pragma clang diagnostic ignored "-Wdouble-promotion"
+#pragma clang diagnostic ignored "-Wimplicit-fallthrough"
+#if __has_warning("-Wcomma")
+#pragma clang diagnostic ignored "-Wcomma"
+#endif
+#endif
+
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4100)
+#pragma warning(disable : 4334)
+#pragma warning(disable : 4244)
+#endif
 
 namespace {
 // Begin liblj92, Lossless JPEG decode/encoder ------------------------------
@@ -367,13 +405,13 @@ typedef struct _ljp* lj92;
  * Returns status code.
  * If status == LJ92_ERROR_NONE, handle must be closed with lj92_close
  */
-static int lj92_open(lj92* lj,                    // Return handle here
-                     uint8_t* data, int datalen,  // The encoded data
-                     int* width, int* height,
-                     int* bitdepth);  // Width, height and bitdepth
+int lj92_open(lj92* lj,                          // Return handle here
+              const uint8_t* data, int datalen,  // The encoded data
+              int* width, int* height,
+              int* bitdepth);  // Width, height and bitdepth
 
 /* Release a decoder object */
-static void lj92_close(lj92 lj);
+void lj92_close(lj92 lj);
 
 /*
  * Decode previously opened lossless JPEG (1992) into a 2D tile of memory
@@ -383,22 +421,24 @@ static void lj92_close(lj92 lj);
  * output value to target value
  * Data is only correct if LJ92_ERROR_NONE is returned
  */
-static int lj92_decode(
+int lj92_decode(
     lj92 lj, uint16_t* target, int writeLength,
     int skipLength,  // The image is written to target as a tile
     uint16_t* linearize,
     int linearizeLength);  // If not null, linearize the data using this table
 
+#if 0
 /*
  * Encode a grayscale image supplied as 16bit values within the given bitdepth
  * Read from tile in the image
  * Apply delinearization if given
  * Return the encoded lossless JPEG stream
  */
-static int lj92_encode(uint16_t* image, int width, int height, int bitdepth,
+int lj92_encode(uint16_t* image, int width, int height, int bitdepth,
                        int readLength, int skipLength, uint16_t* delinearize,
                        int delinearizeLength, uint8_t** encoded,
                        int* encodedLength);
+#endif
 
 typedef uint8_t u8;
 typedef uint16_t u16;
@@ -664,6 +704,7 @@ static int parseSof3(ljp* self) {
 }
 
 static int parseBlock(ljp* self, int marker) {
+  (void)marker;
   self->ix += BEH(self->data[self->ix]);
   if (self->ix >= self->datalen) {
     TINY_DNG_DPRINTF("parseBlock: ix %d, datalen %d\n", self->ix,
@@ -727,6 +768,7 @@ static int extend(ljp* self, int v, int t) {
 #endif
 
 inline static int nextdiff(ljp* self, int component_idx, int Px) {
+  (void)Px;
 #ifdef SLOW_HUFF
   int t = decode(self);
   int diff = receive(self, t);
@@ -1167,7 +1209,17 @@ void lj92_close(lj92 lj) {
   free(self);
 }
 
+#if 0  // not used in tinydngloader
 /* Encoder implementation */
+
+// Very simple count leading zero implementation.
+static int clz32(unsigned int x) {
+  int n;
+  if (x == 0) return 32;
+  for (n = 0; ((x & 0x80000000) == 0); n++, x <<= 1)
+    ;
+  return n;
+}
 
 typedef struct _lje {
   uint16_t* image;
@@ -1588,7 +1640,6 @@ void writeBody(lje* self) {
   self->encodedWritten = w;
 }
 
-#if 0
 /* Encoder
  * Read tile from an image and encode in one shot
  * Return the encoded data
@@ -1645,6 +1696,7 @@ int lj92_encode(uint16_t* image, int width, int height, int bitdepth,
 
 // End liblj92 ---------------------------------------------------------
 }  // namespace
+
 #ifdef __clang__
 #pragma clang diagnostic pop
 #endif
@@ -1825,11 +1877,10 @@ static double ReadReal(int type, FILE* fp, bool swap) {
     return static_cast<double>(num) / static_cast<double>(denom);
   } else {
     // shouldn't happen, redundant with assert above
-    TINY_DNG_ASSERT(
-        false,
+    TINY_DNG_ABORT(
         "Unrecognized Real type. Expecting either RATIONAL or SRATIONAL.");
-    return 0.0;
   }
+  // never come here.
 }
 
 static void GetTIFFTag(unsigned short* tag, unsigned short* type,
@@ -2528,7 +2579,7 @@ static bool ParseTIFFIFD(const std::vector<FieldInfo>& custom_field_lists,
         // The TIFF Spec says data type may be SHORT, but assume LONG for a
         // while.
         image.rows_per_strip = static_cast<int>(Read4(fp, swap_endian));
-        assert(image.height > 0);
+        TINY_DNG_ASSERT(image.height > 0, "Must have image height.");
 
         // http://www.awaresystems.be/imaging/tiff/tifftags/rowsperstrip.html
         image.strips_per_image = static_cast<int>(
@@ -2570,8 +2621,8 @@ static bool ParseTIFFIFD(const std::vector<FieldInfo>& custom_field_lists,
 
       case TAG_PREDICTOR:
         image.predictor = Read2(fp, swap_endian);
-        assert(image.predictor >= 1);
-        assert(image.predictor <= 3);
+        TINY_DNG_ASSERT((image.predictor >= 1) && (image.predictor <= 3),
+                        "Predictor value must be 1, 2 or 3.");
         break;
 
       case TAG_SAMPLE_FORMAT: {
@@ -2977,7 +3028,8 @@ int Dictionary::findIndex(const int code, const int value) const {
 }
 
 bool Dictionary::add(const int code, const int value) {
-  assert(code <= size_);
+  TINY_DNG_ASSERT(code <= size_,
+                  "`code' must be less than or equal to dictionary size.");
   if (size_ == 4096) {
     TINY_DNG_DPRINTF("Dictionary overflowed!");
     return false;
@@ -3084,7 +3136,8 @@ bool BitStreamReader::readNextBitBE(int& bitOut) {
 }
 
 uint64_t BitStreamReader::readBitsU64LE(const int bitCount) {
-  assert(bitCount <= 64);
+  TINY_DNG_ASSERT(bitCount <= 64,
+                  "`bitCount' must be less than or equal to 64.");
 
   uint64_t num = 0;
   for (int b = 0; b < bitCount; ++b) {
@@ -3105,7 +3158,8 @@ uint64_t BitStreamReader::readBitsU64LE(const int bitCount) {
 }
 
 uint64_t BitStreamReader::readBitsU64BE(const int bitCount) {
-  assert(bitCount <= 64);
+  TINY_DNG_ASSERT(bitCount <= 64,
+                  "`bitCount' must be less than or equal to 64.");
 
   uint64_t num = 0;
   for (int b = 0; b < bitCount; ++b) {
@@ -3148,7 +3202,7 @@ static bool outputByte(int code, unsigned char*& output, int outputSizeBytes,
     return false;
   }
 
-  assert(code >= 0 && code < 256);
+  TINY_DNG_ASSERT(code >= 0 && code < 256, "`code' must be within [0, 255].");
   *output++ = static_cast<unsigned char>(code);
   ++bytesDecodedSoFar;
   return true;
@@ -3165,7 +3219,8 @@ static bool outputSequence(const Dictionary& dict, int code,
   int i = 0;
   unsigned char sequence[4096];
   do {
-    assert(i < MaxDictEntries - 1 && code >= 0);
+    TINY_DNG_ASSERT(i < MaxDictEntries - 1 && code >= 0,
+                    "Invalid value for `i' or `code'.");
     TINY_DNG_DPRINTF("i = %d, ent[%d].value = %d\n", i, code,
                      dict.entries_[code].value);
     sequence[i++] = static_cast<unsigned char>(dict.entries_[code].value);
@@ -3223,7 +3278,9 @@ static int easyDecode(const unsigned char* compressed,
   // terminate we break the loop and return the current
   // decompression count.
   while (!bitStream.isEndOfStream()) {
-    assert(codeBitsWidth <= MaxDictBits);
+    TINY_DNG_ASSERT(
+        codeBitsWidth <= MaxDictBits,
+        "`codeBitsWidth must be less than or equal to `MaxDictBits'.");
     (void)MaxDictBits;
 
     if (!swap_endian) {  // TODO(syoyo): Detect BE or LE depending on endianness
@@ -3235,7 +3292,8 @@ static int easyDecode(const unsigned char* compressed,
 
     TINY_DNG_DPRINTF("code = %d(swap_endian = %d)\n", code, swap_endian);
 
-    assert(code <= dictionary.size());
+    TINY_DNG_ASSERT(code <= dictionary.size(),
+                    "`code' must be less than or equal to dictionary size.");
 
     if (code == EndOfInformation) {
       TINY_DNG_DPRINTF("EoI\n");
@@ -3447,7 +3505,8 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
           std::vector<unsigned char> dst(dst_len);
 
           ret = fread(src.data(), 1, image->strip_byte_counts[k], fp);
-          assert(ret == image->strip_byte_counts[k]);
+          TINY_DNG_ASSERT(ret == image->strip_byte_counts[k],
+                          "Cannot read strip_byte_counts bytes from fp");
           TINY_DNG_DPRINTF("easyDecode begin\n");
           int decoded_bytes = lzw::easyDecode(
               src.data(), int(image->strip_byte_counts[k]),
@@ -3455,8 +3514,8 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
                   image->bits_per_sample /* FIXME(syoyo): Is this correct? */,
               dst.data(), int(dst_len), swap_endian);
           TINY_DNG_DPRINTF("easyDecode done\n");
-          assert(decoded_bytes > 0);
-          (void)decoded_bytes;
+          TINY_DNG_ASSERT(decoded_bytes > 0,
+                          "decoded_ bytes must be non-zero positive.");
 
           if (image->predictor == 1) {
             // no prediction shceme
@@ -3480,15 +3539,15 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 
           } else if (image->predictor == 3) {
             // fp horizontal diff.
-            assert(0);  // TODO
+            TINY_DNG_ABORT("[TODO] FP horizontal differencing predictor.");
           } else {
-            assert(0);  // invalid predictor
+            TINY_DNG_ABORT("Invalid predictor value.");
           }
 
           std::copy(dst.begin(), dst.end(), std::back_inserter(image->data));
         }
       } else {
-        assert(0);  // TODO
+        TINY_DNG_ABORT("Unsupported image strip configuration.");
       }
     } else if (image->compression ==
                COMPRESSION_OLD_JPEG) {  // old jpeg compression
