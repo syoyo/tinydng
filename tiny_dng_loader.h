@@ -1955,6 +1955,8 @@ static bool IsBigEndian() {
 
 typedef struct {
   int compression;  // 1 = lossy type1, 2 = uncompressed, 3 = lossy type2
+  int pad0;
+  short vpred[2][2];
   std::vector<short> linearization_table;
 } NikonMakerNote;
 
@@ -1965,15 +1967,16 @@ class
 StreamReader
 {
  public:
-  explicit StreamReader(const std::vector<unsigned char> &binary, const bool swap_endian) :
+  explicit StreamReader(const uint8_t *binary, const size_t length, const bool swap_endian) :
     binary_(binary),
+    length_(length),
     swap_endian_(swap_endian),
     idx_(0) {
     (void)pad_;
   }
 
   bool seek_set(const uint64_t offset) {
-    if (offset > binary_.size()) {
+    if (offset > length_) {
       return false;
     }
 
@@ -1981,10 +1984,23 @@ StreamReader
     return true;
   }
 
+  bool seek_from_currect(const int64_t offset) {
+    if ((int64_t(idx_) + offset) < 0) {
+      return false;
+    }
+
+    if (size_t((int64_t(idx_) + offset)) > length_) {
+      return false;
+    }
+
+    idx_ = size_t(int64_t(idx_) + offset);
+    return true;
+  }
+
   size_t read(const size_t n, const uint64_t dst_len, unsigned char *dst) {
     size_t len = n;
-    if ((idx_ + len) > binary_.size()) {
-      len = binary_.size() - idx_;
+    if ((idx_ + len) > length_) {
+      len = length_ - idx_;
     }
 
     if (len > 0) {
@@ -2002,7 +2018,7 @@ StreamReader
   }
 
   bool read1(unsigned char *ret) {
-    if ((idx_ + 1) > binary_.size()) {
+    if ((idx_ + 1) > length_) {
       return false;
     }
 
@@ -2015,7 +2031,7 @@ StreamReader
   }
 
   bool read2(unsigned short *ret) {
-    if ((idx_ + 2) > binary_.size()) {
+    if ((idx_ + 2) > length_) {
       return false;
     }
 
@@ -2032,7 +2048,7 @@ StreamReader
   }
 
   bool read4(unsigned int *ret) {
-    if ((idx_ + 4) > binary_.size()) {
+    if ((idx_ + 4) > length_) {
       return false;
     }
 
@@ -2139,8 +2155,8 @@ StreamReader
     return idx_;
   }
 
-  const unsigned char *data() const {
-    return binary_.data();
+  const uint8_t *data() const {
+    return binary_;
   }
 
   bool swap_endian() const {
@@ -2148,17 +2164,18 @@ StreamReader
   }
 
   size_t size() const {
-    return binary_.size();
+    return length_;
   }
 
 	///
 	/// Get TIFF Tag
 	///
 	bool GetTIFFTag(unsigned short* tag, unsigned short* type,
-									unsigned int* len, unsigned int* saved_offt);
+									unsigned int* len, unsigned int* saved_offt, const size_t additional_offset = 0);
   
   private:
-    const std::vector<unsigned char> &binary_;
+    const uint8_t *binary_;
+    const size_t length_;
     bool swap_endian_;
     char pad_[7];
     uint64_t idx_;
@@ -2174,8 +2191,8 @@ class DNGLoader
 		NEF_MAKERNOTE_LINEARLIZATION_TABLE = 150
 	} NefMakerNoteTag;
 
-  explicit DNGLoader(const std::vector<unsigned char> &binary, const bool swap_endian)
-    : reader_(binary, swap_endian) {
+  explicit DNGLoader(const std::vector<uint8_t> &binary, const bool swap_endian)
+    : reader_(binary.data(), binary.size(), swap_endian) {
   }
 
   ~DNGLoader() {}
@@ -2223,6 +2240,11 @@ class DNGLoader
 		bool ParseNikonMakerNoteTags(StreamReader *reader);
 
     ///
+    /// Parse Nikon linearization table tag.
+    ///
+		bool ParseNikonLinearizationTableTag(StreamReader *reader);
+
+    ///
     /// Decompress lossless JPEG data into 16bit images.
     ///
     bool DecompressLosslessJPEG(const unsigned char* src,
@@ -2230,6 +2252,15 @@ class DNGLoader
                                 const DNGImage& image_info,
                                 const int dst_width,
                                 unsigned short* dst_data);
+
+    ///
+    /// Decode Nikon RAW.
+    ///
+    bool DecodeNikonRAW(const unsigned char* src,
+                        const size_t src_length,
+                        const DNGImage& image_info,
+                        const int dst_width,
+                        unsigned short* dst_data);
 
     ///
     /// Decode images. Valid after `ParseTIFFIFD'
@@ -2243,7 +2274,7 @@ class DNGLoader
 };
 
 bool StreamReader::GetTIFFTag(unsigned short* tag, unsigned short* type,
-                unsigned int* len, unsigned int* saved_offt) {
+                unsigned int* len, unsigned int* saved_offt, const size_t additional_offset) {
 
   if (!this->read2(tag)) {
     return false;
@@ -2262,12 +2293,12 @@ bool StreamReader::GetTIFFTag(unsigned short* tag, unsigned short* type,
   size_t typesize_table[] = {1, 1, 1, 2, 4, 8, 1, 1, 2, 4, 8, 4, 8, 4};
 
   if ((*len) * (typesize_table[(*type) < 14 ? (*type) : 0]) > 4) {
-    unsigned int base = 0;  // fixme
-    unsigned int offt;
-    if (!this->read4(&offt)) {
+    unsigned int offset;
+    if (!this->read4(&offset)) {
       return false;
     }
-    if (!this->seek_set(offt + base)) {
+    TINY_DNG_DPRINTF("offet = 0x%08x\n", offset);
+    if (!this->seek_set(offset + additional_offset)) {
       return false;
     }
   }
@@ -2277,15 +2308,108 @@ bool StreamReader::GetTIFFTag(unsigned short* tag, unsigned short* type,
 
 
 #if defined(TINY_DNG_ENABLE_GPL)
-#include "tiny_dng_nef_decoder.inc"
+
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wsign-conversion"
+#pragma clang diagnostic ignored "-Wsign-compare"
+#pragma clang diagnostic ignored "-Wconversion"
+#pragma clang diagnostic ignored "-Wold-style-cast"
+#pragma clang diagnostic ignored "-Wmissing-noreturn"
 #endif
 
-static bool IsNikonMakerNote(const std::vector<unsigned char>& maker_note) {
-  if (maker_note.size() > 16) {
-    if (0 == std::memcmp(maker_note.data(), "Nikon\0", 6)) {
-      return true;
-    }
+#include "tiny_dng_nef_decoder.inc"
+
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
+
+#endif
+
+static bool IsNikonMakerNote(StreamReader *reader) {
+  size_t saved_offset = reader->tell();
+
+  unsigned char header[16]; // 16 bytes should be enough to parse the header of makernote.
+
+  if (!reader->read(16, 16, header)) {
+    reader->seek_set(saved_offset);
+    return false;
   }
+
+  reader->seek_set(saved_offset); // rewind.
+
+  if (0 == std::memcmp(header, "Nikon\0", 6)) {
+    return true;
+  }
+
+  return false;
+}
+
+bool DNGLoader::ParseNikonLinearizationTableTag(StreamReader *reader) {
+
+  TINY_DNG_DPRINTF("lintable offset = 0x%08x\n", int(reader->tell()));
+
+  uint8_t ver0, ver1;
+
+  if (!reader->read1(&ver0)) {
+    err_ << "Failed to parse NEF linearization table ver0." << std::endl;
+    return false;
+  }
+
+  if (!reader->read1(&ver1)) {
+    err_ << "Failed to parse NEF linearization table ver1." << std::endl;
+    return false;
+  }
+
+  TINY_DNG_DPRINTF("lintable: ver0 = 0x%x\n", ver0);
+  TINY_DNG_DPRINTF("lintable: ver1 = 0x%x\n", ver1);
+
+  if (ver0 == 0x49 || ver1 == 0x58) {
+    err_ << "This version of NEF is not supported yet. ver0 = " << std::hex << ver0 << std::dec << ", ver1 = " << std::hex << ver1 << std::dec << std::endl;
+    return false;
+  }
+
+  // Read predictor(4 shorts)
+  if (!reader->read2(reinterpret_cast<unsigned short*>(&nikon_maker_note_.vpred[0][0]))) {
+    err_ << "Failed to parse NEF vpred." << std::endl;
+    return false;
+  }
+
+  if (!reader->read2(reinterpret_cast<unsigned short*>(&nikon_maker_note_.vpred[0][1]))) {
+    err_ << "Failed to parse NEF vpred." << std::endl;
+    return false;
+  }
+
+  if (!reader->read2(reinterpret_cast<unsigned short*>(&nikon_maker_note_.vpred[1][0]))) {
+    err_ << "Failed to parse NEF vpred." << std::endl;
+    return false;
+  }
+
+  if (!reader->read2(reinterpret_cast<unsigned short*>(&nikon_maker_note_.vpred[1][1]))) {
+    err_ << "Failed to parse NEF vpred." << std::endl;
+    return false;
+  }
+
+  TINY_DNG_DPRINTF("vpred = %d, %d, %d, %d\n", 
+    nikon_maker_note_.vpred[0][0],
+    nikon_maker_note_.vpred[0][1],
+    nikon_maker_note_.vpred[1][0],
+    nikon_maker_note_.vpred[1][1]);
+
+  // Read curve size.
+  unsigned short curve_size;
+  if (!reader->read2(&curve_size)) {
+    err_ << "Failed to parse NEF curve size." << std::endl;
+    return false;
+  }
+
+  TINY_DNG_DPRINTF("lintable: curve size = %d\n", curve_size);
+  
+ 
+#if defined(TINY_DNG_ENABLE_GPL)
+#else
+  err_ << "NEF decoding requres `TINY_DNG_ENABLE_GPL' define." << std::endl;
+#endif
 
   return false;
 }
@@ -2294,11 +2418,13 @@ static bool IsNikonMakerNote(const std::vector<unsigned char>& maker_note) {
 // (Same with TIFF IFD format)
 bool DNGLoader::ParseNikonMakerNoteTags(StreamReader *reader) {
   
+  // [0: 5] Magic value
+
   // read version 
   short ver0;
   short ver1;
 
-	if (!reader->seek_set(6)) {
+	if (!reader->seek_from_currect(6)) { // skip magic value(6 bytes)
 		err_ << "Failed to seek in ParseNikonMakerNoteTags." << std::endl;
 		return false;
 	}
@@ -2315,7 +2441,11 @@ bool DNGLoader::ParseNikonMakerNoteTags(StreamReader *reader) {
 		return false;
 	}
 
-  TINY_DNG_DPRINTF("ver0 %d, ver1 %d\n", ver0, ver1);
+  TINY_DNG_DPRINTF("NEF MakerNote ver0 %d, ver1 %d\n", ver0, ver1);
+
+  // Save the beginning of MakerNote TIFF to calculate offset position 
+  // for linearization table.
+  size_t makernote_offset = reader->tell();
 
   // Usually 0x4D4D
 	// [10:11]
@@ -2328,14 +2458,13 @@ bool DNGLoader::ParseNikonMakerNoteTags(StreamReader *reader) {
   TINY_DNG_DPRINTF("NEF makernote byte_order 0x%08x\n", byte_order);
 
   // [12:13] TIFF magic value.
-	// skip
-
-  // [14:17] TIFF offset.
-	if (!reader->seek_set(14)) {
+	// skip TIFF magic value.
+	if (!reader->seek_from_currect(2)) {
 		err_ << "Failed to seek." << std::endl;
 		return false;
 	}
 
+  // [14:17] TIFF offset.
   unsigned int tiff_offset;
 	if (!reader->read4(&tiff_offset)) {
 		err_ << "Failed to read Nikon MakerNote TIFF offset." << std::endl;
@@ -2358,14 +2487,15 @@ bool DNGLoader::ParseNikonMakerNoteTags(StreamReader *reader) {
   }
 
   while (num_entries--) {
-    unsigned short tag, type;
-    unsigned int len;
-    unsigned int saved_offset;
-    if (!reader->GetTIFFTag(&tag, &type, &len, &saved_offset)) {
+    unsigned short tag = 0, type = 0;
+    unsigned int len = 0;
+    unsigned int saved_offset = 0;
+    // Offset is based on makernote[12]. Add additional offsets to get actual offset in the input data stream.
+    if (!reader->GetTIFFTag(&tag, &type, &len, &saved_offset, makernote_offset)) {
 			err_ << "Failed to parse Makernote tag." << std::endl;
 			return false;
 		}
-    TINY_DNG_DPRINTF("NEF Makernote tag. tag = %d, type = %d, len = %d\n", tag, type, len);
+    TINY_DNG_DPRINTF("NEF Makernote tag. tag = %d, type = %d, len = %d, saved = %d\n", tag, type, len, saved_offset);
 
     if (tag == NEF_MAKERNOTE_NEF_COMPRESSION) {
       unsigned short compression;
@@ -2377,13 +2507,15 @@ bool DNGLoader::ParseNikonMakerNoteTags(StreamReader *reader) {
       nikon_maker_note_.compression = compression;
     } else if (tag == NEF_MAKERNOTE_LINEARLIZATION_TABLE) {
 
-      TINY_DNG_DPRINTF("NEF linearization table. len = %d\n", len);
-      nikon_maker_note_.linearization_table.resize(len);
+      TINY_DNG_DPRINTF("NEF linearization table tag len = %d\n", len);
 
-			if (!reader->read(len, len, reinterpret_cast<unsigned char*>(nikon_maker_note_.linearization_table.data()))) {
+      // NOTE Offset to lineratization table is based on the beginning of EXIF IFDs.
+      // Actual offset to linearization table in the input data is already adjusted by `offset_to_exif`.
+      if (!ParseNikonLinearizationTableTag(reader)) {
 				err_ << "Failed to read linearlization table." << std::endl;
 				return false;
 			}
+
     } else {
       // TODO(syoyo): Implement
     }
@@ -2413,9 +2545,9 @@ bool DNGLoader::ParseEXIFTags(StreamReader *reader) {
   }
 
   while (num_entries--) {
-    unsigned short tag, type;
-    unsigned int len;
-    unsigned int saved_offet;
+    unsigned short tag = 0, type = 0;
+    unsigned int len = 0;
+    unsigned int saved_offet = 0;
     reader->GetTIFFTag(&tag, &type, &len, &saved_offet);
 
     TINY_DNG_DPRINTF("EXIF tag = %d, type = %d, len = %d\n",
@@ -2424,19 +2556,10 @@ bool DNGLoader::ParseEXIFTags(StreamReader *reader) {
     if (tag == EXIF_MAKER_NOTE) {
       TINY_DNG_DPRINTF("maker note! len = %d\n", len);
 
-			std::vector<uint8_t> maker_note(len);
-			if (!reader->read(len, len, maker_note.data())) {
-				err_ << "Failed to read Makernote." << std::endl;
-				return false;
-			}
-
-      if (IsNikonMakerNote(maker_note)) {
+      if (IsNikonMakerNote(reader)) {
         TINY_DNG_DPRINTF("Nikon NEF\n");
 
-				// TODO(syoyo): read byte order from MakerNote header.
-				StreamReader maker_note_reader(maker_note, reader->swap_endian());
-
-        bool ret = ParseNikonMakerNoteTags(&maker_note_reader);
+        bool ret = ParseNikonMakerNoteTags(reader);
         if (!ret) {
           return false;
         }
@@ -2567,9 +2690,9 @@ bool DNGLoader::ParseTIFFIFD(const std::vector<FieldInfo>& custom_field_lists,
   long offt_strip_byte_counts = 0;
 
   while (num_entries--) {
-    unsigned short tag, type;
-    unsigned int len;
-    unsigned int saved_offt;
+    unsigned short tag = 0, type = 0;
+    unsigned int len = 0;
+    unsigned int saved_offt = 0;
     if (!reader_.GetTIFFTag(&tag, &type, &len, &saved_offt)) {
 			err_ << "Failed to read TIFF tag." << std::endl;
 			return false;
@@ -2625,6 +2748,7 @@ bool DNGLoader::ParseTIFFIFD(const std::vector<FieldInfo>& custom_field_lists,
             return false;
           }
           image.bits_per_sample_original = static_cast<int>(val);
+          TINY_DNG_DPRINTF("bits per sample = %d\n", val);
         }
         break;
 
@@ -3688,6 +3812,37 @@ static bool IsLosslessJPEG(const uint8_t* header_addr, int data_len, int* width,
     if (bits) (*bits) = lj_bits;
   }
   return (ret == LJ92_ERROR_NONE) ? true : false;
+}
+
+bool DNGLoader::DecodeNikonRAW(const unsigned char* src,
+                               const size_t src_length,
+                               const DNGImage& image_info,
+                               const int dst_width,
+                               unsigned short* dst_data) {
+#if defined(TINY_DNG_ENABLE_GPL)
+  
+  int tree = 0, split = 0, max_v = 0, min_v = 0;
+  unsigned short *curve = NULL;
+  unsigned short vpred[2][2];
+
+  (void)src_length;
+  int ret = nikon_decode_raw(tree, split, max_v, min_v, curve, vpred, src, dst_width, image_info.height, dst_data);
+
+  if (!ret) {
+    err_ << "Failed to decode Nikon RAW." << std::endl;
+    return false;
+  }
+
+  return true;
+#else
+  (void)src;
+  (void)src_length;
+  (void)image_info;
+  (void)dst_width;
+  (void)dst_data;
+  err_ << "NEF decoding requres `TINY_DNG_ENABLE_GPL' define." << std::endl;
+  return false;
+#endif
 }
 
 // Decompress LosslesJPEG adta.
