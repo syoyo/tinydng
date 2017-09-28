@@ -25,6 +25,11 @@
    $Date: 2016/05/10 21:30:43 $
  */
 
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4706)
+#endif
+
 // from dcraw
 
 #define CLASS
@@ -217,3 +222,7 @@ static int nikon_decode_raw(int tree, int split, int max_v, const ushort *curve,
 
   return 1; // OK
 }
+
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif

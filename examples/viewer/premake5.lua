@@ -38,6 +38,8 @@ solution "ViewerSolution"
       includedirs { "./", "../../" }
       includedirs { "nativefiledialog/src/include" }
 
+      -- defines { "TINY_DNG_ENABLE_GPL" }
+
       if os.is("Windows") then
          defines { "NOMINMAX" }
          defines { "USE_NATIVEFILEDIALOG" }
@@ -49,8 +51,8 @@ solution "ViewerSolution"
             "OpenGLWindow/Win32Window.cpp",
             "OpenGLWindow/Win32Window.h",
             }
-         files { "nativefiledialog/src/nfd_win.cpp",
-                 "nativefiledialog/src/nfd_common.c" }
+         -- files { "nativefiledialog/src/nfd_win.cpp",
+         --         "nativefiledialog/src/nfd_common.c" }
       end
       if os.is("Linux") then
          files {

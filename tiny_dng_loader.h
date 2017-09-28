@@ -3963,6 +3963,7 @@ bool DNGLoader::DecompressLosslessJPEG(const unsigned char* src,
           "TODO(syoyo): Read offset value outside of this function.");
 #endif
 
+#if 0
       TINY_DNG_DPRINTF("offt = %d\n", int(offset));
 
       int lj_width = 0;
@@ -4052,6 +4053,7 @@ bool DNGLoader::DecompressLosslessJPEG(const unsigned char* src,
         tiff_w = 0;
         column_step = 0;
       }
+#endif
     }
   } else {
     // Assume LJPEG data is not stored in tiled format.

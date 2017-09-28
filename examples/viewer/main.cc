@@ -56,8 +56,8 @@ THE SOFTWARE.
 #ifdef __cplusplus
 extern "C" {
 #endif
-#include <mmsystem.h>
 #include <windows.h>
+#include <mmsystem.h>
 #ifdef __cplusplus
 }
 #endif
@@ -516,7 +516,7 @@ static double debayer(std::vector<float>& out, const std::vector<float>& in,
 
   t_debayer.start();
 
-  if (out.size() != width * height * 3) {
+  if (out.size() != size_t(width * height * 3)) {
     out.resize(width * height * 3);
   }
 
@@ -723,7 +723,7 @@ static void pre_color_correction(std::vector<float>& out,
                                  int white_level,
                                  const float color_matrix[3][3], int width,
                                  int height, float scale) {
-  if (out.size() != width * height) {
+  if (out.size() != size_t(width * height)) {
     out.resize(width * height);
   }
 
@@ -754,7 +754,7 @@ static double color_correction(std::vector<float>& out,
 
   t_color_correction.start();
 
-  if (out.size() != width * height * 3) {
+  if (out.size() != size_t(width * height * 3)) {
     out.resize(width * height * 3);
   }
 
@@ -808,7 +808,7 @@ void Develop(RAWImage* raw, const UIParam& param) {
 
   t_develop.start();
 
-  if (raw->framebuffer.size() != (raw->width * raw->height * 3)) {
+  if (raw->framebuffer.size() != size_t(raw->width * raw->height * 3)) {
     raw->framebuffer.resize(raw->width * raw->height * 3);
   }
 
@@ -832,8 +832,8 @@ void Develop(RAWImage* raw, const UIParam& param) {
   gUIParam.color_correction_msec = color_correction(
       color_corrected, debayed, raw->width, raw->height, srgb_color_matrix);
 
-  for (size_t y = 0; y < raw->height; y++) {
-    for (size_t x = 0; x < raw->width; x++) {
+  for (size_t y = 0; y < size_t(raw->height); y++) {
+    for (size_t x = 0; x < size_t(raw->width); x++) {
       int Y = (param.flip_y) ? (raw->height - y - 1) : y;
 
       raw->framebuffer[3 * (Y * raw->width + x) + 0] =
