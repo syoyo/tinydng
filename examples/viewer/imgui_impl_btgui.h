@@ -2,6 +2,10 @@
 
 #include <imgui.h>
 
+#define IMGUI_B3G_CONTROL (300)
+#define IMGUI_B3G_SHIFT (301)
+#define IMGUI_B3G_ALT (301)
+
 class b3gDefaultOpenGLWindow;
 
 IMGUI_API bool ImGui_ImplBtGui_Init(b3gDefaultOpenGLWindow* window);

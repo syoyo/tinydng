@@ -15,10 +15,6 @@
 
 #include <cstdio>
 
-#define IMGUI_B3G_CONTROL (300)
-#define IMGUI_B3G_SHIFT (301)
-#define IMGUI_B3G_ALT (301)
-
 // Data
 static b3gDefaultOpenGLWindow* g_Window = NULL;
 // static double       g_Time = 0.0f;

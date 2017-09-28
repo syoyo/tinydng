@@ -22,7 +22,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 */
 
-
 #ifdef _MSC_VER
 #pragma warning(disable : 4100)
 #pragma warning(disable : 4101)
@@ -57,8 +56,8 @@ THE SOFTWARE.
 #ifdef __cplusplus
 extern "C" {
 #endif
-#include <windows.h>
 #include <mmsystem.h>
+#include <windows.h>
 #ifdef __cplusplus
 }
 #endif
@@ -202,7 +201,7 @@ typedef struct {
   // Per channel black/white level.
   int black_level[4];
   int white_level[4];
-  
+
 } UIParam;
 
 RAWImage gRAWImage;
@@ -512,8 +511,7 @@ static inline float fetch(const std::vector<float>& in, int x, int y, int w,
 // Simple debayer.
 // debayerOffset = pixel offset to make CFA pattern RGGB.
 static double debayer(std::vector<float>& out, const std::vector<float>& in,
-                    int width, int height, const int debayerOffset[2]) {
-
+                      int width, int height, const int debayerOffset[2]) {
   timer t_debayer;
 
   t_debayer.start();
@@ -750,9 +748,8 @@ static void pre_color_correction(std::vector<float>& out,
 
 // Simple color correctionr.
 static double color_correction(std::vector<float>& out,
-                             const std::vector<float>& in, int width,
-                             int height, const double color_matrix[3][3]) {
-
+                               const std::vector<float>& in, int width,
+                               int height, const double color_matrix[3][3]) {
   timer t_color_correction;
 
   t_color_correction.start();
@@ -791,14 +788,14 @@ void DecodeToHDR(RAWImage* raw, bool swap_endian) {
   raw->hdr_image.resize(raw->width * raw->height);
 
   if (raw->bits == 12) {
-    decode12_hdr(raw->hdr_image, raw->image.data.data(), raw->width, raw->height,
-                 swap_endian);
+    decode12_hdr(raw->hdr_image, raw->image.data.data(), raw->width,
+                 raw->height, swap_endian);
   } else if (raw->bits == 14) {
-    decode14_hdr(raw->hdr_image, raw->image.data.data(), raw->width, raw->height,
-                 swap_endian);
+    decode14_hdr(raw->hdr_image, raw->image.data.data(), raw->width,
+                 raw->height, swap_endian);
   } else if (raw->bits == 16) {
-    decode16_hdr(raw->hdr_image, raw->image.data.data(), raw->width, raw->height,
-                 swap_endian);
+    decode16_hdr(raw->hdr_image, raw->image.data.data(), raw->width,
+                 raw->height, swap_endian);
   } else {
     assert(0);
     exit(-1);
@@ -807,7 +804,6 @@ void DecodeToHDR(RAWImage* raw, bool swap_endian) {
 
 // @todo { debayer, color correction, etc. }
 void Develop(RAWImage* raw, const UIParam& param) {
-
   timer t_develop;
 
   t_develop.start();
@@ -816,8 +812,7 @@ void Develop(RAWImage* raw, const UIParam& param) {
     raw->framebuffer.resize(raw->width * raw->height * 3);
   }
 
-  const float inv_scale =
-      1.0f / (param.white_level[0] - param.black_level[0]);
+  const float inv_scale = 1.0f / (param.white_level[0] - param.black_level[0]);
 
   std::vector<float> pre_color_corrected;
   pre_color_correction(pre_color_corrected, raw->hdr_image,
@@ -826,16 +821,16 @@ void Develop(RAWImage* raw, const UIParam& param) {
                        /* scale */ 1.0f);
 
   std::vector<float> debayed;
-  gUIParam.debayer_msec = debayer(debayed, pre_color_corrected, raw->width, raw->height,
-          param.cfa_offset);
+  gUIParam.debayer_msec = debayer(debayed, pre_color_corrected, raw->width,
+                                  raw->height, param.cfa_offset);
 
   double srgb_color_matrix[3][3];
   compute_color_matrix(srgb_color_matrix, raw->image.color_matrix1,
                        param.raw_white_balance);
 
   std::vector<float> color_corrected;
-  gUIParam.color_correction_msec = color_correction(color_corrected, debayed, raw->width, raw->height,
-                   srgb_color_matrix);
+  gUIParam.color_correction_msec = color_correction(
+      color_corrected, debayed, raw->width, raw->height, srgb_color_matrix);
 
   for (size_t y = 0; y < raw->height; y++) {
     for (size_t x = 0; x < raw->width; x++) {
@@ -1024,6 +1019,7 @@ void keyboardCallback(int keycode, int state) {
     if (window) window->setRequestExit();
   } else if (keycode == 32) {  // Space
     // @todo { check key is pressed outside of ImGui window. }
+    gUIParam.view_scale = 100;
     gUIParam.view_offset[0] = 0;
     gUIParam.view_offset[1] = 0;
   }
@@ -1039,13 +1035,24 @@ void keyboardCallback(int keycode, int state) {
 
 void mouseMoveCallback(float x, float y) {
   if (gMouseLeftDown) {
+    ImGuiIO& io = ImGui::GetIO();
+    const bool tab_pressed = io.KeysDown[ImGuiKey_Tab];
+    const bool ctrl_pressed = io.KeysDown[IMGUI_B3G_CONTROL];
+    const bool shift_pressed = io.KeysDown[IMGUI_B3G_SHIFT];
+
     int dx = (int)x - gMousePosX;
     int dy = (int)y - gMousePosY;
 
-    gUIParam.view_offset[0] -= float(dx) / float(gWidth);
-    gUIParam.view_offset[1] += float(dy) / float(gHeight);
+    if (tab_pressed) {
+      // zoom
+      gUIParam.view_scale += float(dy);
+      gUIParam.view_scale = std::max(10, gUIParam.view_scale);
 
-    std::cout << "view_offt " << gUIParam.view_offset[0] << std::endl;
+    } else {
+      // pan
+      gUIParam.view_offset[0] -= float(dx) / float(gWidth);
+      gUIParam.view_offset[1] += float(dy) / float(gHeight);
+    }
   }
 
   int px = clamp(x + gUIParam.view_offset[0], 0, gRAWImage.width - 1);
@@ -1121,9 +1128,7 @@ void Display(const GLContext& ctx, const UIParam& param) {
   glUseProgram(ctx.program);
   CheckGLError("use_program");
 
-  glUniform2f(ctx.uv_offset_loc,
-              param.view_offset[0],
-              param.view_offset[1]);
+  glUniform2f(ctx.uv_offset_loc, param.view_offset[0], param.view_offset[1]);
   glUniform1f(ctx.uv_scale_loc, (float)(100.0f) / (float)param.view_scale);
   glUniform1f(ctx.gamma_loc, param.display_gamma);
   glUniform1f(ctx.intensity_loc, param.intensity);
@@ -1193,7 +1198,7 @@ int main(int argc, char** argv) {
       if (largest_width < images[i].width) {
         largest = i;
         largest_width = images[i].width;
-      } 
+      }
     }
 
     std::cout << "largest = " << largest << std::endl;
@@ -1202,7 +1207,7 @@ int main(int argc, char** argv) {
     gRAWImage.width = images[largest].width;
     gRAWImage.height = images[largest].height;
     gRAWImage.bits = images[largest].bits_per_sample;
-    //gRAWImage.data = images[largest].data;
+    // gRAWImage.data = images[largest].data;
 
     gRAWImage.image = images[largest];
 
@@ -1210,7 +1215,7 @@ int main(int argc, char** argv) {
     std::cout << "height " << gRAWImage.height << std::endl;
     std::cout << "bits " << gRAWImage.bits << std::endl;
 
-    //gRAWImage.dng_info = dng_info;
+    // gRAWImage.dng_info = dng_info;
 
     DecodeToHDR(&gRAWImage, /* endian*/ false);  // @fixme { detect endian }
   }
@@ -1264,7 +1269,6 @@ int main(int argc, char** argv) {
       gUIParam.black_level[s] = gRAWImage.image.black_level[s];
       gUIParam.white_level[s] = gRAWImage.image.white_level[s];
     }
-
   }
 
   window = new b3gDefaultOpenGLWindow;
@@ -1324,7 +1328,8 @@ int main(int argc, char** argv) {
     {
       ImGui::Text("develop            : %f [msecs]", gUIParam.develop_msec);
       ImGui::Text("  debayer          : %f [msecs]", gUIParam.debayer_msec);
-      ImGui::Text("  color correction : %f [msecs]", gUIParam.color_correction_msec);
+      ImGui::Text("  color correction : %f [msecs]",
+                  gUIParam.color_correction_msec);
 
       for (int s = 0; s < gRAWImage.image.samples_per_pixel; s++) {
         ImGui::Text("Image [%d]", s);
@@ -1345,7 +1350,7 @@ int main(int argc, char** argv) {
       }
 
       if (ImGui::SliderFloat("intensity", &gUIParam.intensity, 0.0f, 32.0f)) {
-        //Develop(&gRAWImage, gUIParam);
+        // Develop(&gRAWImage, gUIParam);
       }
       if (ImGui::Checkbox("flip Y", &gUIParam.flip_y)) {
         Develop(&gRAWImage, gUIParam);
@@ -1354,7 +1359,7 @@ int main(int argc, char** argv) {
         Develop(&gRAWImage, gUIParam);
       }
       if (ImGui::SliderInt("zoom(%%)", &gUIParam.view_scale, 1, 1600)) {
-        //Develop(&gRAWImage, gUIParam);
+        // Develop(&gRAWImage, gUIParam);
       }
       if (ImGui::InputFloat3("color mat 0", gUIParam.color_matrix[0])) {
         Develop(&gRAWImage, gUIParam);
