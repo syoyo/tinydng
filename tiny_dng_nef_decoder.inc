@@ -48,17 +48,24 @@
 // FIXME(syoyo)
 static const uchar *g_input_ptr = NULL;
 static int g_input_offset = 0;
+static int g_input_size = 0;
 static unsigned int zero_after_ff = 0;
 
 // mimics fseek(fp, 0, SEEK_SET)
-static void set_stream(const uchar *ptr, int offset)
+static void set_stream(const uchar *ptr, int offset, int size)
 {
   g_input_ptr = ptr;
   g_input_offset = offset;
+  g_input_size = size;
 }
 
 // mimics fgetc()
 static int get_byte() {
+  if (g_input_offset >= g_input_size) {
+    return EOF; // -1
+  }
+  //TINY_DNG_DPRINTF("input %p\n", static_cast<const void *>(g_input_ptr));
+  //TINY_DNG_DPRINTF("offset %d\n", g_input_offset);
   int c = g_input_ptr[g_input_offset];
   g_input_offset++;
   return c;
@@ -98,6 +105,7 @@ static unsigned CLASS getbithuff (int nbits, ushort *huff)
   } else
     vbits -= nbits;
   if (vbits < 0) derror();
+
   return c;
 }
 
@@ -158,7 +166,7 @@ static ushort * CLASS make_decoder (const uchar *source)
 }
 
 // curve[0x10000]
-static int nikon_decode_raw(int tree, int split, int max_v, int min_v, const ushort *curve, ushort vpred[2][2], const uchar *src, int raw_width, int height, ushort *raw_image)
+static int nikon_decode_raw(int tree, int split, int max_v, const ushort *curve, ushort vpred[2][2], const uchar *src, const unsigned int src_length, int raw_width, int height, ushort *raw_image)
 {
   static const unsigned char nikon_tree[][32] = {
     { 0,1,5,1,1,1,1,1,1,2,0,0,0,0,0,0,  /* 12-bit lossy */
@@ -177,12 +185,13 @@ static int nikon_decode_raw(int tree, int split, int max_v, int min_v, const ush
   int i;
   int row, col;
   int len, shl, diff;
+  int min_v = 0;
   ushort *huff, hpred[2];
   huff = make_decoder (nikon_tree[tree]);
 
   //fseek (ifp, data_offset, SEEK_SET);
   // Assume `src` is the beginning of the address of compressed data.
-  set_stream(src, 0);
+  set_stream(src, 0, src_length);
 
   getbits(-1);
   for (min_v=row=0; row < height; row++) {
