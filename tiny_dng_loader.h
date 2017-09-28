@@ -3897,6 +3897,7 @@ bool DNGLoader::DecodeNikonRAW(StreamReader* reader, const unsigned char* src,
 
   return true;
 #else
+  (void)reader;
   (void)src;
   (void)src_length;
   (void)image_info;
