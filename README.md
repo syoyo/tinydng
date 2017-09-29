@@ -24,11 +24,13 @@ Currently TinyDNGLoader only supports lossless RAW DNG and limited lossless JPEG
     * [x] RAW
     * [ ] mRAW
     * [ ] sRAW
-  * Decode Nikon RAW(NEF)
-    * TODO
+  * Decode Nikon RAW(NEF) (Requires `TINY_DNG_ENABLE_GPL` code)
+    * [ ] 12bit lossy
+    * [x] 14bit lossless
+
   * Reading custom TIFF tags.
 
-## Supported DNG files
+## Supported DNG/TIFF files
 
 Here is the list of supported DNG files.
 
@@ -45,6 +47,10 @@ Here is the list of supported DNG files.
   * [x] lossless JPEG(http://www.magiclantern.fm/forum/index.php?topic=18443.0)
 * [ ] 8-bit TIFF image
   * [x] LZW compressed 8-bit image.
+
+## Sample RAW images
+
+* https://github.com/syoyo/raw-images
 
 ## Usage
 
@@ -105,6 +111,7 @@ int main(int argc, char **argv) {
 ## Examples
 
 * [examples/viewer](examples/viewer) Simple viewer example with simple debayering.
+* [examples/tiff_viewer](examples/tiff_viewer) Simple TIFF viewer example.
 * [examples/dng2exr](examples/dng2exr) Simple DNG to OpenEXR converter.
 
 
@@ -115,6 +122,7 @@ Here is the list of great articles on how to decode RAW file and how to develop 
 * Developing a RAW photo file 'by hand' - Part 1 http://www.odelama.com/photo/Developing-a-RAW-Photo-by-hand/
 * Developing a RAW photo file 'by hand' - Part 2 http://www.odelama.com/photo/Developing-a-RAW-Photo-by-hand/Developing-a-RAW-Photo-by-hand_Part-2/
 * Understanding What is stored in a Canon RAW .CR2 file, How and Why http://lclevy.free.fr/cr2/
+* NEF file format http://lclevy.free.fr/nef/
 
 ## TODO
 
@@ -127,7 +135,7 @@ Here is the list of great articles on how to decode RAW file and how to develop 
 * [ ] Improve DNG writer
   * [ ] Support compression
 * [ ] Support Big TIFF(4GB+)
-* [ ] Decode Nikon RAW(NEF)
+* [ ] Improve Nikon RAW decoding
 * [ ] Improve Canon RAW decoding
 * [ ] Optimimze lossless JPEG decoding
 
@@ -135,7 +143,7 @@ Here is the list of great articles on how to decode RAW file and how to develop 
 
 TinyDNGLoader is licensed under MIT license.
 
-Part of NEF decoding code is usnig dcraw, which is licensed under GPL.
+Part of NEF decoding code is using dcraw, which is licensed under GPL.
 (define `TINY_DNG_ENABLE_GPL`) 
 
 TinyDNGLoader uses the following third party libraries.
@@ -143,5 +151,5 @@ TinyDNGLoader uses the following third party libraries.
 * liblj92(Lossless JPEG library) : (c) Andrew Baldwin 2014. MIT license.  https://bitbucket.org/baldand/mlrawviewer.git
 * stb_image : Public domain image loader.
 * lzw.hpp : Author: Guilherme R. Lampert. Public domain LZW decoder.
-* dcraw : Copyright 1997-2015 by Dave Coffin. https://www.cybercom.net/~dcoffin/dcraw/
+* dcraw(optional) : Copyright 1997-2015 by Dave Coffin. https://www.cybercom.net/~dcoffin/dcraw/
 
