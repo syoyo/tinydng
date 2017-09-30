@@ -1915,7 +1915,9 @@ struct EXIF {
   double f_number;
   double shutter_speed;
 
-  std::vector<unsigned char> maker_note;  // Manufacturer specific information.
+  std::vector<unsigned char> maker_note;  // Manifacturer specific information.
+
+  std::string maker; // Name of manifacturer.
 
   EXIF()
       :  // negative = invalid values.
@@ -1954,10 +1956,15 @@ static bool IsBigEndian() {
 struct NikonMakerNote {
   int compression;  // 1 = lossy type1, 2 = uncompressed, 3 = lossy type2
   int pad0;
-  double white_balance[4];  // R, G1, B, G2
+  double white_level[4];  // R, G1, B, G2
   size_t linearization_table_offset;  // Offset to linearization table.
 
-  NikonMakerNote() : linearization_table_offset(0) {}
+  NikonMakerNote() : linearization_table_offset(0) {
+    white_level[0] = 0.0;
+    white_level[1] = 1.0; // Set G1 1.0
+    white_level[2] = 0.0;
+    white_level[3] = 0.0;
+  }
 };
 
 ///
@@ -2581,10 +2588,10 @@ bool DNGLoader::ParseNikonMakerNoteTags(StreamReader* reader) {
 
         // Red and Blue are normalized so that Green become 1.0,
         // so assume green1 and green2 is 1.0
-        nikon_maker_note_.white_balance[0] = red;
-        nikon_maker_note_.white_balance[1] = green1;
-        nikon_maker_note_.white_balance[2] = blue;
-        nikon_maker_note_.white_balance[3] = green2;
+        nikon_maker_note_.white_level[0] = red;
+        nikon_maker_note_.white_level[1] = green1;
+        nikon_maker_note_.white_level[2] = blue;
+        nikon_maker_note_.white_level[3] = green2;
         TINY_DNG_DPRINTF("while_level %f, %f, %f, %f\n",
           red, green1, blue, green2);
       }
@@ -2654,6 +2661,8 @@ bool DNGLoader::ParseEXIFTags(StreamReader* reader) {
         if (!ret) {
           return false;
         }
+
+        exif_.maker = "Nikon";
       }
     } else {
       // Unsupported or unimplemented tag.
@@ -3111,6 +3120,13 @@ bool DNGLoader::ParseTIFFIFD(const std::vector<FieldInfo>& custom_field_lists,
         if (!ret) {
           err_ << "Failed to parse EXIF tags." << std::endl;
           return false;
+        }
+
+        if (exif_.maker.compare("Nikon") == 0) {
+          // Set analog_balance from while_level makernote value.
+          image.analog_balance[0] = nikon_maker_note_.white_level[0];
+          image.analog_balance[1] = nikon_maker_note_.white_level[1];
+          image.analog_balance[2] = nikon_maker_note_.white_level[2];
         }
       } break;
 
