@@ -226,3 +226,4 @@ static int nikon_decode_raw(int tree, int split, int max_v, const ushort *curve,
 #if defined(_MSC_VER)
 #pragma warning(pop)
 #endif
+

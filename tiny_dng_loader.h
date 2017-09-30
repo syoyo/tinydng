@@ -1954,6 +1954,7 @@ static bool IsBigEndian() {
 struct NikonMakerNote {
   int compression;  // 1 = lossy type1, 2 = uncompressed, 3 = lossy type2
   int pad0;
+  double white_balance[4];  // R, G1, B, G2
   size_t linearization_table_offset;  // Offset to linearization table.
 
   NikonMakerNote() : linearization_table_offset(0) {}
@@ -2172,6 +2173,7 @@ class DNGLoader {
  public:
   // TODO(syoyo): Support more tags.
   typedef enum {
+    NEF_MAKERNOTE_NEF_RB_WHITE_LEVEL = 12,
     NEF_MAKERNOTE_NEF_COMPRESSION = 147,
     NEF_MAKERNOTE_LINEARLIZATION_TABLE = 150
   } NefMakerNoteTag;
@@ -2556,7 +2558,40 @@ bool DNGLoader::ParseNikonMakerNoteTags(StreamReader* reader) {
         "NEF Makernote tag. tag = %d, type = %d, len = %d, saved = %d\n", tag,
         type, len, saved_offset);
 
-    if (tag == NEF_MAKERNOTE_NEF_COMPRESSION) {
+    // http://www.exiv2.org/tags-nikon.html
+    if (tag == NEF_MAKERNOTE_NEF_RB_WHITE_LEVEL) {
+      double red = 0.0, green1 = 1.0, blue = 0.0, green2 = 1.0;
+      if (len == 4) {
+        if (!reader->read_real(type, &red)) {
+          err_ << "Failed to read RB white level." << std::endl;
+          return false;
+        }
+        if (!reader->read_real(type, &blue)) {
+          err_ << "Failed to read RB white level." << std::endl;
+          return false;
+        }
+        if (!reader->read_real(type, &green1)) {
+          err_ << "Failed to read RB white level." << std::endl;
+          return false;
+        }
+        if (!reader->read_real(type, &green2)) {
+          err_ << "Failed to read RB white level." << std::endl;
+          return false;
+        }
+
+        // Red and Blue are normalized so that Green become 1.0,
+        // so assume green1 and green2 is 1.0
+        nikon_maker_note_.white_balance[0] = red;
+        nikon_maker_note_.white_balance[1] = green1;
+        nikon_maker_note_.white_balance[2] = blue;
+        nikon_maker_note_.white_balance[3] = green2;
+        TINY_DNG_DPRINTF("while_level %f, %f, %f, %f\n",
+          red, green1, blue, green2);
+      }
+        
+
+      
+    } if (tag == NEF_MAKERNOTE_NEF_COMPRESSION) {
       unsigned short compression;
       if (!reader->read2(&compression)) {
         err_ << "Failed to read NEF Makernote compression tag." << std::endl;
@@ -3927,6 +3962,9 @@ bool DNGLoader::DecompressLosslessJPEG(const unsigned char* src,
   if ((image_info.tile_width > 0) && (image_info.tile_length > 0)) {
     // Assume Lossless JPEG data is stored in tiled format.
 
+      TINY_DNG_ASSERT(image_info.tile_offsets.size() > 0, "Invalid tile offsets.");
+      TINY_DNG_ASSERT(image_info.tile_byte_counts.size() == image_info.tile_offsets.size(), "Mismatch of array size of tile byte counts and tile offsets.");
+
     // <-       image width(skip len)           ->
     // +-----------------------------------------+
     // |                                         |
@@ -3949,29 +3987,21 @@ bool DNGLoader::DecompressLosslessJPEG(const unsigned char* src,
     // TINY_DNG_ASSERT(image_info.tile_length == image_info.height);
 
     size_t column_step = 0;
+    unsigned int tile_count = 0;
     while (tiff_h < static_cast<unsigned int>(image_info.height)) {
+      TINY_DNG_ASSERT(tile_count < image_info.tile_offsets.size(), "Invalid tile counts.");
       // Read offset to JPEG data location.
 
-      unsigned int offset;
-#if 0
-      if (!reader_.read4(&offset)) {
-        err_ << "Failed to read offset value in DecompressLosslessJPEG()." << std::endl;
-        return false;
-      }
-#else
-      TINY_DNG_ABORT(
-          "TODO(syoyo): Read offset value outside of this function.");
-#endif
-
-#if 0
-      TINY_DNG_DPRINTF("offt = %d\n", int(offset));
+      unsigned int offset = image_info.tile_offsets[tile_count];
 
       int lj_width = 0;
       int lj_height = 0;
       int lj_bits = 0;
       lj92 ljp;
 
-      size_t input_len = src_length - static_cast<size_t>(offset);
+      size_t input_len = image_info.tile_byte_counts[tile_count];
+      TINY_DNG_DPRINTF("tile[%d] offt = %d, len = %d\n", int(tile_count), int(offset), int(input_len));
+
 
       // @fixme { Parse LJPEG header first and set exact compressed LJPEG data
       // length to `data_len` arg. }
@@ -4053,7 +4083,7 @@ bool DNGLoader::DecompressLosslessJPEG(const unsigned char* src,
         tiff_w = 0;
         column_step = 0;
       }
-#endif
+      tile_count++;
     }
   } else {
     // Assume LJPEG data is not stored in tiled format.
