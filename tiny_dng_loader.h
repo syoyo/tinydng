@@ -1917,7 +1917,7 @@ struct EXIF {
 
   std::vector<unsigned char> maker_note;  // Manifacturer specific information.
 
-  std::string maker; // Name of manifacturer.
+  std::string maker;  // Name of manifacturer.
 
   EXIF()
       :  // negative = invalid values.
@@ -1956,12 +1956,12 @@ static bool IsBigEndian() {
 struct NikonMakerNote {
   int compression;  // 1 = lossy type1, 2 = uncompressed, 3 = lossy type2
   int pad0;
-  double white_level[4];  // R, G1, B, G2
+  double white_level[4];              // R, G1, B, G2
   size_t linearization_table_offset;  // Offset to linearization table.
 
   NikonMakerNote() : linearization_table_offset(0) {
     white_level[0] = 0.0;
-    white_level[1] = 1.0; // Set G1 1.0
+    white_level[1] = 1.0;  // Set G1 1.0
     white_level[2] = 0.0;
     white_level[3] = 0.0;
   }
@@ -2592,13 +2592,11 @@ bool DNGLoader::ParseNikonMakerNoteTags(StreamReader* reader) {
         nikon_maker_note_.white_level[1] = green1;
         nikon_maker_note_.white_level[2] = blue;
         nikon_maker_note_.white_level[3] = green2;
-        TINY_DNG_DPRINTF("while_level %f, %f, %f, %f\n",
-          red, green1, blue, green2);
+        TINY_DNG_DPRINTF("while_level %f, %f, %f, %f\n", red, green1, blue,
+                         green2);
       }
-        
-
-      
-    } if (tag == NEF_MAKERNOTE_NEF_COMPRESSION) {
+    }
+    if (tag == NEF_MAKERNOTE_NEF_COMPRESSION) {
       unsigned short compression;
       if (!reader->read2(&compression)) {
         err_ << "Failed to read NEF Makernote compression tag." << std::endl;
@@ -2631,7 +2629,7 @@ bool DNGLoader::ParseNikonMakerNoteTags(StreamReader* reader) {
 
 // Parse some EXIF tag
 bool DNGLoader::ParseEXIFTags(StreamReader* reader) {
-  unsigned short num_entries;
+  unsigned short num_entries = 0;
   if (!reader->read2(&num_entries)) {
     err_ << "Failed to read # of IFDs in ParseEXIFTags." << std::endl;
     return false;
@@ -2639,8 +2637,8 @@ bool DNGLoader::ParseEXIFTags(StreamReader* reader) {
 
   TINY_DNG_DPRINTF("EXIF entries = %d\n", num_entries);
   if (num_entries == 0) {
-    assert(0);
-    return false;  // @fixme
+    err_ << "# of EXIF entries are zero." << std::endl;
+    return false;
   }
 
   while (num_entries--) {
@@ -3978,8 +3976,11 @@ bool DNGLoader::DecompressLosslessJPEG(const unsigned char* src,
   if ((image_info.tile_width > 0) && (image_info.tile_length > 0)) {
     // Assume Lossless JPEG data is stored in tiled format.
 
-      TINY_DNG_ASSERT(image_info.tile_offsets.size() > 0, "Invalid tile offsets.");
-      TINY_DNG_ASSERT(image_info.tile_byte_counts.size() == image_info.tile_offsets.size(), "Mismatch of array size of tile byte counts and tile offsets.");
+    TINY_DNG_ASSERT(image_info.tile_offsets.size() > 0,
+                    "Invalid tile offsets.");
+    TINY_DNG_ASSERT(
+        image_info.tile_byte_counts.size() == image_info.tile_offsets.size(),
+        "Mismatch of array size of tile byte counts and tile offsets.");
 
     // <-       image width(skip len)           ->
     // +-----------------------------------------+
@@ -4005,7 +4006,8 @@ bool DNGLoader::DecompressLosslessJPEG(const unsigned char* src,
     size_t column_step = 0;
     unsigned int tile_count = 0;
     while (tiff_h < static_cast<unsigned int>(image_info.height)) {
-      TINY_DNG_ASSERT(tile_count < image_info.tile_offsets.size(), "Invalid tile counts.");
+      TINY_DNG_ASSERT(tile_count < image_info.tile_offsets.size(),
+                      "Invalid tile counts.");
       // Read offset to JPEG data location.
 
       unsigned int offset = image_info.tile_offsets[tile_count];
@@ -4016,8 +4018,8 @@ bool DNGLoader::DecompressLosslessJPEG(const unsigned char* src,
       lj92 ljp;
 
       size_t input_len = image_info.tile_byte_counts[tile_count];
-      TINY_DNG_DPRINTF("tile[%d] offt = %d, len = %d\n", int(tile_count), int(offset), int(input_len));
-
+      TINY_DNG_DPRINTF("tile[%d] offt = %d, len = %d\n", int(tile_count),
+                       int(offset), int(input_len));
 
       // @fixme { Parse LJPEG header first and set exact compressed LJPEG data
       // length to `data_len` arg. }
