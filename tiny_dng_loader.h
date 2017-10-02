@@ -452,7 +452,9 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 #pragma clang diagnostic ignored "-Wmissing-prototypes"
 #pragma clang diagnostic ignored "-Wreserved-id-macro"
 #pragma clang diagnostic ignored "-Wdisabled-macro-expansion"
+#if __has_warning("-Wdouble-promotion")
 #pragma clang diagnostic ignored "-Wdouble-promotion"
+#endif
 #pragma clang diagnostic ignored "-Wimplicit-fallthrough"
 #if __has_warning("-Wcomma")
 #pragma clang diagnostic ignored "-Wcomma"
@@ -493,7 +495,9 @@ namespace tinydng {
 #pragma clang diagnostic ignored "-Wmissing-prototypes"
 #pragma clang diagnostic ignored "-Wreserved-id-macro"
 #pragma clang diagnostic ignored "-Wdisabled-macro-expansion"
+#if __has_warning("-Wdouble-promotion")
 #pragma clang diagnostic ignored "-Wdouble-promotion"
+#endif
 #pragma clang diagnostic ignored "-Wimplicit-fallthrough"
 #if __has_warning("-Wcomma")
 #pragma clang diagnostic ignored "-Wcomma"
