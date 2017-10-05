@@ -114,6 +114,11 @@ int main(int argc, char **argv) {
 * [examples/tiff_viewer](examples/tiff_viewer) Simple TIFF viewer example.
 * [examples/dng2exr](examples/dng2exr) Simple DNG to OpenEXR converter.
 
+### DNG/TIFF examples
+
+* [examples/dngwriter](examples/dngwriter) Simple DNG writer example.
+* [examples/fptiff2exr](examples/fptiff2exr) Convert 32bit floating point tiff to EXR.
+
 
 ## Resource
 

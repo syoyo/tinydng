@@ -282,13 +282,42 @@ void Update(RAWImage* raw, const UIParam& param) {
 
   std::vector<float> buf(raw->width * raw->height * 3);
   if (raw->bits == 8) {
-    for (size_t i = 0; i < size_t(raw->width * raw->height); i++) {
-      buf[3 * i + 0] = float(gamma_correct(raw->image.data[3 * i + 0]));
-      buf[3 * i + 1] = float(gamma_correct(raw->image.data[3 * i + 1]));
-      buf[3 * i + 2] = float(gamma_correct(raw->image.data[3 * i + 2]));
+    if (raw->components == 3) {
+      for (size_t i = 0; i < size_t(raw->width * raw->height); i++) {
+        buf[3 * i + 0] = float(gamma_correct(raw->image.data[3 * i + 0]));
+        buf[3 * i + 1] = float(gamma_correct(raw->image.data[3 * i + 1]));
+        buf[3 * i + 2] = float(gamma_correct(raw->image.data[3 * i + 2]));
+      }
+    } else {
+      std::cerr << "Unsupported samples per pixel: " << raw->components << std::endl;
+      exit(-1);
     }
+  } else if (raw->bits == 16) {
+
+    const unsigned short *data = reinterpret_cast<const unsigned short*>(raw->image.data.data());
+
+    if (raw->components == 1) {
+      for (size_t i = 0; i < size_t(raw->width * raw->height); i++) {
+        // No gamma correction.
+        buf[3 * i + 0] = float(data[i]) / 65536.0f;
+        buf[3 * i + 1] = float(data[i]) / 65536.0f;
+        buf[3 * i + 2] = float(data[i]) / 65536.0f;
+      }
+    } else if (raw->components == 3) {
+      for (size_t i = 0; i < size_t(raw->width * raw->height); i++) {
+        // No gamma correction.
+        buf[3 * i + 0] = float(data[3 * i + 0]) / 65536.0f;
+        buf[3 * i + 1] = float(data[3 * i + 1]) / 65536.0f;
+        buf[3 * i + 2] = float(data[3 * i + 2]) / 65536.0f;
+      }
+    } else {
+      std::cerr << "Unsupported samples per pixel: " << raw->components << std::endl;
+      exit(-1);
+    }
+      
   } else {
-    assert(0); // @TODO
+    std::cerr << "Unsupported bits per pixel: " << raw->bits << std::endl;
+    exit(-1);
   }
 
   // Upload to GL texture.
@@ -638,6 +667,7 @@ int main(int argc, char** argv) {
     gRAWImage.width = images[largest].width;
     gRAWImage.height = images[largest].height;
     gRAWImage.bits = images[largest].bits_per_sample;
+    gRAWImage.components = images[largest].samples_per_pixel;
     //gRAWImage.data = images[largest].data;
 
     gRAWImage.image = images[largest];
@@ -726,7 +756,7 @@ int main(int argc, char** argv) {
         //Develop(&gRAWImage, gUIParam);
       }
 
-      if (ImGui::SliderFloat("intensity", &gUIParam.intensity, 0.0f, 32.0f)) {
+      if (ImGui::SliderFloat("intensity", &gUIParam.intensity, 0.0f, 1280.0f)) {
         //Develop(&gRAWImage, gUIParam);
       }
       if (ImGui::Checkbox("flip Y", &gUIParam.flip_y)) {

@@ -95,6 +95,7 @@ static const int ORIENTATION_LEFTBOT = 8;
 
 // PHOTOMETRIC
 // TODO(syoyo): more photometric types.
+static const int PHOTOMETRIC_MINISBLACK= 1;      // grayscale image. 0 is imaged as black.
 static const int PHOTOMETRIC_RGB = 2;            // Default
 static const int PHOTOMETRIC_CFA = 32893;        // DNG ext
 static const int PHOTOMETRIC_LINEARRAW = 34892;  // DNG ext
@@ -522,7 +523,7 @@ bool DNGImage::SetBitsPerSample(const unsigned short value) {
 }
 
 bool DNGImage::SetPhotometric(const unsigned short value) {
-  if ((value == PHOTOMETRIC_LINEARRAW) || (value == PHOTOMETRIC_RGB)) {
+  if ((value == PHOTOMETRIC_LINEARRAW) || (value == PHOTOMETRIC_RGB) || (value == PHOTOMETRIC_MINISBLACK)) {
     // OK
   } else {
     return false;
