@@ -71,7 +71,7 @@ main(int argc, char **argv)
   std::cout << "Use image [ " << image_idx << " ] " << std::endl;
 
   if (images[image_idx].bits_per_sample != 16) {
-    std::cerr << "Currently the converter supports only 8bit or 16bit image." << std::endl;
+    std::cerr << "Currently the converter supports only 16bit image." << std::endl;
     return EXIT_FAILURE;
   }
 
