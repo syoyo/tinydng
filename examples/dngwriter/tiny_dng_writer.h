@@ -222,6 +222,13 @@ class DNGWriter {
 
 namespace tinydngwriter {
 
+#ifdef __clang__
+#pragma clang diagnostic push
+#if __has_warning("-Wzero-as-null-pointer-constant")
+#pragma clang diagnostic ignored "-Wzero-as-null-pointer-constant"
+#endif
+#endif
+
 //
 // TinyDNGWriter stores IFD table in the end of file so that offset to
 // image data can be easily computed.
@@ -957,6 +964,10 @@ bool DNGWriter::WriteToFile(const char *filename, std::string *err) const {
 
   return true;
 }
+
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 
 }  // namespace tinydng
 

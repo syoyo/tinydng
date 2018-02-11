@@ -312,6 +312,12 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 #if __has_warning("-Wcomma")
 #pragma clang diagnostic ignored "-Wcomma"
 #endif
+#if __has_warning("-Wcast-qual")
+#pragma clang diagnostic ignored "-Wcast-qual"
+#endif
+#if __has_warning("-Wzero-as-null-pointer-constant")
+#pragma clang diagnostic ignored "-Wzero-as-null-pointer-constant"
+#endif
 #endif
 
 #ifdef _MSC_VER
@@ -352,6 +358,12 @@ namespace tinydng {
 #pragma clang diagnostic ignored "-Wimplicit-fallthrough"
 #if __has_warning("-Wcomma")
 #pragma clang diagnostic ignored "-Wcomma"
+#endif
+#if __has_warning("-Wcast-qual")
+#pragma clang diagnostic ignored "-Wcast-qual"
+#endif
+#if __has_warning("-Wzero-as-null-pointer-constant")
+#pragma clang diagnostic ignored "-Wzero-as-null-pointer-constant"
 #endif
 #endif
 
@@ -1702,6 +1714,13 @@ int lj92_encode(uint16_t* image, int width, int height, int bitdepth,
 
 #ifdef _MSC_VER
 #pragma warning(pop)
+#endif
+
+#ifdef __clang__
+#pragma clang diagnostic push
+#if __has_warning("-Wzero-as-null-pointer-constant")
+#pragma clang diagnostic ignored "-Wzero-as-null-pointer-constant"
+#endif
 #endif
 
 typedef enum {
@@ -3571,6 +3590,10 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 
   return ret ? true : false;
 }
+
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 
 }  // namespace tinydng
 
