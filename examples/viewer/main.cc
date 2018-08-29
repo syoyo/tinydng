@@ -1275,7 +1275,7 @@ void Display(const GLContext& ctx, const UIParam& param) {
   glUniform1f(ctx.uv_scale_loc, (float)(100.0f) / (float)param.view_scale);
   glUniform1f(ctx.gamma_loc, param.display_gamma);
   glUniform1f(ctx.intensity_loc, param.intensity);
-  glUniform2f(ctx.texture_size_loc, gRAWImage.width, gRAWImage.height);
+  //glUniform2f(ctx.texture_size_loc, gRAWImage.width, gRAWImage.height);
   CheckGLError("uniform");
 
   glActiveTexture(GL_TEXTURE0);
