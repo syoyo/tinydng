@@ -267,6 +267,12 @@ static double gamma_correct(const unsigned char x)
   return v;
 }
 
+static double gamma_correct(const unsigned short x)
+{
+  double v = fclamp(std::pow(double(x) / 65536.0, 1.0 / 2.2), 0.0, 1.0);
+  return v;
+}
+
 static inline float fetch(const std::vector<float>& in, int x, int y, int w,
                           int h) {
   int xx = clamp(x, 0, w - 1);
@@ -283,11 +289,38 @@ void Update(RAWImage* raw, const UIParam& param) {
   std::vector<float> buf(raw->width * raw->height * 3);
   if (raw->bits == 8) {
     for (size_t i = 0; i < size_t(raw->width * raw->height); i++) {
-      buf[3 * i + 0] = float(gamma_correct(raw->image.data[3 * i + 0]));
-      buf[3 * i + 1] = float(gamma_correct(raw->image.data[3 * i + 1]));
-      buf[3 * i + 2] = float(gamma_correct(raw->image.data[3 * i + 2]));
+      if (raw->image.samples_per_pixel == 1) {
+        buf[3 * i + 0] = float(gamma_correct(raw->image.data[i]));
+        buf[3 * i + 1] = float(gamma_correct(raw->image.data[i]));
+        buf[3 * i + 2] = float(gamma_correct(raw->image.data[i]));
+      } else if (raw->image.samples_per_pixel == 3) {
+        buf[3 * i + 0] = float(gamma_correct(raw->image.data[3 * i + 0]));
+        buf[3 * i + 1] = float(gamma_correct(raw->image.data[3 * i + 1]));
+        buf[3 * i + 2] = float(gamma_correct(raw->image.data[3 * i + 2]));
+      } else {
+        assert(0);
+      }
+    }
+  } else if (raw->bits == 16) {
+    std::cout << "width " << raw->width << std::endl;
+    std::cout << "width " << raw->height << std::endl;
+    std::cout << "size " << raw->image.data.size() << std::endl;
+    const unsigned short *ptr = reinterpret_cast<const unsigned short *>(raw->image.data.data());
+    for (size_t i = 0; i < size_t(raw->width * raw->height); i++) {
+      if (raw->image.samples_per_pixel == 1) {
+        buf[3 * i + 0] = float(gamma_correct(ptr[i]));
+        buf[3 * i + 1] = float(gamma_correct(ptr[i]));
+        buf[3 * i + 2] = float(gamma_correct(ptr[i]));
+      } else if (raw->image.samples_per_pixel == 3) {
+        buf[3 * i + 0] = float(gamma_correct(ptr[3 * i + 0]));
+        buf[3 * i + 1] = float(gamma_correct(ptr[3 * i + 1]));
+        buf[3 * i + 2] = float(gamma_correct(ptr[3 * i + 2]));
+      } else {
+        assert(0);
+      }
     }
   } else {
+    std::cerr << "Unsupported bits " << raw->bits << std::endl;
     assert(0); // @TODO
   }
 
@@ -421,7 +454,7 @@ void InitGLDisplay(GLContext* ctx, int width, int height) {
   BindUniform(ctx->uv_offset_loc, ctx->program, "uOffset");
   BindUniform(ctx->uv_scale_loc, ctx->program, "uScale");
   BindUniform(ctx->intensity_loc, ctx->program, "uIntensity");
-  BindUniform(ctx->texture_size_loc, ctx->program, "uTexsize");
+  //BindUniform(ctx->texture_size_loc, ctx->program, "uTexsize");
   BindUniform(ctx->flip_y_loc, ctx->program, "uFlipY");
 
   // Init texture for display.
@@ -562,9 +595,9 @@ void Display(const GLContext& ctx, const UIParam& param) {
   glUniform1f(ctx.uv_scale_loc, (float)(100.0f) / (float)param.view_scale);
   glUniform1f(ctx.gamma_loc, param.display_gamma);
   glUniform1f(ctx.intensity_loc, param.intensity);
-  glUniform2f(ctx.texture_size_loc, gRAWImage.width, gRAWImage.height);
+  //glUniform2f(ctx.texture_size_loc, gRAWImage.width, gRAWImage.height);
   glUniform1i(ctx.flip_y_loc, param.flip_y);
-  CheckGLError("uniform");
+  CheckGLError("uniform set");
 
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, ctx.tex_id);
