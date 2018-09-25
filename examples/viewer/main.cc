@@ -22,7 +22,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 */
 
-
 #ifdef _MSC_VER
 #pragma warning(disable : 4100)
 #pragma warning(disable : 4101)
@@ -57,8 +56,8 @@ THE SOFTWARE.
 #ifdef __cplusplus
 extern "C" {
 #endif
-#include <windows.h>
 #include <mmsystem.h>
+#include <windows.h>
 #ifdef __cplusplus
 }
 #endif
@@ -202,7 +201,13 @@ typedef struct {
   // Per channel black/white level.
   int black_level[4];
   int white_level[4];
-  
+
+  float hue;
+  float saturation;
+  float sepiaAmount;
+  float brightness;
+  float contrast;
+  float vibranceAmount;
 } UIParam;
 
 RAWImage gRAWImage;
@@ -512,8 +517,7 @@ static inline float fetch(const std::vector<float>& in, int x, int y, int w,
 // Simple debayer.
 // debayerOffset = pixel offset to make CFA pattern RGGB.
 static double debayer(std::vector<float>& out, const std::vector<float>& in,
-                    int width, int height, const int debayerOffset[2]) {
-
+                      int width, int height, const int debayerOffset[2]) {
   timer t_debayer;
 
   t_debayer.start();
@@ -522,7 +526,7 @@ static double debayer(std::vector<float>& out, const std::vector<float>& in,
     out.resize(width * height * 3);
   }
 
-// printf("offset = %d, %d\n", debayerOffset[0], debayerOffset[1]);
+  // printf("offset = %d, %d\n", debayerOffset[0], debayerOffset[1]);
 
 #ifdef _OPENMP
 #pragma omp parallel for
@@ -748,19 +752,155 @@ static void pre_color_correction(std::vector<float>& out,
   }
 }
 
-// Simple color correctionr.
-static double color_correction(std::vector<float>& out,
-                             const std::vector<float>& in, int width,
-                             int height, const double color_matrix[3][3]) {
+// https://github.com/evanw/glfx.js/blob/master/src/filters/adjust/sepia.js
+// amount: 0 to 1
+void sepia(std::vector<float>& out, const std::vector<float>& in, int width,
+           int height, float sepiaAmount, float maxValue) {
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+      float r = in[3 * (y * width + x) + 0] / maxValue;
+      float g = in[3 * (y * width + x) + 1] / maxValue;
+      float b = in[3 * (y * width + x) + 2] / maxValue;
 
-  timer t_color_correction;
+      float outColor[3];
+      outColor[0] = std::min(1.0, (r * (1.0 - (0.607 * sepiaAmount))) +
+                                      (g * (0.769 * sepiaAmount)) +
+                                      (b * (0.189 * sepiaAmount)));
+      outColor[1] = std::min(1.0, (r * 0.349 * sepiaAmount) +
+                                      (g * (1.0 - (0.314 * sepiaAmount))) +
+                                      (b * 0.168 * sepiaAmount));
+      outColor[2] =
+          std::min(1.0, (r * 0.272 * sepiaAmount) + (g * 0.534 * sepiaAmount) +
+                            (b * (1.0 - (0.869 * sepiaAmount))));
 
-  t_color_correction.start();
-
-  if (out.size() != width * height * 3) {
-    out.resize(width * height * 3);
+      out[3 * (y * width + x) + 0] = outColor[0] * maxValue;
+      out[3 * (y * width + x) + 1] = outColor[1] * maxValue;
+      out[3 * (y * width + x) + 2] = outColor[2] * maxValue;
+    }
   }
+}
 
+// hue & saturation filter
+// https://github.com/evanw/glfx.js/blob/master/src/filters/adjust/huesaturation.js
+// hue -1 to 1
+// saturation -1 to 1
+void hue_saturation(std::vector<float>& out, const std::vector<float>& in,
+                    int width, int height, float hue, float saturation,
+                    float maxValue) {
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+      float r = in[3 * (y * width + x) + 0] / maxValue;
+      float g = in[3 * (y * width + x) + 1] / maxValue;
+      float b = in[3 * (y * width + x) + 2] / maxValue;
+
+      float angle = hue * 3.14159265;
+      float s = sin(angle), c = cos(angle);
+
+      float weights[3];
+      weights[0] = (2.0 * c + 1.) / 3.;
+      weights[1] = (-sqrt(3.0) * s - c + 1) / 3.;
+      weights[2] = (sqrt(3.0) * s - c + 1) / 3.;
+
+      float outColor[3];
+      outColor[0] = r * weights[0] + g * weights[1] + b * weights[2];
+      outColor[1] = r * weights[2] + g * weights[0] + b * weights[1];
+      outColor[2] = r * weights[1] + g * weights[2] + b * weights[0];
+
+      /* saturation adjustment */
+      float average = (outColor[0] + outColor[1] + outColor[2]) / 3.0;
+      if (saturation > 0.0) {
+        // color.rgb += (average - color.rgb) * (1.0 - 1.0 / (1.001 -
+        // saturation));
+        outColor[0] +=
+            (average - outColor[0]) * (1.0 - 1.0 / (1.001 - saturation));
+        outColor[1] +=
+            (average - outColor[1]) * (1.0 - 1.0 / (1.001 - saturation));
+        outColor[2] +=
+            (average - outColor[2]) * (1.0 - 1.0 / (1.001 - saturation));
+      } else {
+        // color.rgb += (average - color.rgb) * (-saturation);
+        outColor[0] += (average - outColor[0]) * (-saturation);
+        outColor[1] += (average - outColor[1]) * (-saturation);
+        outColor[2] += (average - outColor[2]) * (-saturation);
+      }
+
+      out[3 * (y * width + x) + 0] = outColor[0] * maxValue;
+      out[3 * (y * width + x) + 1] = outColor[1] * maxValue;
+      out[3 * (y * width + x) + 2] = outColor[2] * maxValue;
+    }
+  }
+}
+
+// https://github.com/evanw/glfx.js/blob/master/src/filters/adjust/brightnesscontrast.js
+// brightness -1 to 1
+// contrast -1 to 1
+void brightness_contrast(std::vector<float>& out, const std::vector<float>& in,
+                         int width, int height, float brightness,
+                         float contrast, float maxValue) {
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+      float r = in[3 * (y * width + x) + 0] / maxValue;
+      float g = in[3 * (y * width + x) + 1] / maxValue;
+      float b = in[3 * (y * width + x) + 2] / maxValue;
+      r += brightness;
+      g += brightness;
+      b += brightness;
+
+      float outColor[3];
+      if (contrast > 0.0) {
+        outColor[0] = (r - 0.5) / (1.0 - contrast) + 0.5;
+        outColor[1] = (g - 0.5) / (1.0 - contrast) + 0.5;
+        outColor[2] = (b - 0.5) / (1.0 - contrast) + 0.5;
+      } else {
+        outColor[0] = (r - 0.5) * (1.0 + contrast) + 0.5;
+        outColor[1] = (g - 0.5) * (1.0 + contrast) + 0.5;
+        outColor[2] = (b - 0.5) * (1.0 + contrast) + 0.5;
+      }
+
+      out[3 * (y * width + x) + 0] = outColor[0] * maxValue;
+      out[3 * (y * width + x) + 1] = outColor[1] * maxValue;
+      out[3 * (y * width + x) + 2] = outColor[2] * maxValue;
+    }
+  }
+}
+
+// https://github.com/evanw/glfx.js/blob/master/src/filters/adjust/vibrance.js
+// vibranceAmount -1 to 1
+void vibrance(std::vector<float>& out, const std::vector<float>& in, int width,
+              int height, float vibranceAmount, float maxValue) {
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+      float r = in[3 * (y * width + x) + 0] / maxValue;
+      float g = in[3 * (y * width + x) + 1] / maxValue;
+      float b = in[3 * (y * width + x) + 2] / maxValue;
+      //      printf("col r  %f \n", r);
+      float average = (r + g + b) / 3.0;
+      float mx = std::max(r, std::max(g, b));
+      float amt = (mx - average) * (-vibranceAmount * 3.0);
+
+      out[3 * (y * width + x) + 0] = (r * (1. - amt) + mx * (amt)) * maxValue;
+      out[3 * (y * width + x) + 1] = (g * (1. - amt) + mx * (amt)) * maxValue;
+      out[3 * (y * width + x) + 2] = (b * (1. - amt) + mx * (amt)) * maxValue;
+    }
+  }
+}
+
+// Simple color correctionr.
+double color_correction(std::vector<float>& out, const std::vector<float>& in,
+                        int width, int height,
+                        const double color_matrix[3][3]) {
 #ifdef _OPENMP
 #pragma omp parallel for
 #endif
@@ -783,22 +923,22 @@ static double color_correction(std::vector<float>& out,
     }
   }
 
-  t_color_correction.end();
-  return t_color_correction.msec();
+  // TODO(syoyo): report processing time.
+  return 0.0;
 }
 
 void DecodeToHDR(RAWImage* raw, bool swap_endian) {
   raw->hdr_image.resize(raw->width * raw->height);
 
   if (raw->bits == 12) {
-    decode12_hdr(raw->hdr_image, raw->image.data.data(), raw->width, raw->height,
-                 swap_endian);
+    decode12_hdr(raw->hdr_image, raw->image.data.data(), raw->width,
+                 raw->height, swap_endian);
   } else if (raw->bits == 14) {
-    decode14_hdr(raw->hdr_image, raw->image.data.data(), raw->width, raw->height,
-                 swap_endian);
+    decode14_hdr(raw->hdr_image, raw->image.data.data(), raw->width,
+                 raw->height, swap_endian);
   } else if (raw->bits == 16) {
-    decode16_hdr(raw->hdr_image, raw->image.data.data(), raw->width, raw->height,
-                 swap_endian);
+    decode16_hdr(raw->hdr_image, raw->image.data.data(), raw->width,
+                 raw->height, swap_endian);
   } else {
     assert(0);
     exit(-1);
@@ -807,7 +947,6 @@ void DecodeToHDR(RAWImage* raw, bool swap_endian) {
 
 // @todo { debayer, color correction, etc. }
 void Develop(RAWImage* raw, const UIParam& param) {
-
   timer t_develop;
 
   t_develop.start();
@@ -816,8 +955,7 @@ void Develop(RAWImage* raw, const UIParam& param) {
     raw->framebuffer.resize(raw->width * raw->height * 3);
   }
 
-  const float inv_scale =
-      1.0f / (param.white_level[0] - param.black_level[0]);
+  const float inv_scale = 1.0f / (param.white_level[0] - param.black_level[0]);
 
   std::vector<float> pre_color_corrected;
   pre_color_correction(pre_color_corrected, raw->hdr_image,
@@ -826,16 +964,28 @@ void Develop(RAWImage* raw, const UIParam& param) {
                        /* scale */ 1.0f);
 
   std::vector<float> debayed;
-  gUIParam.debayer_msec = debayer(debayed, pre_color_corrected, raw->width, raw->height,
-          param.cfa_offset);
+  gUIParam.debayer_msec = debayer(debayed, pre_color_corrected, raw->width,
+                                  raw->height, param.cfa_offset);
 
   double srgb_color_matrix[3][3];
   compute_color_matrix(srgb_color_matrix, raw->image.color_matrix1,
                        param.raw_white_balance);
 
   std::vector<float> color_corrected;
-  gUIParam.color_correction_msec = color_correction(color_corrected, debayed, raw->width, raw->height,
-                   srgb_color_matrix);
+  gUIParam.color_correction_msec = color_correction(
+      color_corrected, debayed, raw->width, raw->height, srgb_color_matrix);
+
+  // filter
+  float maxValue =
+      fclamp(param.white_level[0] - param.black_level[0], 0.0, 65535.0);
+  sepia(color_corrected, color_corrected, raw->width, raw->height,
+        param.sepiaAmount, maxValue);
+  hue_saturation(color_corrected, color_corrected, raw->width, raw->height,
+                 param.hue, param.saturation, maxValue);
+  brightness_contrast(color_corrected, color_corrected, raw->width, raw->height,
+                      param.brightness, param.contrast, maxValue);
+  vibrance(color_corrected, color_corrected, raw->width, raw->height,
+           param.vibranceAmount, maxValue);
 
   for (size_t y = 0; y < raw->height; y++) {
     for (size_t x = 0; x < raw->width; x++) {
@@ -987,7 +1137,7 @@ void InitGLDisplay(GLContext* ctx, int width, int height) {
   BindUniform(ctx->uv_offset_loc, ctx->program, "uOffset");
   BindUniform(ctx->uv_scale_loc, ctx->program, "uScale");
   BindUniform(ctx->intensity_loc, ctx->program, "uIntensity");
-  BindUniform(ctx->texture_size_loc, ctx->program, "uTexsize");
+  //BindUniform(ctx->texture_size_loc, ctx->program, "uTexsize");
 
   // Init texture for display.
   {
@@ -1121,13 +1271,11 @@ void Display(const GLContext& ctx, const UIParam& param) {
   glUseProgram(ctx.program);
   CheckGLError("use_program");
 
-  glUniform2f(ctx.uv_offset_loc,
-              param.view_offset[0],
-              param.view_offset[1]);
+  glUniform2f(ctx.uv_offset_loc, param.view_offset[0], param.view_offset[1]);
   glUniform1f(ctx.uv_scale_loc, (float)(100.0f) / (float)param.view_scale);
   glUniform1f(ctx.gamma_loc, param.display_gamma);
   glUniform1f(ctx.intensity_loc, param.intensity);
-  glUniform2f(ctx.texture_size_loc, gRAWImage.width, gRAWImage.height);
+  //glUniform2f(ctx.texture_size_loc, gRAWImage.width, gRAWImage.height);
   CheckGLError("uniform");
 
   glActiveTexture(GL_TEXTURE0);
@@ -1193,7 +1341,7 @@ int main(int argc, char** argv) {
       if (largest_width < images[i].width) {
         largest = i;
         largest_width = images[i].width;
-      } 
+      }
     }
 
     std::cout << "largest = " << largest << std::endl;
@@ -1202,7 +1350,7 @@ int main(int argc, char** argv) {
     gRAWImage.width = images[largest].width;
     gRAWImage.height = images[largest].height;
     gRAWImage.bits = images[largest].bits_per_sample;
-    //gRAWImage.data = images[largest].data;
+    // gRAWImage.data = images[largest].data;
 
     gRAWImage.image = images[largest];
 
@@ -1210,7 +1358,7 @@ int main(int argc, char** argv) {
     std::cout << "height " << gRAWImage.height << std::endl;
     std::cout << "bits " << gRAWImage.bits << std::endl;
 
-    //gRAWImage.dng_info = dng_info;
+    // gRAWImage.dng_info = dng_info;
 
     DecodeToHDR(&gRAWImage, /* endian*/ false);  // @fixme { detect endian }
   }
@@ -1265,6 +1413,12 @@ int main(int argc, char** argv) {
       gUIParam.white_level[s] = gRAWImage.image.white_level[s];
     }
 
+    gUIParam.hue = 0.0;
+    gUIParam.saturation = 0.0;
+    gUIParam.sepiaAmount = 0.0;
+    gUIParam.brightness = 0.0;
+    gUIParam.contrast = 0.0;
+    gUIParam.vibranceAmount = 0.0;
   }
 
   window = new b3gDefaultOpenGLWindow;
@@ -1324,7 +1478,8 @@ int main(int argc, char** argv) {
     {
       ImGui::Text("develop            : %f [msecs]", gUIParam.develop_msec);
       ImGui::Text("  debayer          : %f [msecs]", gUIParam.debayer_msec);
-      ImGui::Text("  color correction : %f [msecs]", gUIParam.color_correction_msec);
+      ImGui::Text("  color correction : %f [msecs]",
+                  gUIParam.color_correction_msec);
 
       for (int s = 0; s < gRAWImage.image.samples_per_pixel; s++) {
         ImGui::Text("Image [%d]", s);
@@ -1345,7 +1500,7 @@ int main(int argc, char** argv) {
       }
 
       if (ImGui::SliderFloat("intensity", &gUIParam.intensity, 0.0f, 32.0f)) {
-        //Develop(&gRAWImage, gUIParam);
+        // Develop(&gRAWImage, gUIParam);
       }
       if (ImGui::Checkbox("flip Y", &gUIParam.flip_y)) {
         Develop(&gRAWImage, gUIParam);
@@ -1354,7 +1509,7 @@ int main(int argc, char** argv) {
         Develop(&gRAWImage, gUIParam);
       }
       if (ImGui::SliderInt("zoom(%%)", &gUIParam.view_scale, 1, 1600)) {
-        //Develop(&gRAWImage, gUIParam);
+        // Develop(&gRAWImage, gUIParam);
       }
       if (ImGui::InputFloat3("color mat 0", gUIParam.color_matrix[0])) {
         Develop(&gRAWImage, gUIParam);
@@ -1389,6 +1544,27 @@ int main(int argc, char** argv) {
         if (ImGui::InputFloat3("As shot neutral", gUIParam.as_shot_neutral)) {
           Develop(&gRAWImage, gUIParam);
         }
+      }
+
+      ImGui::Text("Filter");
+      if (ImGui::SliderFloat("sepia", &gUIParam.sepiaAmount, 0.0f, 1.0f)) {
+        Develop(&gRAWImage, gUIParam);
+      }
+      if (ImGui::SliderFloat("hue", &gUIParam.hue, -1.0f, 1.0f)) {
+        Develop(&gRAWImage, gUIParam);
+      }
+      if (ImGui::SliderFloat("saturation", &gUIParam.saturation, -1.0f, 1.0f)) {
+        Develop(&gRAWImage, gUIParam);
+      }
+      if (ImGui::SliderFloat("brightness", &gUIParam.brightness, -1.0f, 1.0f)) {
+        Develop(&gRAWImage, gUIParam);
+      }
+      if (ImGui::SliderFloat("contrast", &gUIParam.contrast, -1.0f, 1.0f)) {
+        Develop(&gRAWImage, gUIParam);
+      }
+      if (ImGui::SliderFloat("vibrance", &gUIParam.vibranceAmount, -1.0f,
+                             1.0f)) {
+        Develop(&gRAWImage, gUIParam);
       }
     }
 
