@@ -283,9 +283,17 @@ void Update(RAWImage* raw, const UIParam& param) {
   std::vector<float> buf(raw->width * raw->height * 3);
   if (raw->bits == 8) {
     for (size_t i = 0; i < size_t(raw->width * raw->height); i++) {
-      buf[3 * i + 0] = float(gamma_correct(raw->image.data[3 * i + 0]));
-      buf[3 * i + 1] = float(gamma_correct(raw->image.data[3 * i + 1]));
-      buf[3 * i + 2] = float(gamma_correct(raw->image.data[3 * i + 2]));
+      buf[3 * i + 0] = float(gamma_correct(raw->image.data[raw->components * i + 0]));
+      buf[3 * i + 1] = float(gamma_correct(raw->image.data[raw->components * i + 1]));
+      buf[3 * i + 2] = float(gamma_correct(raw->image.data[raw->components * i + 2]));
+    }
+  } else if (raw->bits == 16) {
+    // Assume linear color space
+    const unsigned short *ptr = reinterpret_cast<const unsigned short *>(raw->image.data.data());
+    for (size_t i = 0; i < size_t(raw->width * raw->height); i++) {
+      buf[3 * i + 0] = ptr[raw->components * i + 0] / 65535.0f;
+      buf[3 * i + 1] = ptr[raw->components * i + 1] / 65535.0f;
+      buf[3 * i + 2] = ptr[raw->components * i + 2] / 65535.0f;
     }
   } else {
     assert(0); // @TODO
@@ -638,13 +646,19 @@ int main(int argc, char** argv) {
     gRAWImage.width = images[largest].width;
     gRAWImage.height = images[largest].height;
     gRAWImage.bits = images[largest].bits_per_sample;
+    gRAWImage.components = images[largest].samples_per_pixel;
     //gRAWImage.data = images[largest].data;
+
+    // Currently we only support RGB or RGBA(or RGB + extra) image.
+    assert((gRAWImage.components == 3) ||
+           (gRAWImage.components == 4));
 
     gRAWImage.image = images[largest];
 
     std::cout << "width " << gRAWImage.width << std::endl;
     std::cout << "height " << gRAWImage.height << std::endl;
     std::cout << "bits " << gRAWImage.bits << std::endl;
+    std::cout << "components " << gRAWImage.components << std::endl;
 
     //gRAWImage.dng_info = dng_info;
 
