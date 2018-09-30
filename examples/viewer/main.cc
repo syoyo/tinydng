@@ -202,6 +202,9 @@ typedef struct {
   int black_level[4];
   int white_level[4];
 
+  int color_temperature;
+  float temperature_intensity;
+
 } UIParam;
 
 RAWImage gRAWImage;
@@ -784,6 +787,88 @@ static double color_correction(std::vector<float>& out,
   return t_color_correction.msec();
 }
 
+
+float mix(float x, float y, float a) {
+    return x * (1 - a) + y * a;
+}
+
+float smoothstep(float edge0, float edge1, float x) {
+    float t = fclamp((x - edge0) / (edge1 - edge0), 0.f, 1.f);
+    return t * t * (3 - 2 * t);
+}
+
+void color_temperature_to_rgb(float &r, float &g, float &b,
+                              const float temperature) {
+    float m1[3][3] = {{0.0, -2902.1955373783176, -8257.7997278925690},
+                      {0.0, 1669.5803561666639, 2575.2827530017594},
+                      {1.0, 1.3302673723350029, 1.8993753891711275}};
+    float m2[3][3] = {{1745.0425298314172, 1216.6168361476490, -8257.7997278925690},
+                      {-2666.3474220535695, -2173.1012343082230, 2575.2827530017594},
+                      {0.55995389139931482, 0.70381203140554553, 1.8993753891711275}};
+
+    float (*m)[3] = (temperature <= 6500.0) ? m1 : m2;
+
+    float t = clamp(temperature, 1000.0, 40000.0);
+    r = mix(clamp(m[0][0] / (t + m[1][0]) + m[2][0], 0.0, 1.0),
+            1.0, smoothstep(1000.0f, 0.0f, temperature));
+    g = mix(clamp(m[0][1] / (t + m[1][1]) + m[2][1], 0.0, 1.0),
+            1.0, smoothstep(1000.0f, 0.0f, temperature));
+    b = mix(clamp(m[0][2] / (t + m[1][2]) + m[2][2], 0.0, 1.0),
+            1.0, smoothstep(1000.0f, 0.0f, temperature));
+}
+
+// Color Temperature Filter.
+static double color_temperature_filter(std::vector<float>& out,
+                                       const std::vector<float>& in,
+                                       int black_level, int white_level,
+                                       int width, int height) {
+  timer t_color_correction;
+
+  t_color_correction.start();
+
+  if (out.size() != size_t(width * height * 3)) {
+    out.resize(width * height * 3);
+  }
+
+  int min_value = black_level;
+  int max_value = white_level;
+  max_value -= min_value;
+
+  float inv_scale = 1.0f / (white_level - black_level);
+
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+
+      float r = (in[3 * (y * width + x) + 0]) * inv_scale;
+      float g = (in[3 * (y * width + x) + 1]) * inv_scale;
+      float b = (in[3 * (y * width + x) + 2]) * inv_scale;
+
+      float tr, tg, tb;
+      color_temperature_to_rgb(tr, tg, tb, gUIParam.color_temperature);
+      float ore = mix(r, r * tr, gUIParam.temperature_intensity);
+      float ogr = mix(g, g * tg, gUIParam.temperature_intensity);
+      float obl = mix(b, b * tb, gUIParam.temperature_intensity);
+
+      float coeff[3] = {0.2126, 0.7152, 0.0722};
+      float luminancePreservationFactor = 1.0;
+      float k = mix(1.0,
+                    (r * coeff[0] + g * coeff[1] + b * coeff[2])/
+                    fmax((ore * coeff[0] + ogr * coeff[1] + obl * coeff[2]), 1e-5),
+                    luminancePreservationFactor);
+
+      out[3 * (y * width + x) + 0] = ore * k / inv_scale;
+      out[3 * (y * width + x) + 1] = ogr * k / inv_scale;
+      out[3 * (y * width + x) + 2] = obl * k / inv_scale;
+    }
+  }
+
+  t_color_correction.end();
+  return t_color_correction.msec();
+}
+
 void DecodeToHDR(RAWImage* raw, bool swap_endian) {
   raw->hdr_image.resize(raw->width * raw->height);
 
@@ -832,18 +917,23 @@ void Develop(RAWImage* raw, const UIParam& param) {
   gUIParam.color_correction_msec = color_correction(
       color_corrected, debayed, raw->width, raw->height, srgb_color_matrix);
 
+  std::vector<float> color_filtered;
+  color_temperature_filter(color_filtered, color_corrected,
+                           param.black_level[0], param.white_level[0],
+                           raw->width, raw->height);
+
   for (size_t y = 0; y < size_t(raw->height); y++) {
     for (size_t x = 0; x < size_t(raw->width); x++) {
       int Y = (param.flip_y) ? (raw->height - y - 1) : y;
 
       raw->framebuffer[3 * (Y * raw->width + x) + 0] =
-          param.intensity * color_corrected[3 * (y * raw->width + x) + 0] *
+          param.intensity * color_filtered[3 * (y * raw->width + x) + 0] *
           inv_scale;
       raw->framebuffer[3 * (Y * raw->width + x) + 1] =
-          param.intensity * color_corrected[3 * (y * raw->width + x) + 1] *
+          param.intensity * color_filtered[3 * (y * raw->width + x) + 1] *
           inv_scale;
       raw->framebuffer[3 * (Y * raw->width + x) + 2] =
-          param.intensity * color_corrected[3 * (y * raw->width + x) + 2] *
+          param.intensity * color_filtered[3 * (y * raw->width + x) + 2] *
           inv_scale;
     }
   }
@@ -1269,6 +1359,9 @@ int main(int argc, char** argv) {
       gUIParam.black_level[s] = gRAWImage.image.black_level[s];
       gUIParam.white_level[s] = gRAWImage.image.white_level[s];
     }
+
+    gUIParam.color_temperature = 6000;
+    gUIParam.temperature_intensity = 0.0f;
   }
 
   window = new b3gDefaultOpenGLWindow;
@@ -1392,6 +1485,14 @@ int main(int argc, char** argv) {
         }
 
         if (ImGui::InputFloat3("As shot neutral", gUIParam.as_shot_neutral)) {
+          Develop(&gRAWImage, gUIParam);
+        }
+
+        if (ImGui::SliderInt("color temperature", &gUIParam.color_temperature,
+                           1000, 40000)) {
+          Develop(&gRAWImage, gUIParam);
+        }
+        if (ImGui::SliderFloat("temperature intensity", &gUIParam.temperature_intensity, 0.0f, 1.0f)) {
           Develop(&gRAWImage, gUIParam);
         }
       }
