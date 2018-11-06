@@ -223,13 +223,21 @@ struct DNGImage {
 /// @param[in] custom_fields List of custom fields to parse(optional. can pass
 /// empty array).
 /// @param[out] images Loaded DNG images.
+/// @param[out] warn Warning message.
 /// @param[out] err Error message.
 ///
 /// @return true upon success.
 /// @return false upon failure and store error message into `err`.
 ///
 bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
-             std::vector<DNGImage>* images, std::string* err);
+             std::vector<DNGImage>* images, std::string *warn, std::string* err);
+
+///
+/// A variant of `LoadDNG` which loads DNG image from memory.
+/// Up to 2GB DNG data.
+///
+bool LoadDNGFromMemory(const char *mem, unsigned int size, std::vector<FieldInfo>& custom_fields,
+             std::vector<DNGImage>* images, std::string *warn, std::string* err);
 
 }  // namespace tinydng
 
@@ -1794,6 +1802,48 @@ static void swap4(unsigned int* val) {
   dst[3] = src[0];
 }
 
+static inline void swap4(int *val) {
+  int tmp = *val;
+  unsigned char *dst = reinterpret_cast<unsigned char *>(val);
+  unsigned char *src = reinterpret_cast<unsigned char *>(&tmp);
+
+  dst[0] = src[3];
+  dst[1] = src[2];
+  dst[2] = src[1];
+  dst[3] = src[0];
+}
+
+static inline void swap8(uint64_t *val) {
+  uint64_t tmp = (*val);
+  unsigned char *dst = reinterpret_cast<unsigned char *>(val);
+  unsigned char *src = reinterpret_cast<unsigned char *>(&tmp);
+
+  dst[0] = src[7];
+  dst[1] = src[6];
+  dst[2] = src[5];
+  dst[3] = src[4];
+  dst[4] = src[3];
+  dst[5] = src[2];
+  dst[6] = src[1];
+  dst[7] = src[0];
+}
+
+static inline void swap8(int64_t *val) {
+  int64_t tmp = (*val);
+  unsigned char *dst = reinterpret_cast<unsigned char *>(val);
+  unsigned char *src = reinterpret_cast<unsigned char *>(&tmp);
+
+  dst[0] = src[7];
+  dst[1] = src[6];
+  dst[2] = src[5];
+  dst[3] = src[4];
+  dst[4] = src[3];
+  dst[5] = src[2];
+  dst[6] = src[1];
+  dst[7] = src[0];
+}
+
+
 static unsigned short Read2(FILE* fp, bool swap) {
   unsigned short val;
   size_t ret = fread(&val, 1, 2, fp);
@@ -1877,6 +1927,320 @@ static double ReadReal(int type, FILE* fp, bool swap) {
   // never come here.
 }
 
+///
+/// Simple stream reader
+///
+class StreamReader {
+ public:
+  explicit StreamReader(const uint8_t *binary, const size_t length,
+                        const bool swap_endian)
+      : binary_(binary), length_(length), swap_endian_(swap_endian), idx_(0) {
+    (void)pad_;
+  }
+
+  bool seek_set(const uint64_t offset) const {
+    if (offset > length_) {
+      return false;
+    }
+
+    idx_ = offset;
+    return true;
+  }
+
+  bool seek_from_currect(const int64_t offset) const {
+    if ((int64_t(idx_) + offset) < 0) {
+      return false;
+    }
+
+    if (size_t((int64_t(idx_) + offset)) > length_) {
+      return false;
+    }
+
+    idx_ = size_t(int64_t(idx_) + offset);
+    return true;
+  }
+
+  size_t read(const size_t n, const uint64_t dst_len, unsigned char *dst) const {
+    size_t len = n;
+    if ((idx_ + len) > length_) {
+      len = length_ - idx_;
+    }
+
+    if (len > 0) {
+      if (dst_len < len) {
+        // dst does not have enough space. return 0 for a while.
+        return 0;
+      }
+
+      memcpy(dst, &binary_[idx_], len);
+      idx_ += len;
+      return len;
+
+    } else {
+      return 0;
+    }
+  }
+
+  bool read1(unsigned char *ret) const {
+    if ((idx_ + 1) > length_) {
+      return false;
+    }
+
+    const unsigned char val = binary_[idx_];
+
+    (*ret) = val;
+    idx_ += 1;
+
+    return true;
+  }
+
+  bool read_bool(bool *ret) const {
+    if ((idx_ + 1) > length_) {
+      return false;
+    }
+
+    const char val = static_cast<const char>(binary_[idx_]);
+
+    (*ret) = bool(val);
+    idx_ += 1;
+
+    return true;
+  }
+
+  bool read1(char *ret) const {
+    if ((idx_ + 1) > length_) {
+      return false;
+    }
+
+    const char val = static_cast<const char>(binary_[idx_]);
+
+    (*ret) = val;
+    idx_ += 1;
+
+    return true;
+  }
+
+  bool read2(unsigned short *ret) const {
+    if ((idx_ + 2) > length_) {
+      return false;
+    }
+
+    unsigned short val =
+        *(reinterpret_cast<const unsigned short *>(&binary_[idx_]));
+
+    if (swap_endian_) {
+      swap2(&val);
+    }
+
+    (*ret) = val;
+    idx_ += 2;
+
+    return true;
+  }
+
+  bool read2(short *ret) const {
+    if ((idx_ + 2) > length_) {
+      return false;
+    }
+
+    short val =
+        *(reinterpret_cast<const short *>(&binary_[idx_]));
+
+    if (swap_endian_) {
+      swap2(reinterpret_cast<unsigned short *>(&val));
+    }
+
+    (*ret) = val;
+    idx_ += 2;
+
+    return true;
+  }
+
+  bool read4(unsigned int *ret) const {
+    if ((idx_ + 4) > length_) {
+      return false;
+    }
+
+    unsigned int val =
+        *(reinterpret_cast<const unsigned int *>(&binary_[idx_]));
+
+    if (swap_endian_) {
+      swap4(&val);
+    }
+
+    (*ret) = val;
+    idx_ += 4;
+
+    return true;
+  }
+
+  bool read4(int *ret) const {
+    if ((idx_ + 4) > length_) {
+      return false;
+    }
+
+    int val = *(reinterpret_cast<const int *>(&binary_[idx_]));
+
+    if (swap_endian_) {
+      swap4(&val);
+    }
+
+    (*ret) = val;
+    idx_ += 4;
+
+    return true;
+  }
+
+  bool read8(uint64_t *ret) const {
+    if ((idx_ + 8) > length_) {
+      return false;
+    }
+
+    uint64_t val =
+        *(reinterpret_cast<const uint64_t *>(&binary_[idx_]));
+
+    if (swap_endian_) {
+      swap8(&val);
+    }
+
+    (*ret) = val;
+    idx_ += 8;
+
+    return true;
+  }
+
+  bool read8(int64_t *ret) const {
+    if ((idx_ + 8) > length_) {
+      return false;
+    }
+
+    int64_t val =
+        *(reinterpret_cast<const int64_t *>(&binary_[idx_]));
+
+    if (swap_endian_) {
+      swap8(&val);
+    }
+
+    (*ret) = val;
+    idx_ += 8;
+
+    return true;
+  }
+
+  bool read_float(float *ret) const {
+    if (!ret) {
+      return false;
+    }
+
+    float value;
+    if (!read4(reinterpret_cast<int *>(&value))) {
+      return false;
+    }
+
+    (*ret) = value;
+
+    return true;
+  }
+
+  bool read_double(double *ret) const {
+    if (!ret) {
+      return false;
+    }
+
+    double value;
+    if (!read8(reinterpret_cast<uint64_t *>(&value))) {
+      return false;
+    }
+
+    (*ret) = value;
+
+    return true;
+  }
+
+  bool read_uint(int type, unsigned int *ret) const {
+    // @todo {8, 9, 10, 11, 12}
+    if (type == 3) {
+      unsigned short val;
+      if (read2(&val)) {
+        return false;
+      }
+      (*ret) = static_cast<unsigned int>(val);
+      return true;
+    } else if (type == 5) {
+      unsigned int val0;
+      if (!read4(&val0)) {
+        return false;
+      }
+
+      unsigned int val1;
+      if (!read4(&val1)) {
+        return false;
+      }
+
+      (*ret) = static_cast<unsigned int>(val0 / val1);
+      return true;
+
+    } else if (type == 4) {
+      unsigned int val;
+      if (!read4(&val)) {
+        return false;
+      }
+      (*ret) = val;
+      return true;
+    } else {
+      return false;
+    }
+  }
+
+  bool read_real(int type, double *ret) const {
+    // @todo { Support more types. }
+
+    if (type == TYPE_RATIONAL) {
+      unsigned int num;
+      if (!read4(&num)) {
+        return false;
+      }
+      unsigned int denom;
+      if (!read4(&denom)) {
+        return false;
+      }
+
+      (*ret) = static_cast<double>(num) / static_cast<double>(denom);
+      return true;
+    } else if (type == TYPE_SRATIONAL) {
+      int num;
+      if (!read4(&num)) {
+        return false;
+      }
+      int denom;
+      if (!read4(&denom)) {
+        return false;
+      }
+
+      (*ret) = static_cast<double>(num) / static_cast<double>(denom);
+      return true;
+    } else {
+      return false;
+    }
+    // never come here.
+  }
+
+  size_t tell() const { return idx_; }
+
+  const uint8_t *data() const { return binary_; }
+
+  bool swap_endian() const { return swap_endian_; }
+
+  size_t size() const { return length_; }
+
+ private:
+  const uint8_t *binary_;
+  const size_t length_;
+  bool swap_endian_;
+  char pad_[7];
+  mutable uint64_t idx_;
+};
+
 static void GetTIFFTag(unsigned short* tag, unsigned short* type,
                        unsigned int* len, unsigned int* saved_offt, FILE* fp,
                        bool swap_endian) {
@@ -1893,6 +2257,38 @@ static void GetTIFFTag(unsigned short* tag, unsigned short* type,
     unsigned int offt = Read4(fp, swap_endian);
     fseek(fp, offt + base, SEEK_SET);
   }
+}
+
+static bool GetTIFFTag(const StreamReader &sr, unsigned short* tag, unsigned short* type,
+                       unsigned int* len, unsigned int* saved_offt) {
+  if (sr.read2(tag)) {
+    return false;
+  }
+
+  if (sr.read2(type)) {
+    return false;
+  }
+
+  if (sr.read4(len)) {
+    return false;
+  }
+
+  (*saved_offt) = static_cast<unsigned int>(sr.tell()) + 4;
+
+  size_t typesize_table[] = {1, 1, 1, 2, 4, 8, 1, 1, 2, 4, 8, 4, 8, 4};
+
+  if ((*len) * (typesize_table[(*type) < 14 ? (*type) : 0]) > 4) {
+    unsigned int base = 0;  // fixme
+    unsigned int offt = 0;
+    if (sr.read4(&offt)) {
+      return false;
+    }
+    if (sr.seek_set(offt + base)) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 static void InitializeDNGImage(tinydng::DNGImage* image) {
@@ -2694,6 +3090,429 @@ static bool ParseTIFFIFD(const std::vector<FieldInfo>& custom_field_lists,
   return true;
 }
 
+// Parse TIFF IFD.
+// Returns true upon success, false if failed to parse.
+static bool ParseTIFFIFD(const StreamReader &sr, const std::vector<FieldInfo>& custom_field_lists,
+                         std::vector<tinydng::DNGImage>* images,
+                         std::string *warn, std::string *err) {
+  tinydng::DNGImage image;
+  InitializeDNGImage(&image);
+
+  // TINY_DNG_DPRINTF("id = %d\n", idx);
+  unsigned short num_entries = 0;
+  if (!sr.read2(&num_entries)) {
+    if (err) {
+      (*err) += "Faild to read the number of entries in TIFF IFD.\n";
+    }
+    return false;
+  }
+
+  if (num_entries == 0) {
+    if (err) {
+      (*err) += "TIFF IFD cannot have 0 entries.\n";
+    }
+    return false;
+  }
+
+  TINY_DNG_DPRINTF("----------\n");
+  TINY_DNG_DPRINTF("num entries %d\n", num_entries);
+
+  // For delayed reading of strip offsets and strip byte counts.
+  long offt_strip_offset = 0;
+  long offt_strip_byte_counts = 0;
+
+  while (num_entries--) {
+    unsigned short tag, type;
+    unsigned int len;
+    unsigned int saved_offt;
+    if (!GetTIFFTag(sr, &tag, &type, &len, &saved_offt)) {
+      if (err) {
+        (*err) += "Failed to read TIFF Tag.\n";
+      }
+      return false;
+    }
+
+    TINY_DNG_DPRINTF("tag %d\n", tag);
+    TINY_DNG_DPRINTF("saved_offt %d\n", saved_offt);
+    TINY_DNG_ASSERT(tag >= TAG_NEW_SUBFILE_TYPE, "Invalid tag.");
+
+    // TINY_DNG_DPRINTF("tag = %d\n", tag);
+
+    switch (tag) {
+      case 2:
+      case TAG_IMAGE_WIDTH:
+      case 61441:  // ImageWidth
+        if (sr.read_uint(type, reinterpret_cast<unsigned int *>(&(image.width)))) {
+          if (err) {
+            (*err) += "Failed to read image width tag.";
+          }
+          return false;
+        }
+        // TINY_DNG_DPRINTF("[%d] width = %d\n", idx, info.width);
+        break;
+
+      case 3:
+      case TAG_IMAGE_HEIGHT:
+      case 61442:  // ImageHeight
+        if (sr.read_uint(type, reinterpret_cast<unsigned int *>(&(image.height)))) {
+          if (err) {
+            (*err) += "Failed to read image height tag.";
+          }
+          return false;
+        }
+        // TINY_DNG_DPRINTF("height = %d\n", image.height);
+        break;
+
+      case TAG_BITS_PER_SAMPLE:
+      case 61443:  // BitsPerSample
+        // image->samples = len & 7;
+        if (sr.read_uint(type, reinterpret_cast<unsigned int *>(&(image.bits_per_sample_original)))) {
+          if (err) {
+            (*err) += "Failed to read BitsPerSample tag.";
+          }
+          return false;
+        }
+        break;
+
+      case TAG_SAMPLES_PER_PIXEL:
+        short spp = 0;
+        if (sr.read2(&spp)) {
+          if (err) {
+            (*err) += "Failed to read SamplesPerPixel tag.";
+          }
+          return false;
+        }
+
+        if (spp > 4) {
+          if (err) {
+            (*err) += "SamplesPerPixel must be less than or equal to 4.";
+          }
+          return false;
+        }
+
+        image.samples_per_pixel = static_cast<int>(spp);
+
+        // TINY_DNG_DPRINTF("spp = %d\n", image.samples_per_pixel);
+        break;
+
+      case TAG_ROWS_PER_STRIP:
+        // The TIFF Spec says data type may be SHORT, but assume LONG for a
+        // while.
+        image.rows_per_strip = static_cast<int>(Read4(fp, swap_endian));
+        TINY_DNG_ASSERT(image.height > 0, "Must have image height.");
+
+        // http://www.awaresystems.be/imaging/tiff/tifftags/rowsperstrip.html
+        image.strips_per_image = static_cast<int>(
+            floor(double(image.height + image.rows_per_strip - 1) /
+                  double(image.rows_per_strip)));
+        TINY_DNG_DPRINTF("rows_per_strip = %d\n", image.samples_per_pixel);
+        TINY_DNG_DPRINTF("strips_per_image = %d\n", image.strips_per_image);
+        break;
+
+      case TAG_COMPRESSION:
+        image.compression = static_cast<int>(ReadUInt(type, fp, swap_endian));
+        // TINY_DNG_DPRINTF("tag-compression = %d\n", image.compression);
+        break;
+
+      case TAG_STRIP_OFFSET:
+      case TAG_JPEG_IF_OFFSET:
+        offt_strip_offset = ftell(fp);
+        image.offset = Read4(fp, swap_endian);
+        // TINY_DNG_DPRINTF("strip_offset = %d\n", image.offset);
+        break;
+
+      case TAG_JPEG_IF_BYTE_COUNT:
+        image.jpeg_byte_count = static_cast<int>(Read4(fp, swap_endian));
+        break;
+
+      case TAG_ORIENTATION:
+        image.orientation = Read2(fp, swap_endian);
+        break;
+
+      case TAG_STRIP_BYTE_COUNTS:
+        offt_strip_byte_counts = ftell(fp);
+        image.strip_byte_count = static_cast<int>(Read4(fp, swap_endian));
+        TINY_DNG_DPRINTF("strip_byte_count = %d\n", image.strip_byte_count);
+        break;
+
+      case TAG_PLANAR_CONFIGURATION:
+        image.planar_configuration = Read2(fp, swap_endian);
+        break;
+
+      case TAG_PREDICTOR:
+        image.predictor = Read2(fp, swap_endian);
+        TINY_DNG_ASSERT((image.predictor >= 1) && (image.predictor <= 3),
+                        "Predictor value must be 1, 2 or 3.");
+        break;
+
+      case TAG_SAMPLE_FORMAT: {
+        short format = short(Read2(fp, swap_endian));
+        if ((format == SAMPLEFORMAT_INT) || (format == SAMPLEFORMAT_UINT) ||
+            (format == SAMPLEFORMAT_IEEEFP)) {
+          image.sample_format = static_cast<SampleFormat>(format);
+        }
+      } break;
+
+      case TAG_SUB_IFDS:
+
+      {
+        // TINY_DNG_DPRINTF("sub_ifds = %d\n", len);
+        for (size_t k = 0; k < len; k++) {
+          unsigned int i = static_cast<unsigned int>(ftell(fp));
+          unsigned int offt = Read4(fp, swap_endian);
+          unsigned int base = 0;  // @fixme
+          fseek(fp, offt + base, SEEK_SET);
+
+          ParseTIFFIFD(custom_field_lists, images, fp,
+                       swap_endian);   // recursive call
+          fseek(fp, i + 4, SEEK_SET);  // rewind
+        }
+        // TINY_DNG_DPRINTF("sub_ifds DONE\n");
+      }
+
+      break;
+
+      case TAG_TILE_WIDTH:
+        image.tile_width = static_cast<int>(ReadUInt(type, fp, swap_endian));
+        // TINY_DNG_DPRINTF("tile_width = %d\n", image.tile_width);
+        break;
+
+      case TAG_TILE_LENGTH:
+        image.tile_length = static_cast<int>(ReadUInt(type, fp, swap_endian));
+        // TINY_DNG_DPRINTF("tile_length = %d\n", image.tile_length);
+        break;
+
+      case TAG_TILE_OFFSETS:
+        image.tile_offset = len > 1 ? static_cast<unsigned int>(ftell(fp))
+                                    : Read4(fp, swap_endian);
+        // TINY_DNG_DPRINTF("tile_offt = %d\n", image->tile_offset);
+        break;
+
+      case TAG_TILE_BYTE_COUNTS:
+        image.tile_byte_count = len > 1 ? static_cast<unsigned int>(ftell(fp))
+                                        : Read4(fp, swap_endian);
+        break;
+
+      case TAG_CFA_PATTERN_DIM:
+        image.cfa_pattern_dim = Read2(fp, swap_endian);
+        break;
+
+      case TAG_CFA_PATTERN: {
+        char buf[16];
+        size_t readLen = len;
+        if (readLen > 16) readLen = 16;
+        // Assume 2x2 CFAPattern.
+        TINY_DNG_ASSERT(readLen == 4, "Unsupported CFA pattern.");
+        size_t n = fread(buf, 1, readLen, fp);
+        TINY_DNG_ASSERT(n == readLen, "Error reading CFA pattern.");
+        image.cfa_pattern[0][0] = buf[0];
+        image.cfa_pattern[0][1] = buf[1];
+        image.cfa_pattern[1][0] = buf[2];
+        image.cfa_pattern[1][1] = buf[3];
+      } break;
+
+      case TAG_DNG_VERSION: {
+        char data[4];
+        data[0] = static_cast<char>(fgetc(fp));
+        data[1] = static_cast<char>(fgetc(fp));
+        data[2] = static_cast<char>(fgetc(fp));
+        data[3] = static_cast<char>(fgetc(fp));
+
+        image.version =
+            (data[3] << 24) | (data[2] << 16) | (data[1] << 8) | data[0];
+      } break;
+
+      case TAG_CFA_PLANE_COLOR: {
+        char buf[4];
+        size_t readLen = len;
+        if (readLen > 4) readLen = 4;
+        size_t n = fread(buf, 1, readLen, fp);
+        TINY_DNG_ASSERT(n == readLen, "Error reading CFA plane color.");
+        for (size_t i = 0; i < readLen; i++) {
+          image.cfa_plane_color[i] = buf[i];
+        }
+      } break;
+
+      case TAG_CFA_LAYOUT: {
+        int layout = Read2(fp, swap_endian);
+        image.cfa_layout = layout;
+      } break;
+
+      case TAG_ACTIVE_AREA:
+        image.has_active_area = true;
+        image.active_area[0] =
+            static_cast<int>(ReadUInt(type, fp, swap_endian));
+        image.active_area[1] =
+            static_cast<int>(ReadUInt(type, fp, swap_endian));
+        image.active_area[2] =
+            static_cast<int>(ReadUInt(type, fp, swap_endian));
+        image.active_area[3] =
+            static_cast<int>(ReadUInt(type, fp, swap_endian));
+        break;
+
+      case TAG_BLACK_LEVEL: {
+        // Assume TAG_SAMPLES_PER_PIXEL is read before
+        // FIXME(syoyo): scan TAG_SAMPLES_PER_PIXEL in IFD table in advance.
+        for (int s = 0; s < image.samples_per_pixel; s++) {
+          image.black_level[s] =
+              static_cast<int>(ReadUInt(type, fp, swap_endian));
+        }
+      } break;
+
+      case TAG_WHITE_LEVEL: {
+        // Assume TAG_SAMPLES_PER_PIXEL is read before
+        // FIXME(syoyo): scan TAG_SAMPLES_PER_PIXEL in IFD table in advance.
+        for (int s = 0; s < image.samples_per_pixel; s++) {
+          image.white_level[s] =
+              static_cast<int>(ReadUInt(type, fp, swap_endian));
+        }
+      } break;
+
+      case TAG_ANALOG_BALANCE:
+        // Assume RGB
+        image.analog_balance[0] = ReadReal(type, fp, swap_endian);
+        image.analog_balance[1] = ReadReal(type, fp, swap_endian);
+        image.analog_balance[2] = ReadReal(type, fp, swap_endian);
+        image.has_analog_balance = true;
+        break;
+
+      case TAG_AS_SHOT_NEUTRAL:
+        // Assume RGB
+        // TINY_DNG_DPRINTF("ty = %d\n", type);
+        image.as_shot_neutral[0] = ReadReal(type, fp, swap_endian);
+        image.as_shot_neutral[1] = ReadReal(type, fp, swap_endian);
+        image.as_shot_neutral[2] = ReadReal(type, fp, swap_endian);
+        image.has_as_shot_neutral = true;
+        break;
+
+      case TAG_CALIBRATION_ILLUMINANT1:
+        image.calibration_illuminant1 =
+            static_cast<LightSource>(Read2(fp, swap_endian));
+        break;
+
+      case TAG_CALIBRATION_ILLUMINANT2:
+        image.calibration_illuminant2 =
+            static_cast<LightSource>(Read2(fp, swap_endian));
+        break;
+
+      case TAG_COLOR_MATRIX1: {
+        for (int c = 0; c < 3; c++) {
+          for (int k = 0; k < 3; k++) {
+            double val = ReadReal(type, fp, swap_endian);
+            image.color_matrix1[c][k] = val;
+          }
+        }
+      } break;
+
+      case TAG_COLOR_MATRIX2: {
+        for (int c = 0; c < 3; c++) {
+          for (int k = 0; k < 3; k++) {
+            double val = ReadReal(type, fp, swap_endian);
+            image.color_matrix2[c][k] = val;
+          }
+        }
+      } break;
+
+      case TAG_FORWARD_MATRIX1: {
+        for (int c = 0; c < 3; c++) {
+          for (int k = 0; k < 3; k++) {
+            double val = ReadReal(type, fp, swap_endian);
+            image.forward_matrix1[c][k] = val;
+          }
+        }
+      } break;
+
+      case TAG_FORWARD_MATRIX2: {
+        for (int c = 0; c < 3; c++) {
+          for (int k = 0; k < 3; k++) {
+            double val = ReadReal(type, fp, swap_endian);
+            image.forward_matrix2[c][k] = val;
+          }
+        }
+      } break;
+
+      case TAG_CAMERA_CALIBRATION1: {
+        for (int c = 0; c < 3; c++) {
+          for (int k = 0; k < 3; k++) {
+            double val = ReadReal(type, fp, swap_endian);
+            image.camera_calibration1[c][k] = val;
+          }
+        }
+      } break;
+
+      case TAG_CAMERA_CALIBRATION2: {
+        for (int c = 0; c < 3; c++) {
+          for (int k = 0; k < 3; k++) {
+            double val = ReadReal(type, fp, swap_endian);
+            image.camera_calibration2[c][k] = val;
+          }
+        }
+      } break;
+
+      case TAG_CR2_SLICES: {
+        // Assume 3 ushorts;
+        image.cr2_slices[0] = Read2(fp, swap_endian);
+        image.cr2_slices[1] = Read2(fp, swap_endian);
+        image.cr2_slices[2] = Read2(fp, swap_endian);
+        // TINY_DNG_DPRINTF("cr2_slices = %d, %d, %d\n",
+        //  image.cr2_slices[0],
+        //  image.cr2_slices[1],
+        //  image.cr2_slices[2]);
+      } break;
+
+      default: {
+        FieldData data;
+        bool found = ParseCustomField(custom_field_lists, tag, type, len,
+                                      swap_endian, fp, &data);
+        if (found) {
+          image.custom_fields.push_back(data);
+        }
+        // TINY_DNG_DPRINTF("unknown or unsupported tag = %d\n", tag);
+      }
+    }
+
+    fseek(fp, saved_offt, SEEK_SET);
+  }
+
+  // Delayed read of strip offsets and strip byte counts
+  if (image.strips_per_image > 0) {
+    image.strip_byte_counts.clear();
+    image.strip_offsets.clear();
+
+    long curr_offt = ftell(fp);
+
+    if (offt_strip_byte_counts > 0) {
+      fseek(fp, offt_strip_byte_counts, SEEK_SET);
+
+      for (int k = 0; k < image.strips_per_image; k++) {
+        unsigned int strip_byte_count = Read4(fp, swap_endian);
+        TINY_DNG_DPRINTF("strip_byte_counts[%d] = %u\n", k, strip_byte_count);
+        image.strip_byte_counts.push_back(strip_byte_count);
+      }
+    }
+
+    if (offt_strip_offset > 0) {
+      fseek(fp, offt_strip_offset, SEEK_SET);
+
+      for (int k = 0; k < image.strips_per_image; k++) {
+        unsigned int strip_offset = Read4(fp, swap_endian);
+        TINY_DNG_DPRINTF("strip_offset[%d] = %u\n", k, strip_offset);
+        image.strip_offsets.push_back(strip_offset);
+      }
+    }
+
+    fseek(fp, curr_offt, SEEK_SET);
+  }
+  //
+
+  // Add to images.
+  images->push_back(image);
+
+  // TINY_DNG_DPRINTF("DONE ---------\n");
+
+  return true;
+}
+
 static bool ParseDNG(const std::vector<FieldInfo>& custom_fields,
                      std::vector<tinydng::DNGImage>* images, FILE* fp,
                      bool swap_endian) {
@@ -2705,6 +3524,68 @@ static bool ParseDNG(const std::vector<FieldInfo>& custom_fields,
 
   while (offt) {
     fseek(fp, offt, SEEK_SET);
+
+    // TINY_DNG_DPRINTF("Parse TIFF IFD\n");
+    if (!ParseTIFFIFD(custom_fields, images, fp, swap_endian)) {
+      break;
+    }
+    // Get next IFD offset(0 = end of file).
+    offt = Read4(fp, swap_endian);
+    TINY_DNG_DPRINTF("Next IFD offset = %d\n", offt);
+  }
+
+  for (size_t i = 0; i < images->size(); i++) {
+    tinydng::DNGImage* image = &((*images)[i]);
+    TINY_DNG_ASSERT(image->samples_per_pixel <= 4,
+                    "Cannot handle > 4 samples per pixel.");
+    for (int s = 0; s < image->samples_per_pixel; s++) {
+      if (image->white_level[s] == -1) {
+        // Set white level with (2 ** BitsPerSample) according to the DNG spec.
+        TINY_DNG_ASSERT(image->bits_per_sample_original > 0,
+                        "White level has to be > 0.");
+
+        if (image->bits_per_sample_original >=
+            32) {  // workaround for 32bit floating point TIFF.
+          image->white_level[s] = -1;
+        } else {
+          TINY_DNG_ASSERT(image->bits_per_sample_original < 32,
+                          "Cannot handle >= 32 bits per sample.");
+          image->white_level[s] = (1 << image->bits_per_sample_original);
+        }
+      }
+    }
+  }
+
+  return true;
+}
+
+static bool ParseDNGFromMemory(const StreamReader &sr, const std::vector<FieldInfo>& custom_fields,
+                     std::vector<tinydng::DNGImage>* images,
+                     std::string *warn, std::string *err) {
+  if (!images) {
+    if (err) {
+      (*err) += "Invalid `images` argument.\n";
+    }
+    return false;
+  }
+
+  unsigned int offt;
+  if (!sr.read4(&offt)) {
+    if (err) {
+      (*err) += "Failed to read offset.\n";
+    }
+    return false;
+  }
+
+  TINY_DNG_DPRINTF("First IFD offt: %d\n", offt);
+
+  while (offt) {
+    if (sr.seek_set(offt)) {
+      if (err) {
+        (*err) += "Failed to seek to TIFF IFD.\n";
+      }
+      return false;
+    }
 
     // TINY_DNG_DPRINTF("Parse TIFF IFD\n");
     if (!ParseTIFFIFD(custom_fields, images, fp, swap_endian)) {
@@ -3161,7 +4042,8 @@ static int easyDecode(const unsigned char* compressed,
 }  // namespace lzw
 
 bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
-             std::vector<DNGImage>* images, std::string* err) {
+             std::vector<DNGImage>* images, std::string *warn, std::string* err) {
+  (void)warn;
   std::stringstream ss;
 
   TINY_DNG_ASSERT(images, "Invalid images pointer.");
@@ -3590,6 +4472,416 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 
   return ret ? true : false;
 }
+
+bool LoadDNGFromMemory(const char* mem, unsigned int size, std::vector<FieldInfo>& custom_fields,
+             std::vector<DNGImage>* images, std::string *warn, std::string* err) {
+  (void)warn;
+  std::stringstream ss;
+
+  if ((mem == NULL) || (size < 32) || (!images)) {
+    if (err) {
+      (*err) = "Invalid argument. argument is null or invalid.\n";
+    }
+    return false;
+  }
+
+  bool is_dng_big_endian = false;
+
+  const unsigned short magic = *(reinterpret_cast<const unsigned short *>(mem));
+
+  if (magic == 0x4949) {
+    // might be TIFF(DNG).
+  } else if (magic == 0x4d4d) {
+    // might be TIFF(DNG, bigendian).
+    is_dng_big_endian = true;
+    TINY_DNG_DPRINTF("DNG is big endian\n");
+  } else {
+    ss << "Seems the data is not a DNG format." << std::endl;
+    if (err) {
+      (*err) = ss.str();
+    }
+
+    return false;
+  }
+
+  const bool swap_endian = (is_dng_big_endian && (!IsBigEndian()));
+  StreamReader sr(reinterpret_cast<const uint8_t*>(mem), size, swap_endian);
+
+  char header[32];
+
+  if (32 != sr.read(32, 32, header)) {
+    if (err) {
+      (*err) = "Error reading header.\n";
+    }
+    return false;
+  }
+
+  // skip magic header
+  fseek(fp, 4, SEEK_SET);
+
+  const bool swap_endian = (is_dng_big_endian && (!IsBigEndian()));
+  ret = ParseDNG(custom_fields, images, fp, swap_endian);
+
+  if (!ret) {
+    fclose(fp);
+    return false;
+  }
+
+  for (size_t i = 0; i < images->size(); i++) {
+    tinydng::DNGImage* image = &((*images)[i]);
+    // TINY_DNG_DPRINTF("[%lu] compression = %d\n", i, image->compression);
+
+    const size_t data_offset =
+        (image->offset > 0) ? image->offset : image->tile_offset;
+    TINY_DNG_ASSERT(data_offset > 0, "Unexpected data offset.");
+
+    // std::cout << "offt =\n" << image->offset << std::endl;
+    // std::cout << "tile_offt = \n" << image->tile_offset << std::endl;
+    // std::cout << "data_offset = " << data_offset << std::endl;
+
+    if (image->compression == COMPRESSION_NONE) {  // no compression
+
+      if (image->jpeg_byte_count > 0) {
+        // Looks like CR2 IFD#1(thumbnail jpeg image)
+        // Currently skip parsing jpeg data.
+        // TODO(syoyo): Decode jpeg data.
+        image->width = 0;
+        image->height = 0;
+      } else {
+        image->bits_per_sample = image->bits_per_sample_original;
+        TINY_DNG_ASSERT(
+            ((image->width * image->height * image->bits_per_sample) % 8) == 0,
+            "Image size must be multiple of 8.");
+        const size_t len =
+            static_cast<size_t>((image->samples_per_pixel * image->width *
+                                 image->height * image->bits_per_sample) /
+                                8);
+        TINY_DNG_ASSERT(len > 0, "Unexpected length.");
+        image->data.resize(len);
+        fseek(fp, static_cast<long>(data_offset), SEEK_SET);
+
+        ret = fread(&(image->data.at(0)), 1, len, fp);
+        TINY_DNG_ASSERT(ret == len, "Error reading image data.");
+      }
+    } else if (image->compression == COMPRESSION_LZW) {  // lzw compression
+      image->bits_per_sample = image->bits_per_sample_original;
+      TINY_DNG_DPRINTF("bps = %d\n", image->bits_per_sample);
+      TINY_DNG_DPRINTF("counts = %d\n", int(image->strip_byte_counts.size()));
+      TINY_DNG_DPRINTF("offsets = %d\n", int(image->strip_offsets.size()));
+
+      image->data.clear();
+
+      if ((image->strip_byte_counts.size() > 0) &&
+          (image->strip_byte_counts.size() == image->strip_offsets.size())) {
+        for (size_t k = 0; k < image->strip_byte_counts.size(); k++) {
+          std::vector<unsigned char> src(image->strip_byte_counts[k]);
+          fseek(fp, static_cast<long>(image->strip_offsets[k]), SEEK_SET);
+
+          const size_t dst_len = static_cast<size_t>(
+              (image->samples_per_pixel * image->width * image->rows_per_strip *
+               image->bits_per_sample) /
+              8);
+          std::vector<unsigned char> dst(dst_len);
+
+          ret = fread(src.data(), 1, image->strip_byte_counts[k], fp);
+          TINY_DNG_ASSERT(ret == image->strip_byte_counts[k],
+                          "Cannot read strip_byte_counts bytes from fp");
+          TINY_DNG_DPRINTF("easyDecode begin\n");
+          int decoded_bytes = lzw::easyDecode(
+              src.data(), int(image->strip_byte_counts[k]),
+              int(image->strip_byte_counts[k]) *
+                  image->bits_per_sample /* FIXME(syoyo): Is this correct? */,
+              dst.data(), int(dst_len), swap_endian);
+          TINY_DNG_DPRINTF("easyDecode done\n");
+          TINY_DNG_ASSERT(decoded_bytes > 0,
+                          "decoded_ bytes must be non-zero positive.");
+
+          if (image->predictor == 1) {
+            // no prediction shceme
+          } else if (image->predictor == 2) {
+            // horizontal diff
+
+            const size_t stride =
+                size_t(image->width * image->samples_per_pixel);
+            const size_t spp = size_t(image->samples_per_pixel);
+            for (size_t row = 0; row < size_t(image->rows_per_strip); row++) {
+              for (size_t c = 0; c < size_t(image->samples_per_pixel); c++) {
+                unsigned int b = dst[row * stride + c];
+                for (size_t col = 1; col < size_t(image->width); col++) {
+                  // value may overflow(wrap over), but its expected behavior.
+                  b += dst[stride * row + spp * col + c];
+                  dst[stride * row + spp * col + c] =
+                      static_cast<unsigned char>(b & 0xFF);
+                }
+              }
+            }
+
+          } else if (image->predictor == 3) {
+            // fp horizontal diff.
+            TINY_DNG_ABORT("[TODO] FP horizontal differencing predictor.");
+          } else {
+            TINY_DNG_ABORT("Invalid predictor value.");
+          }
+
+          std::copy(dst.begin(), dst.end(), std::back_inserter(image->data));
+        }
+      } else {
+        TINY_DNG_ABORT("Unsupported image strip configuration.");
+      }
+    } else if (image->compression ==
+               COMPRESSION_OLD_JPEG) {  // old jpeg compression
+
+      // std::cout << "IFD " << i << std::endl;
+
+      // First check if JPEG is lossless JPEG
+      // TODO(syoyo): Compure conservative data_len.
+      TINY_DNG_ASSERT(file_size > data_offset, "Unexpected data offset.");
+      size_t data_len = file_size - data_offset;
+      int lj_width = -1, lj_height = -1, lj_bits = -1, lj_components = -1;
+      if (IsLosslessJPEG(&whole_data.at(data_offset),
+                         static_cast<int>(data_len), &lj_width, &lj_height,
+                         &lj_bits, &lj_components)) {
+        // std::cout << "IFD " << i << " is LJPEG" << std::endl;
+
+        TINY_DNG_ASSERT(
+            lj_width > 0 && lj_height > 0 && lj_bits > 0 && lj_components > 0,
+            "Image dimensions must be > 0.");
+
+        // Assume not in tiled format.
+        TINY_DNG_ASSERT(image->tile_width == -1 && image->tile_length == -1,
+                        "Tiled format not supported tile size.");
+
+        image->height = lj_height;
+
+        // Is Canon CR2?
+        const bool is_cr2 = (image->cr2_slices[0] != 0) ? true : false;
+
+        if (is_cr2) {
+          // For CR2 RAW, slices[0] * slices[1] + slices[2] = image width
+          image->width = image->cr2_slices[0] * image->cr2_slices[1] +
+                         image->cr2_slices[2];
+        } else {
+          image->width = lj_width;
+        }
+
+        image->bits_per_sample_original = lj_bits;
+
+        // lj92 decodes data into 16bits, so modify bps.
+        image->bits_per_sample = 16;
+
+        TINY_DNG_ASSERT(
+            ((image->width * image->height * image->bits_per_sample) % 8) == 0,
+            "Image size must be multiple of 8.");
+        const size_t len =
+            static_cast<size_t>((image->samples_per_pixel * image->width *
+                                 image->height * image->bits_per_sample) /
+                                8);
+        // std::cout << "spp = " << image->samples_per_pixel;
+        // std::cout << ", w = " << image->width << ", h = " << image->height <<
+        // ", bps = " << image->bits_per_sample << std::endl;
+        TINY_DNG_ASSERT(len > 0, "Invalid length.");
+        image->data.resize(len);
+
+        TINY_DNG_ASSERT(file_size > data_offset, "Unexpected file size.");
+
+        std::vector<unsigned short> buf;
+        buf.resize(static_cast<size_t>(image->width * image->height *
+                                       image->samples_per_pixel));
+
+        bool ok = DecompressLosslessJPEG(&buf.at(0), image->width,
+                                         &(whole_data.at(0)), file_size, fp,
+                                         (*image), swap_endian);
+        if (!ok) {
+          if (err) {
+            ss << "Failed to decompress LJPEG." << std::endl;
+            (*err) = ss.str();
+          }
+          return false;
+        }
+
+        if (is_cr2) {
+          // CR2 stores image in tiled format(image slices. left to right).
+          // Convert it to scanline format.
+          int nslices = image->cr2_slices[0];
+          int slice_width = image->cr2_slices[1];
+          int slice_remainder_width = image->cr2_slices[2];
+          size_t src_offset = 0;
+
+          unsigned short* dst_ptr =
+              reinterpret_cast<unsigned short*>(image->data.data());
+
+          for (int slice = 0; slice < nslices; slice++) {
+            int x_offset = slice * slice_width;
+            for (int y = 0; y < image->height; y++) {
+              size_t dst_offset =
+                  static_cast<size_t>(y * image->width + x_offset);
+              memcpy(&dst_ptr[dst_offset], &buf[src_offset],
+                     sizeof(unsigned short) * static_cast<size_t>(slice_width));
+              src_offset += static_cast<size_t>(slice_width);
+            }
+          }
+
+          // remainder(the last slice).
+          {
+            int x_offset = nslices * slice_width;
+            for (int y = 0; y < image->height; y++) {
+              size_t dst_offset =
+                  static_cast<size_t>(y * image->width + x_offset);
+              // std::cout << "y = " << y << ", dst = " << dst_offset << ", src
+              // = " << src_offset << ", len = " << buf.size() << std::endl;
+              memcpy(&dst_ptr[dst_offset], &buf[src_offset],
+                     sizeof(unsigned short) *
+                         static_cast<size_t>(slice_remainder_width));
+              src_offset += static_cast<size_t>(slice_remainder_width);
+            }
+          }
+
+        } else {
+          memcpy(image->data.data(), static_cast<void*>(&(buf.at(0))), len);
+        }
+
+      } else {
+        // Baseline 8bit JPEG
+
+        image->bits_per_sample = 8;
+
+        size_t jpeg_len = static_cast<size_t>(image->jpeg_byte_count);
+        if (image->jpeg_byte_count == -1) {
+          // No jpeg datalen. Set to the size of file - offset.
+          TINY_DNG_ASSERT(file_size > data_offset, "Unexpected file size.");
+          jpeg_len = file_size - data_offset;
+        }
+        TINY_DNG_ASSERT(jpeg_len > 0, "Invalid length.");
+
+        // Assume RGB jpeg
+        int w = 0, h = 0, components = 0;
+        unsigned char* decoded_image = stbi_load_from_memory(
+            &whole_data.at(data_offset), static_cast<int>(jpeg_len), &w, &h,
+            &components, /* desired_channels */ 3);
+        TINY_DNG_ASSERT(decoded_image, "Could not decode JPEG image.");
+
+        // Currently we just discard JPEG image(since JPEG image would be just a
+        // thumbnail or LDR image of RAW).
+        // TODO(syoyo): Do not discard JPEG image.
+        free(decoded_image);
+
+        // std::cout << "w = " << w << std::endl;
+        // std::cout << "h = " << w << std::endl;
+        // std::cout << "c = " << components << std::endl;
+
+        TINY_DNG_ASSERT(w > 0 && h > 0, "Image dimensions must be > 0.");
+
+        image->width = w;
+        image->height = h;
+      }
+
+    } else if (image->compression ==
+               COMPRESSION_NEW_JPEG) {  //  new JPEG(baseline DCT JPEG or
+                                        //  lossless JPEG)
+
+      // lj92 decodes data into 16bits, so modify bps.
+      image->bits_per_sample = 16;
+
+      // std::cout << "w = " << image->width << ", h = " << image->height <<
+      // std::endl;
+
+      TINY_DNG_ASSERT(
+          ((image->width * image->height * image->bits_per_sample) % 8) == 0,
+          "Image must be multiple of 8.");
+      const size_t len =
+          static_cast<size_t>((image->samples_per_pixel * image->width *
+                               image->height * image->bits_per_sample) /
+                              8);
+      TINY_DNG_ASSERT(len > 0, "Invalid length.");
+      image->data.resize(len);
+
+      TINY_DNG_ASSERT(file_size > data_offset, "Unexpected length.");
+
+      fseek(fp, static_cast<long>(data_offset), SEEK_SET);
+
+      bool ok = DecompressLosslessJPEG(
+          reinterpret_cast<unsigned short*>(&(image->data.at(0))), image->width,
+          &(whole_data.at(0)), file_size, fp, (*image), swap_endian);
+      if (!ok) {
+        if (err) {
+          ss << "Failed to decompress LJPEG." << std::endl;
+          (*err) = ss.str();
+        }
+        return false;
+      }
+
+    } else if (image->compression == 8) {  // ZIP
+      if (err) {
+        ss << "ZIP compression is not supported." << std::endl;
+        (*err) = ss.str();
+      }
+    } else if (image->compression == 34892) {  // lossy JPEG
+      if (err) {
+        ss << "lossy JPEG compression is not supported." << std::endl;
+        (*err) = ss.str();
+      }
+    } else if (image->compression == 34713) {  // NEF lossless?
+      if (err) {
+        ss << "Seems a NEF RAW. This compression is not supported."
+           << std::endl;
+        (*err) = ss.str();
+      }
+    } else {
+      if (err) {
+        ss << "IFD [" << i << "] "
+           << " Unsupported compression type : " << image->compression
+           << std::endl;
+        (*err) = ss.str();
+      }
+      return false;
+    }
+
+#if 0
+    if (info->has_active_area) {
+      info->active_area[0] = image->active_area[0];
+      info->active_area[1] = image->active_area[1];
+      info->active_area[2] = image->active_area[2];
+      info->active_area[3] = image->active_area[3];
+    } else {
+      info->active_area[0] = 0;
+      info->active_area[1] = 0;
+      info->active_area[2] = image->width;
+      info->active_area[3] = image->height;
+    }
+
+    info->cfa_plane_color[0] = image->cfa_plane_color[0];
+    info->cfa_plane_color[1] = image->cfa_plane_color[1];
+    info->cfa_plane_color[2] = image->cfa_plane_color[2];
+    info->cfa_plane_color[3] = image->cfa_plane_color[3];
+    info->cfa_pattern[0][0] = image->cfa_pattern[0][0];
+    info->cfa_pattern[0][1] = image->cfa_pattern[0][1];
+    info->cfa_pattern[1][0] = image->cfa_pattern[1][0];
+    info->cfa_pattern[1][1] = image->cfa_pattern[1][1];
+    info->cfa_layout = image->cfa_layout;
+
+    info->has_as_shot_neutral = image->has_as_shot_neutral;
+    info->as_shot_neutral[0] = image->as_shot_neutral[0];
+    info->as_shot_neutral[1] = image->as_shot_neutral[1];
+    info->as_shot_neutral[2] = image->as_shot_neutral[2];
+
+    info->has_analog_balance = image->has_analog_balance;
+    info->analog_balance[0] = image->analog_balance[0];
+    info->analog_balance[1] = image->analog_balance[1];
+    info->analog_balance[2] = image->analog_balance[2];
+
+    info->tile_width = image->tile_width;
+    info->tile_length = image->tile_length;
+    info->tile_offset = image->tile_offset;
+#endif
+  }
+
+  fclose(fp);
+
+  return ret ? true : false;
+
+  
+}
+
 
 #ifdef __clang__
 #pragma clang diagnostic pop
