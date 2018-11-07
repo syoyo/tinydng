@@ -35,11 +35,15 @@ int main(int argc, char **argv) {
     input_filename = std::string(argv[1]);
   }
 
-  std::string err;
+  std::string warn, err;
   std::vector<tinydng::DNGImage> images;
   std::vector<tinydng::FieldInfo> custom_fields;
 
-  bool ret = tinydng::LoadDNG(input_filename.c_str(), custom_fields, &images, &err);
+  bool ret = tinydng::LoadDNG(input_filename.c_str(), custom_fields, &images, &warn, &err);
+
+  if (!warn.empty()) {
+    std::cout << "WARN: " << warn << std::endl;
+  }
 
   if (ret) {
     for (size_t i = 0; i < images.size(); i++) {
