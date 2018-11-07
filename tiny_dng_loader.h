@@ -2163,7 +2163,7 @@ class StreamReader {
     // @todo {8, 9, 10, 11, 12}
     if (type == 3) {
       unsigned short val;
-      if (read2(&val)) {
+      if (!read2(&val)) {
         return false;
       }
       (*ret) = static_cast<unsigned int>(val);
@@ -2266,15 +2266,15 @@ static void GetTIFFTag(unsigned short* tag, unsigned short* type,
 static bool GetTIFFTag(const StreamReader& sr, unsigned short* tag,
                        unsigned short* type, unsigned int* len,
                        unsigned int* saved_offt) {
-  if (sr.read2(tag)) {
+  if (!sr.read2(tag)) {
     return false;
   }
 
-  if (sr.read2(type)) {
+  if (!sr.read2(type)) {
     return false;
   }
 
-  if (sr.read4(len)) {
+  if (!sr.read4(len)) {
     return false;
   }
 
@@ -2285,10 +2285,10 @@ static bool GetTIFFTag(const StreamReader& sr, unsigned short* tag,
   if ((*len) * (typesize_table[(*type) < 14 ? (*type) : 0]) > 4) {
     unsigned int base = 0;  // fixme
     unsigned int offt = 0;
-    if (sr.read4(&offt)) {
+    if (!sr.read4(&offt)) {
       return false;
     }
-    if (sr.seek_set(offt + base)) {
+    if (!sr.seek_set(offt + base)) {
       return false;
     }
   }
@@ -3240,7 +3240,7 @@ static bool ParseTIFFIFD(const StreamReader& sr,
 
     TINY_DNG_DPRINTF("tag %d\n", tag);
     TINY_DNG_DPRINTF("saved_offt %d\n", saved_offt);
-    if (tag >= TAG_NEW_SUBFILE_TYPE) {
+    if (tag < TAG_NEW_SUBFILE_TYPE) {
       if (err) {
         (*err) += "Invalid tag ID.\n";
       }
@@ -3256,7 +3256,7 @@ static bool ParseTIFFIFD(const StreamReader& sr,
         if (!sr.read_uint(type,
                           reinterpret_cast<unsigned int*>(&(image.width)))) {
           if (err) {
-            (*err) += "Failed to read image width tag.";
+            (*err) += "Failed to read ImageWidth Tag.\n";
           }
           return false;
         }
@@ -3269,7 +3269,7 @@ static bool ParseTIFFIFD(const StreamReader& sr,
         if (!sr.read_uint(type,
                           reinterpret_cast<unsigned int*>(&(image.height)))) {
           if (err) {
-            (*err) += "Failed to read image height tag.";
+            (*err) += "Failed to read ImageHeight Tag.\n";
           }
           return false;
         }
@@ -3282,7 +3282,7 @@ static bool ParseTIFFIFD(const StreamReader& sr,
         if (!sr.read_uint(type, reinterpret_cast<unsigned int*>(
                                     &(image.bits_per_sample_original)))) {
           if (err) {
-            (*err) += "Failed to read BitsPerSample Tag.";
+            (*err) += "Failed to read BitsPerSample Tag.\n";
           }
           return false;
         }
@@ -3292,7 +3292,7 @@ static bool ParseTIFFIFD(const StreamReader& sr,
         short spp = 0;
         if (!sr.read2(&spp)) {
           if (err) {
-            (*err) += "Failed to read SamplesPerPixel Tag.";
+            (*err) += "Failed to read SamplesPerPixel Tag.\n";
           }
           return false;
         }
@@ -3552,19 +3552,19 @@ static bool ParseTIFFIFD(const StreamReader& sr,
 
       case TAG_ANALOG_BALANCE:
         // Assume RGB
-        if (sr.read_real(type, &image.analog_balance[0])) {
+        if (!sr.read_real(type, &image.analog_balance[0])) {
           if (err) {
             (*err) += "Failed to parse analog balance.\n";
           }
           return false;
         }
-        if (sr.read_real(type, &image.analog_balance[1])) {
+        if (!sr.read_real(type, &image.analog_balance[1])) {
           if (err) {
             (*err) += "Failed to parse analog balance.\n";
           }
           return false;
         }
-        if (sr.read_real(type, &image.analog_balance[2])) {
+        if (!sr.read_real(type, &image.analog_balance[2])) {
           if (err) {
             (*err) += "Failed to parse analog balance.\n";
           }

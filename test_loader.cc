@@ -70,14 +70,6 @@ int main(int argc, char **argv) {
       std::cout << "tile_width = " << image.tile_width << std::endl;
       std::cout << "tile_length = " << image.tile_length << std::endl;
 
-      for (size_t s = 0; s < image.tile_offsets.size(); s++) {
-        std::cout << "tile_offset[" << s << "] = " << image.tile_offsets[s] << std::endl;
-      }
-
-      for (size_t s = 0; s < image.tile_byte_counts.size(); s++) {
-        std::cout << "tile_byte_counts[" << s << "] = " << image.tile_byte_counts[s] << std::endl;
-      }
-
       std::cout << "cfa_layout = " << image.cfa_layout << std::endl;
       std::cout << "cfa_plane_color = "
                 << get_colorname(image.cfa_plane_color[0])
