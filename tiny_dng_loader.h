@@ -4327,7 +4327,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
       // First check if JPEG is lossless JPEG
       // TODO(syoyo): Compure conservative data_len.
-      if (sr.size() > data_offset) {
+      if (sr.size() < data_offset) {
         if (err) {
           (*err) += "Unexpected data offset.\n";
         }
@@ -4378,7 +4378,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         TINY_DNG_ASSERT(len > 0, "Invalid length.");
         image->data.resize(len);
 
-        if (sr.size() > data_offset) {
+        if (sr.size() < data_offset) {
           if (err) {
             (*err) += "Unexpected file size or data offset.\n";
           }
@@ -4449,7 +4449,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         size_t jpeg_len = static_cast<size_t>(image->jpeg_byte_count);
         if (image->jpeg_byte_count == -1) {
           // No jpeg datalen. Set to the size of file - offset.
-          if (sr.size() > data_offset) {
+          if (sr.size() < data_offset) {
             if (err) {
               (*err) += "Unexpected file size or data offset.\n";
             }
@@ -4501,7 +4501,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
       TINY_DNG_ASSERT(len > 0, "Invalid length.");
       image->data.resize(len);
 
-      if (sr.size() > data_offset) {
+      if (sr.size() < data_offset) {
         if (err) {
           (*err) += "Unexpected file size or data offset.\n";
         }
