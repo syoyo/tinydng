@@ -643,12 +643,16 @@ int main(int argc, char** argv) {
   }
 
   {
-    std::string err;
+    std::string warn, err;
     std::vector<tinydng::DNGImage> images;
     std::vector<tinydng::FieldInfo> custom_fields;
 
     bool ret =
-        tinydng::LoadDNG(input_filename.c_str(), custom_fields, &images, &err);
+        tinydng::LoadDNG(input_filename.c_str(), custom_fields, &images, &warn, &err);
+
+    if (!warn.empty()) {
+      std::cout << "WARN: " << warn << std::endl;
+    }
 
     if (!err.empty()) {
       std::cout << err << std::endl;

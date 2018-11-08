@@ -201,10 +201,14 @@ main(int argc, char **argv)
 
   std::vector<tinydng::DNGImage> images;
   {
-    std::string err;
+    std::string warn, err;
     std::vector<tinydng::FieldInfo> custom_field_list;
     bool ret =
-        tinydng::LoadDNG(input_filename.c_str(), custom_field_list, &images, &err);
+        tinydng::LoadDNG(input_filename.c_str(), custom_field_list, &images, &warn, &err);
+
+    if (!warn.empty()) {
+      std::cout << "WARN: " << warn << std::endl;
+    }
 
     if (!err.empty()) {
       std::cout << err << std::endl;
@@ -263,8 +267,13 @@ main(int argc, char **argv)
       }
     }
 
-    int ret = SaveEXR(&(hdr.at(0)), images[image_idx].width, images[image_idx].height, spp, output_filename.c_str());
+    const char *exr_err;
+    int ret = SaveEXR(&(hdr.at(0)), images[image_idx].width, images[image_idx].height, spp, /* fp16 */0, output_filename.c_str(), &exr_err);
     if (ret != TINYEXR_SUCCESS) {
+      if (exr_err) {
+        std::cout << "ERR: " << exr_err << std::endl;
+        FreeEXRErrorMessage(exr_err);
+      }
       std::cout << "Save EXR failure: err code = " << ret << std::endl;
       return EXIT_FAILURE;
     }
@@ -286,8 +295,13 @@ main(int argc, char **argv)
       tmp[3 * i + 2] = hdr[i] * inv_scale;
     }
 
-    int ret = SaveEXR(&(tmp.at(0)), images[image_idx].width, images[image_idx].height, 3, output_filename.c_str());
+    const char *exr_err;
+    int ret = SaveEXR(&(tmp.at(0)), images[image_idx].width, images[image_idx].height, 3, /* fp16 */0, output_filename.c_str(), &exr_err);
     if (ret != TINYEXR_SUCCESS) {
+      if (exr_err) {
+        std::cout << "ERR: " << exr_err << std::endl;
+        FreeEXRErrorMessage(exr_err);
+      }
       std::cout << "Save EXR failure: err code = " << ret << std::endl;
       return EXIT_FAILURE;
     }

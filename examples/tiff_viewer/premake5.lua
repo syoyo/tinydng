@@ -28,7 +28,7 @@ solution "TiffViewerSolution"
    project "viwewer"
       kind "ConsoleApp"
       language "C++"
-      files { sources }
+      files { sources, "../../miniz.c" }
 
       includedirs { "./", "../../" }
       includedirs { "../viewer/" }
@@ -46,6 +46,9 @@ solution "TiffViewerSolution"
             }
       end
       if os.is("Linux") then
+         defines { "TINY_DNG_LOADER_ENABLE_ZIP" }
+         buildoptions { "-fsanitize=address" }
+         linkoptions { "-fsanitize=address" }
          files {
             "../viewer/OpenGLWindow/X11OpenGLWindow.cpp",
             "../viewer/OpenGLWindow/X11OpenGLWindows.h"

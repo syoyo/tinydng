@@ -103,7 +103,7 @@ int main(int argc, char **argv) {
     return EXIT_FAILURE;
   }
 
-  std::string err;
+  std::string warn, err;
   std::vector<tinydng::DNGImage> images;
   std::vector<tinydng::FieldInfo> custom_fields;
 
@@ -117,7 +117,11 @@ int main(int argc, char **argv) {
     custom_fields.push_back(field);
   }
 
-  bool ret = tinydng::LoadDNG(filename.c_str(), custom_fields, &images, &err);
+  bool ret = tinydng::LoadDNG(filename.c_str(), custom_fields, &images, &warn, &err);
+
+  if (!warn.empty()) {
+    std::cout << "warn: " << warn << std::endl;
+  }
 
   if (ret) {
     for (size_t i = 0; i < images.size(); i++) {

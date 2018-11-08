@@ -28,9 +28,13 @@ main(int argc, char **argv)
   std::vector<tinydng::DNGImage> images;
   {
     std::vector<tinydng::FieldInfo> custom_field_list;
-    std::string err;
+    std::string warn, err;
     bool ret =
-        tinydng::LoadDNG(input_filename.c_str(), custom_field_list, &images, &err);
+        tinydng::LoadDNG(input_filename.c_str(), custom_field_list, &images, &warn, &err);
+
+    if (!warn.empty()) {
+      std::cout << "WARN: " << warn << std::endl;
+    }
 
     if (!err.empty()) {
       std::cout << err << std::endl;
@@ -84,8 +88,13 @@ main(int argc, char **argv)
 
   const float *image_data = reinterpret_cast<const float *>(images[image_idx].data.data());
 
-  int ret = SaveEXR(image_data, images[image_idx].width, images[image_idx].height, images[image_idx].samples_per_pixel, output_filename.c_str());
+  const char *exr_err;
+  int ret = SaveEXR(image_data, images[image_idx].width, images[image_idx].height, images[image_idx].samples_per_pixel, /* fp16 */0, output_filename.c_str(), &exr_err);
   if (ret != TINYEXR_SUCCESS) {
+    if (exr_err) {
+      std::cerr << "Err: " << exr_err << std::endl;
+      FreeEXRErrorMessage(exr_err);
+    }
     std::cout << "Save EXR failure: err code = " << ret << std::endl;
     return EXIT_FAILURE;
   }
