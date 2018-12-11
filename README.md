@@ -153,6 +153,7 @@ Here is the list of great articles on how to decode RAW file and how to develop 
 * [ ] Decode Nikon RAW(NEF)
 * [ ] Improve Canon RAW decoding
 * [ ] Optimimze lossless JPEG decoding
+* [ ] Delayed load of tiled image.
 
 ## License
 

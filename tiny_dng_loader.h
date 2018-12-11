@@ -330,6 +330,9 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 #if __has_warning("-Wzero-as-null-pointer-constant")
 #pragma clang diagnostic ignored "-Wzero-as-null-pointer-constant"
 #endif
+#if __has_warning("-Wparentheses-equality")
+#pragma clang diagnostic ignored "-Wparentheses-equality"
+#endif
 #endif
 
 #ifdef _MSC_VER
@@ -1853,6 +1856,73 @@ static inline void swap8(int64_t* val) {
   dst[7] = src[0];
 }
 
+// For unaligned read
+
+static void cpy2(unsigned short *dst_val, const unsigned short *src_val) {
+  unsigned char *dst = reinterpret_cast<unsigned char *>(dst_val);
+  const unsigned char *src = reinterpret_cast<const unsigned char *>(src_val);
+
+  dst[0] = src[0];
+  dst[1] = src[1];
+}
+
+static void cpy2(short *dst_val, const short *src_val) {
+  unsigned char *dst = reinterpret_cast<unsigned char *>(dst_val);
+  const unsigned char *src = reinterpret_cast<const unsigned char *>(src_val);
+
+  dst[0] = src[0];
+  dst[1] = src[1];
+}
+
+static void cpy4(unsigned int *dst_val, const unsigned int *src_val) {
+  unsigned char *dst = reinterpret_cast<unsigned char *>(dst_val);
+  const unsigned char *src = reinterpret_cast<const unsigned char *>(src_val);
+
+  dst[0] = src[0];
+  dst[1] = src[1];
+  dst[2] = src[2];
+  dst[3] = src[3];
+}
+
+static void cpy4(int *dst_val, const int *src_val) {
+  unsigned char *dst = reinterpret_cast<unsigned char *>(dst_val);
+  const unsigned char *src = reinterpret_cast<const unsigned char *>(src_val);
+
+  dst[0] = src[0];
+  dst[1] = src[1];
+  dst[2] = src[2];
+  dst[3] = src[3];
+}
+
+static void cpy8(uint64_t *dst_val, const uint64_t *src_val) {
+  unsigned char *dst = reinterpret_cast<unsigned char *>(dst_val);
+  const unsigned char *src = reinterpret_cast<const unsigned char *>(src_val);
+
+  dst[0] = src[0];
+  dst[1] = src[1];
+  dst[2] = src[2];
+  dst[3] = src[3];
+  dst[4] = src[4];
+  dst[5] = src[5];
+  dst[6] = src[6];
+  dst[7] = src[7];
+}
+
+static void cpy8(int64_t *dst_val, const int64_t *src_val) {
+  unsigned char *dst = reinterpret_cast<unsigned char *>(dst_val);
+  const unsigned char *src = reinterpret_cast<const unsigned char *>(src_val);
+
+  dst[0] = src[0];
+  dst[1] = src[1];
+  dst[2] = src[2];
+  dst[3] = src[3];
+  dst[4] = src[4];
+  dst[5] = src[5];
+  dst[6] = src[6];
+  dst[7] = src[7];
+}
+
+
 ///
 /// Simple stream reader
 ///
@@ -1952,8 +2022,8 @@ class StreamReader {
       return false;
     }
 
-    unsigned short val =
-        *(reinterpret_cast<const unsigned short*>(&binary_[idx_]));
+    unsigned short val = 0;
+    cpy2(&val, reinterpret_cast<const unsigned short*>(&binary_[idx_]));
 
     if (swap_endian_) {
       swap2(&val);
@@ -1970,7 +2040,8 @@ class StreamReader {
       return false;
     }
 
-    short val = *(reinterpret_cast<const short*>(&binary_[idx_]));
+    short val = 0;
+    cpy2(&val, reinterpret_cast<const short*>(&binary_[idx_]));
 
     if (swap_endian_) {
       swap2(reinterpret_cast<unsigned short*>(&val));
@@ -1987,7 +2058,8 @@ class StreamReader {
       return false;
     }
 
-    unsigned int val = *(reinterpret_cast<const unsigned int*>(&binary_[idx_]));
+    unsigned int val = 0;
+    cpy4(&val, reinterpret_cast<const unsigned int*>(&binary_[idx_]));
 
     if (swap_endian_) {
       swap4(&val);
@@ -2004,7 +2076,8 @@ class StreamReader {
       return false;
     }
 
-    int val = *(reinterpret_cast<const int*>(&binary_[idx_]));
+    int val = 0;
+    cpy4(&val, reinterpret_cast<const int*>(&binary_[idx_]));
 
     if (swap_endian_) {
       swap4(&val);
@@ -2021,7 +2094,8 @@ class StreamReader {
       return false;
     }
 
-    uint64_t val = *(reinterpret_cast<const uint64_t*>(&binary_[idx_]));
+    uint64_t val = 0;
+    cpy8(&val, reinterpret_cast<const uint64_t*>(&binary_[idx_]));
 
     if (swap_endian_) {
       swap8(&val);
@@ -2038,7 +2112,8 @@ class StreamReader {
       return false;
     }
 
-    int64_t val = *(reinterpret_cast<const int64_t*>(&binary_[idx_]));
+    int64_t val = 0;
+    cpy8(&val, reinterpret_cast<const int64_t*>(&binary_[idx_]));
 
     if (swap_endian_) {
       swap8(&val);
@@ -2055,7 +2130,7 @@ class StreamReader {
       return false;
     }
 
-    float value;
+    float value = 0.0f;
     if (!read4(reinterpret_cast<int*>(&value))) {
       return false;
     }
@@ -2070,7 +2145,7 @@ class StreamReader {
       return false;
     }
 
-    double value;
+    double value = 0.0;
     if (!read8(reinterpret_cast<uint64_t*>(&value))) {
       return false;
     }
@@ -4007,8 +4082,12 @@ static int easyDecode(const unsigned char* compressed,
 
     TINY_DNG_DPRINTF("code = %d(swap_endian = %d)\n", code, swap_endian);
 
-    TINY_DNG_ASSERT(code <= dictionary.size(),
-                    "`code' must be less than or equal to dictionary size.");
+    //if (code >= dictionary.size()) {
+    //  std::cerr << "code = " << code << "dict.size = " << dictionary.size() << std::endl;
+    //}
+
+    //TINY_DNG_ASSERT(code <= dictionary.size(),
+    //                "`code' must be less than or equal to dictionary size.");
 
     if (code == EndOfInformation) {
       TINY_DNG_DPRINTF("EoI\n");
