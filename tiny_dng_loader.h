@@ -235,6 +235,14 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
              std::string* err);
 
 ///
+/// Check if a file is DNG(TIFF) or not.
+/// Extra message will be stored `msg`.
+///
+bool IsDNG(const char* filename, std::string* msg);
+
+
+
+///
 /// A variant of `LoadDNG` which loads DNG image from memory.
 /// Up to 2GB DNG data.
 ///
@@ -242,6 +250,12 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
                        std::vector<FieldInfo>& custom_fields,
                        std::vector<DNGImage>* images, std::string* warn,
                        std::string* err);
+
+///
+/// A variant of `IsDNG` which checks if a data is DNG image.
+///
+bool IsDNGFromMemory(const char* mem, unsigned int size,
+                       std::string* msg);
 
 }  // namespace tinydng
 
@@ -4688,6 +4702,74 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
   }
 
   return ret ? true : false;
+}
+
+bool IsDNGFromMemory(const char* mem, unsigned int size,
+                     std::string* msg) {
+  if ((mem == NULL) || (size < 32)) {
+    if (msg) {
+      (*msg) = "Invalid argument. argument is null or invalid.\n";
+    }
+    return false;
+  }
+
+  const unsigned short magic = *(reinterpret_cast<const unsigned short*>(mem));
+
+  if (magic == 0x4949) {
+    // might be TIFF(DNG).
+  } else if (magic == 0x4d4d) {
+    // might be TIFF(DNG, bigendian).
+    if (msg) {
+      (*msg) = "DNG is big endian";
+    }
+  } else {
+    return false;
+  }
+
+  return true;
+}
+
+bool IsDNG(const char* filename,
+           std::string* msg) {
+  std::stringstream ss;
+
+#ifdef _MSC_VER
+  FILE* fp;
+  fopen_s(&fp, filename, "rb");
+#else
+  FILE* fp = fopen(filename, "rb");
+#endif
+  if (!fp) {
+    ss << "File not found or cannot open file " << filename << std::endl;
+    if (msg) {
+      (*msg) = ss.str();
+    }
+    return false;
+  }
+
+  if (0 != fseek(fp, 0, SEEK_END)) {
+    if (msg) {
+      (*msg) = "Error seeking.\n";
+    }
+    return false;
+  }
+
+  size_t file_size = static_cast<size_t>(ftell(fp));
+
+  std::vector<unsigned char> whole_data;
+  {
+    whole_data.resize(file_size);
+    fseek(fp, 0, SEEK_SET);
+    size_t read_len = fread(whole_data.data(), 1, file_size, fp);
+    TINY_DNG_ASSERT(read_len == file_size, "Unexpected file size.");
+
+    fseek(fp, 0, SEEK_SET);
+  }
+  fclose(fp);
+
+  return IsDNGFromMemory(reinterpret_cast<const char*>(whole_data.data()),
+                         static_cast<unsigned int>(whole_data.size()),
+                         msg);
 }
 
 #ifdef __clang__
