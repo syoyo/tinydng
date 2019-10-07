@@ -4316,13 +4316,14 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         image->height = 0;
       } else {
         image->bits_per_sample = image->bits_per_sample_original;
+        //std::cout << "sample_per_pixel " << image->samples_per_pixel << "\n";
+        //std::cout << "width " << image->width << "\n";
+        //std::cout << "height " << image->height << "\n";
+        //std::cout << "bps " << image->bits_per_sample << "\n";
         TINY_DNG_ASSERT(
             ((image->width * image->height * image->bits_per_sample) % 8) == 0,
             "Image size must be multiple of 8.");
-        const size_t len =
-            static_cast<size_t>((image->samples_per_pixel * image->width *
-                                 image->height * image->bits_per_sample) /
-                                8);
+        const size_t len = size_t(image->samples_per_pixel) * size_t(image->width) * size_t(image->height) * size_t(image->bits_per_sample) / size_t(8);
         TINY_DNG_ASSERT(len > 0, "Unexpected length.");
         image->data.resize(len);
         if (!sr.seek_set(data_offset)) {

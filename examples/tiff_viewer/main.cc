@@ -281,13 +281,13 @@ static inline float fetch(const std::vector<float>& in, int x, int y, int w,
 
 void Update(RAWImage* raw, const UIParam& param) {
 
-  if (raw->framebuffer.size() != size_t(raw->width * raw->height * 3)) {
-    raw->framebuffer.resize(raw->width * raw->height * 3);
+  if (raw->framebuffer.size() != (size_t(raw->width) * size_t(raw->height) * 3)) {
+    raw->framebuffer.resize(size_t(raw->width) * size_t(raw->height) * 3);
   }
 
-  std::vector<float> buf(raw->width * raw->height * 3);
+  std::vector<float> buf(size_t(raw->width) * size_t(raw->height) * 3);
   if (raw->bits == 8) {
-    for (size_t i = 0; i < size_t(raw->width * raw->height); i++) {
+    for (size_t i = 0; i < size_t(raw->width) * size_t(raw->height); i++) {
       if (raw->image.samples_per_pixel == 1) {
         buf[3 * i + 0] = float(gamma_correct(raw->image.data[i]));
         buf[3 * i + 1] = float(gamma_correct(raw->image.data[i]));
@@ -325,6 +325,31 @@ void Update(RAWImage* raw, const UIParam& param) {
       } else {
         assert(0);
       }
+    }
+  } else if (raw->bits == 32) {
+    if (raw->image.sample_format == tinydng::SAMPLEFORMAT_IEEEFP) {
+      // No gamma correction.
+      const float *ptr = reinterpret_cast<const float *>(raw->image.data.data());
+      for (size_t i = 0; i < size_t(raw->width) * size_t(raw->height); i++) {
+        if (raw->image.samples_per_pixel == 1) {
+          buf[3 * i + 0] = ptr[i];
+          buf[3 * i + 1] = ptr[i];
+          buf[3 * i + 2] = ptr[i];
+        } else if (raw->image.samples_per_pixel == 3) {
+          buf[3 * i + 0] = ptr[3 * i + 0];
+          buf[3 * i + 1] = ptr[3 * i + 1];
+          buf[3 * i + 2] = ptr[3 * i + 2];
+        } else if (raw->image.samples_per_pixel == 4) {
+          buf[3 * i + 0] = ptr[4 * i + 0];
+          buf[3 * i + 1] = ptr[4 * i + 1];
+          buf[3 * i + 2] = ptr[4 * i + 2];
+        } else {
+          assert(0);
+        }
+      }
+    } else {
+      std::cerr << "32bit image with INT or UINT format are not supported.\n";
+      assert(0); // @TODO
     }
   } else {
     std::cerr << "Unsupported bits " << raw->bits << std::endl;
@@ -673,7 +698,7 @@ int main(int argc, char** argv) {
       if (largest_width < images[i].width) {
         largest = i;
         largest_width = images[i].width;
-      } 
+      }
     }
 
     std::cout << "largest = " << largest << std::endl;
