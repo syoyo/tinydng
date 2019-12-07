@@ -2,7 +2,7 @@
 
 [![Build Status](https://travis-ci.org/syoyo/tinydngloader.svg?branch=master)](https://travis-ci.org/syoyo/tinydngloader)
 
-Header-only simple&limited DNG(Digital NeGative, TIFF format + extension) loader in C++.
+Header-only simple&limited DNG(Digital NeGative, TIFF format + extension) loader in C++03.
 
 Currently TinyDNGLoader only supports lossless RAW DNG and limited lossless JPEG DNG.
 
@@ -37,7 +37,7 @@ TinyDNGLoader can also be used as an usuall TIFF RGB image loader(8bit, 16bit an
 
 Here is the list of supported DNG files.
 
-* [x] Sigma sd Quattro H 
+* [x] Sigma sd Quattro H
   * Uncompressed RGB 12bit image.
 * [x] iPhone DNG
 * [x] Black magic DNG
@@ -119,6 +119,7 @@ int main(int argc, char **argv) {
 
 ## Customizations
 
+* `TINY_DNG_LOADER_USE_THREAD` : Enable threaded loading(requires C++11)
 * `TINY_DNG_LOADER_ENABLE_ZIP` : Enable decoding AdobeDeflate image(Currently, tiled RGB image only).
   * `TINY_DNG_LOADER_USE_SYSTEM_ZLIB` : Use system's zlib library instead of miniz.
 * `TINY_DNG_NO_EXCEPTION` : disable C++ exception(abort the program when got an assertion)

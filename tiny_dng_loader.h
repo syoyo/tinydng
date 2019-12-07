@@ -240,8 +240,6 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 ///
 bool IsDNG(const char* filename, std::string* msg);
 
-
-
 ///
 /// A variant of `LoadDNG` which loads DNG image from memory.
 /// Up to 2GB DNG data.
@@ -254,8 +252,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 ///
 /// A variant of `IsDNG` which checks if a data is DNG image.
 ///
-bool IsDNGFromMemory(const char* mem, unsigned int size,
-                       std::string* msg);
+bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 
 }  // namespace tinydng
 
@@ -271,9 +268,20 @@ bool IsDNGFromMemory(const char* mem, unsigned int size,
 #include <map>
 #include <sstream>
 
+// #include <iostream> // dbg
+
 #ifdef TINY_DNG_LOADER_PROFILING
 // Requires C++11 feature
 #include <chrono>
+#endif
+
+#if __cplusplus > 199911L
+
+#ifdef TINY_DNG_LOADER_USE_THREAD
+#include <atomic>
+#include <thread>
+#endif
+
 #endif
 
 #ifdef __clang__
@@ -346,6 +354,9 @@ bool IsDNGFromMemory(const char* mem, unsigned int size,
 #endif
 #if __has_warning("-Wparentheses-equality")
 #pragma clang diagnostic ignored "-Wparentheses-equality"
+#endif
+#if __has_warning("-Wextra-semi-stmt")
+#pragma clang diagnostic ignored "-Wextra-semi-stmt"
 #endif
 #endif
 
@@ -1872,35 +1883,25 @@ static inline void swap8(int64_t* val) {
 
 // For unaligned read
 
-static void cpy2(unsigned short *dst_val, const unsigned short *src_val) {
-  unsigned char *dst = reinterpret_cast<unsigned char *>(dst_val);
-  const unsigned char *src = reinterpret_cast<const unsigned char *>(src_val);
+static void cpy2(unsigned short* dst_val, const unsigned short* src_val) {
+  unsigned char* dst = reinterpret_cast<unsigned char*>(dst_val);
+  const unsigned char* src = reinterpret_cast<const unsigned char*>(src_val);
 
   dst[0] = src[0];
   dst[1] = src[1];
 }
 
-static void cpy2(short *dst_val, const short *src_val) {
-  unsigned char *dst = reinterpret_cast<unsigned char *>(dst_val);
-  const unsigned char *src = reinterpret_cast<const unsigned char *>(src_val);
+static void cpy2(short* dst_val, const short* src_val) {
+  unsigned char* dst = reinterpret_cast<unsigned char*>(dst_val);
+  const unsigned char* src = reinterpret_cast<const unsigned char*>(src_val);
 
   dst[0] = src[0];
   dst[1] = src[1];
 }
 
-static void cpy4(unsigned int *dst_val, const unsigned int *src_val) {
-  unsigned char *dst = reinterpret_cast<unsigned char *>(dst_val);
-  const unsigned char *src = reinterpret_cast<const unsigned char *>(src_val);
-
-  dst[0] = src[0];
-  dst[1] = src[1];
-  dst[2] = src[2];
-  dst[3] = src[3];
-}
-
-static void cpy4(int *dst_val, const int *src_val) {
-  unsigned char *dst = reinterpret_cast<unsigned char *>(dst_val);
-  const unsigned char *src = reinterpret_cast<const unsigned char *>(src_val);
+static void cpy4(unsigned int* dst_val, const unsigned int* src_val) {
+  unsigned char* dst = reinterpret_cast<unsigned char*>(dst_val);
+  const unsigned char* src = reinterpret_cast<const unsigned char*>(src_val);
 
   dst[0] = src[0];
   dst[1] = src[1];
@@ -1908,23 +1909,19 @@ static void cpy4(int *dst_val, const int *src_val) {
   dst[3] = src[3];
 }
 
-static void cpy8(uint64_t *dst_val, const uint64_t *src_val) {
-  unsigned char *dst = reinterpret_cast<unsigned char *>(dst_val);
-  const unsigned char *src = reinterpret_cast<const unsigned char *>(src_val);
+static void cpy4(int* dst_val, const int* src_val) {
+  unsigned char* dst = reinterpret_cast<unsigned char*>(dst_val);
+  const unsigned char* src = reinterpret_cast<const unsigned char*>(src_val);
 
   dst[0] = src[0];
   dst[1] = src[1];
   dst[2] = src[2];
   dst[3] = src[3];
-  dst[4] = src[4];
-  dst[5] = src[5];
-  dst[6] = src[6];
-  dst[7] = src[7];
 }
 
-static void cpy8(int64_t *dst_val, const int64_t *src_val) {
-  unsigned char *dst = reinterpret_cast<unsigned char *>(dst_val);
-  const unsigned char *src = reinterpret_cast<const unsigned char *>(src_val);
+static void cpy8(uint64_t* dst_val, const uint64_t* src_val) {
+  unsigned char* dst = reinterpret_cast<unsigned char*>(dst_val);
+  const unsigned char* src = reinterpret_cast<const unsigned char*>(src_val);
 
   dst[0] = src[0];
   dst[1] = src[1];
@@ -1936,6 +1933,19 @@ static void cpy8(int64_t *dst_val, const int64_t *src_val) {
   dst[7] = src[7];
 }
 
+static void cpy8(int64_t* dst_val, const int64_t* src_val) {
+  unsigned char* dst = reinterpret_cast<unsigned char*>(dst_val);
+  const unsigned char* src = reinterpret_cast<const unsigned char*>(src_val);
+
+  dst[0] = src[0];
+  dst[1] = src[1];
+  dst[2] = src[2];
+  dst[3] = src[3];
+  dst[4] = src[4];
+  dst[5] = src[5];
+  dst[6] = src[6];
+  dst[7] = src[7];
+}
 
 ///
 /// Simple stream reader
@@ -2237,6 +2247,64 @@ class StreamReader {
     // never come here.
   }
 
+  //
+  // Returns a memory address. The begining of address is computed in
+  // relative(based on current seek pos). This function is useful when you just
+  // want to access the content in read-only mode.
+  //
+  // Note that the function does not change seek position after the call.
+  // This function does the bound check.
+  //
+  // @param[in] offset Extra byte offset. 0 = use current seek position.
+  // @param[in] length Byte length to map.
+  //
+  // @return nullptr when failed to map address.
+  //
+  const uint8_t* map_addr(size_t offset, const size_t length) {
+    if (length == 0) {
+      return NULL;
+    }
+
+    if ((idx_ + offset) > length_) {
+      return NULL;
+    }
+
+    if ((idx_ + offset + length) > length_) {
+      return NULL;
+    }
+
+    return &binary_[idx_ + offset];
+  }
+
+  //
+  // Returns a memory address. The begining of address is specified by
+  // absolute(ignores current seek pos). This function is useful when you just
+  // want to access the content in read-only mode.
+  //
+  // Note that the function does not change seek position after the call.
+  // This function does the bound check.
+  //
+  // @param[in] pos Absolute position in bytes.
+  // @param[in] length Byte length to map.
+  //
+  // @return nullptr when failed to map address.
+  //
+  const uint8_t* map_abs_addr(size_t pos, const size_t length) {
+    if (length == 0) {
+      return NULL;
+    }
+
+    if (pos > length_) {
+      return NULL;
+    }
+
+    if ((pos + length) > length_) {
+      return NULL;
+    }
+
+    return &binary_[pos];
+  }
+
   size_t tell() const { return idx_; }
 
   const uint8_t* data() const { return binary_; }
@@ -2492,20 +2560,15 @@ static bool DecompressZIP(unsigned char* dst,
 }
 
 // Assume T = uint8 or uint16
-static bool UnpredictImageU8(
-  std::vector<uint8_t> &dst,  // inout
-  int predictor,
-  const size_t width,
-  const size_t rows,
-  const size_t spp)
-{
+static bool UnpredictImageU8(std::vector<uint8_t>& dst,  // inout
+                             int predictor, const size_t width,
+                             const size_t rows, const size_t spp) {
   if (predictor == 1) {
     // no prediction shceme
     return true;
   } else if (predictor == 2) {
     // horizontal diff
-    const size_t stride =
-        size_t(width * spp);
+    const size_t stride = size_t(width * spp);
     for (size_t row = 0; row < rows; row++) {
       for (size_t c = 0; c < spp; c++) {
         unsigned int b = dst[row * stride + c];
@@ -2608,7 +2671,10 @@ static bool DecompressZIPedTile(const StreamReader& sr, unsigned char* dst_data,
         return false;
       }
 
-      if (!UnpredictImageU8(tmp_buf, image_info.predictor, size_t(image_info.tile_width), size_t(image_info.tile_length), size_t(image_info.samples_per_pixel))) {
+      if (!UnpredictImageU8(tmp_buf, image_info.predictor,
+                            size_t(image_info.tile_width),
+                            size_t(image_info.tile_length),
+                            size_t(image_info.samples_per_pixel))) {
         if (err) {
           (*err) += "Failed to unpredict ZIP-ed tile image.\n";
         }
@@ -2639,7 +2705,9 @@ static bool DecompressZIPedTile(const StreamReader& sr, unsigned char* dst_data,
         for (size_t x = 0; x < x_len; x++) {
           for (size_t c = 0; c < spp; c++) {
             dst_data[spp * (dst_offset + x) + c] =
-                tmp_buf[spp * (y * static_cast<size_t>(image_info.tile_width) + x) + c];
+                tmp_buf[spp * (y * static_cast<size_t>(image_info.tile_width) +
+                               x) +
+                        c];
           }
         }
       }
@@ -2683,7 +2751,10 @@ static bool DecompressZIPedTile(const StreamReader& sr, unsigned char* dst_data,
       return false;
     }
 
-    if (!UnpredictImageU8(tmp_buf, image_info.predictor, size_t(image_info.tile_width), size_t(image_info.tile_length), size_t(image_info.samples_per_pixel))) {
+    if (!UnpredictImageU8(tmp_buf, image_info.predictor,
+                          size_t(image_info.tile_width),
+                          size_t(image_info.tile_length),
+                          size_t(image_info.samples_per_pixel))) {
       if (err) {
         (*err) += "Failed to unpredict ZIP-ed tile image.\n";
       }
@@ -2691,7 +2762,6 @@ static bool DecompressZIPedTile(const StreamReader& sr, unsigned char* dst_data,
     }
 
     memcpy(dst_data, tmp_buf.data(), tmp_buf.size());
-
   }
 
 #ifdef TINY_DNG_LOADER_PROFILING
@@ -2755,7 +2825,7 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
         }
         return false;
       }
-      TINY_DNG_DPRINTF("offt = %d\n", offset);
+      TINY_DNG_DPRINTF("tile offt = %d\n", offset);
 
       int lj_width = 0;
       int lj_height = 0;
@@ -2852,10 +2922,11 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
 
     // Read offset to JPEG data location.
     // offset = static_cast<int>(Read4(fp, swap_endian));
-    // TINY_DNG_DPRINTF("offt = %d\n", offset);
 
     TINY_DNG_ASSERT(image_info.offset > 0, "Invalid JPEG data offset.");
     offset = static_cast<int>(image_info.offset);
+
+    TINY_DNG_DPRINTF("LJPEG offset %d\n", offset);
 
     int lj_width = 0;
     int lj_height = 0;
@@ -4096,11 +4167,12 @@ static int easyDecode(const unsigned char* compressed,
 
     TINY_DNG_DPRINTF("code = %d(swap_endian = %d)\n", code, swap_endian);
 
-    //if (code >= dictionary.size()) {
-    //  std::cerr << "code = " << code << "dict.size = " << dictionary.size() << std::endl;
+    // if (code >= dictionary.size()) {
+    //  std::cerr << "code = " << code << "dict.size = " << dictionary.size() <<
+    //  std::endl;
     //}
 
-    //TINY_DNG_ASSERT(code <= dictionary.size(),
+    // TINY_DNG_ASSERT(code <= dictionary.size(),
     //                "`code' must be less than or equal to dictionary size.");
 
     if (code == EndOfInformation) {
@@ -4306,6 +4378,8 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
     // std::cout << "tile_offt = \n" << image->tile_offset << std::endl;
     // std::cout << "data_offset = " << data_offset << std::endl;
 
+    TINY_DNG_DPRINTF("compression = %d\n", image->compression);
+
     if (image->compression == COMPRESSION_NONE) {  // no compression
 
       if (image->jpeg_byte_count > 0) {
@@ -4316,14 +4390,16 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         image->height = 0;
       } else {
         image->bits_per_sample = image->bits_per_sample_original;
-        //std::cout << "sample_per_pixel " << image->samples_per_pixel << "\n";
-        //std::cout << "width " << image->width << "\n";
-        //std::cout << "height " << image->height << "\n";
-        //std::cout << "bps " << image->bits_per_sample << "\n";
+        // std::cout << "sample_per_pixel " << image->samples_per_pixel << "\n";
+        // std::cout << "width " << image->width << "\n";
+        // std::cout << "height " << image->height << "\n";
+        // std::cout << "bps " << image->bits_per_sample << "\n";
         TINY_DNG_ASSERT(
             ((image->width * image->height * image->bits_per_sample) % 8) == 0,
             "Image size must be multiple of 8.");
-        const size_t len = size_t(image->samples_per_pixel) * size_t(image->width) * size_t(image->height) * size_t(image->bits_per_sample) / size_t(8);
+        const size_t len = size_t(image->samples_per_pixel) *
+                           size_t(image->width) * size_t(image->height) *
+                           size_t(image->bits_per_sample) / size_t(8);
         TINY_DNG_ASSERT(len > 0, "Unexpected length.");
         image->data.resize(len);
         if (!sr.seek_set(data_offset)) {
@@ -4350,6 +4426,102 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
       if ((image->strip_byte_counts.size() > 0) &&
           (image->strip_byte_counts.size() == image->strip_offsets.size())) {
+#if (__cplusplus > 199711L) && defined(TINY_DNG_LOADER_USE_THREAD)
+
+        const int num_strips = int(image->strip_byte_counts.size());
+
+        std::vector<std::thread> workers;
+        std::atomic<size_t> strip_count(0);
+
+        int num_threads = std::max(1, int(std::thread::hardware_concurrency()));
+        if (num_threads > num_strips) {
+          num_threads = num_strips;
+        }
+
+        bool failed = false;
+
+        const size_t dst_strip_len = static_cast<size_t>(
+            (image->samples_per_pixel * image->width * image->rows_per_strip *
+             image->bits_per_sample) /
+            8);
+
+        image->data.resize(dst_strip_len * size_t(num_strips));
+
+        for (int t = 0; t < num_threads; t++) {
+          workers.emplace_back(std::thread([&]() {
+            size_t k = 0;
+            while ((k = strip_count++) < size_t(num_strips)) {
+              std::vector<unsigned char> src(image->strip_byte_counts[k]);
+              size_t strip_offset = image->strip_offsets[k];
+              size_t strip_bytesize = image->strip_byte_counts[k];
+
+              std::vector<unsigned char> dst(dst_strip_len);
+
+              const uint8_t* src_addr =
+                  sr.map_abs_addr(strip_offset, strip_bytesize);
+
+              if (!src_addr) {
+                // TODO(syoyo): Atomic update
+                if (err) {
+                  (*err) +=
+                      "Cannot read strip_byte_counts bytes from a memory.\n";
+                }
+                failed = true;
+                break;
+              }
+
+              TINY_DNG_DPRINTF("easyDecode begin\n");
+              int decoded_bytes = lzw::easyDecode(
+                  src_addr, int(strip_bytesize),
+                  int(strip_bytesize) *
+                      image
+                          ->bits_per_sample /* FIXME(syoyo): Is this correct? */
+                  ,
+                  dst.data(), int(dst_strip_len), swap_endian);
+              TINY_DNG_DPRINTF("easyDecode done\n");
+              TINY_DNG_ASSERT(decoded_bytes > 0,
+                              "decoded_ bytes must be non-zero positive.");
+
+              if (image->predictor == 1) {
+                // no prediction shceme
+              } else if (image->predictor == 2) {
+                // horizontal diff
+
+                const size_t stride =
+                    size_t(image->width * image->samples_per_pixel);
+                const size_t spp = size_t(image->samples_per_pixel);
+                for (size_t row = 0; row < size_t(image->rows_per_strip);
+                     row++) {
+                  for (size_t c = 0; c < size_t(image->samples_per_pixel);
+                       c++) {
+                    unsigned int b = dst[row * stride + c];
+                    for (size_t col = 1; col < size_t(image->width); col++) {
+                      // value may overflow(wrap over), but its expected
+                      // behavior.
+                      b += dst[stride * row + spp * col + c];
+                      dst[stride * row + spp * col + c] =
+                          static_cast<unsigned char>(b & 0xFF);
+                    }
+                  }
+                }
+
+              } else if (image->predictor == 3) {
+                // fp horizontal diff.
+                TINY_DNG_ABORT("[TODO] FP horizontal differencing predictor.");
+              } else {
+                TINY_DNG_ABORT("Invalid predictor value.");
+              }
+
+              memcpy(&image->data[k * dst_strip_len], dst.data(),
+                     dst_strip_len);
+            }
+          }));
+        }
+
+        for (auto& t : workers) {
+          t.join();
+        }
+#else
         for (size_t k = 0; k < image->strip_byte_counts.size(); k++) {
           std::vector<unsigned char> src(image->strip_byte_counts[k]);
           if (!sr.seek_set(image->strip_offsets[k])) {
@@ -4411,6 +4583,8 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
           std::copy(dst.begin(), dst.end(), std::back_inserter(image->data));
         }
+
+#endif
       } else {
         TINY_DNG_ABORT("Unsupported image strip configuration.");
       }
@@ -4432,6 +4606,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
       if (IsLosslessJPEG(sr.data() + data_offset, static_cast<int>(data_len),
                          &lj_width, &lj_height, &lj_bits, &lj_components)) {
         // std::cout << "IFD " << i << " is LJPEG" << std::endl;
+        TINY_DNG_DPRINTF("IFD[%d] is LJPEG\n", int(i));
 
         TINY_DNG_ASSERT(
             lj_width > 0 && lj_height > 0 && lj_bits > 0 && lj_components > 0,
@@ -4705,8 +4880,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
   return ret ? true : false;
 }
 
-bool IsDNGFromMemory(const char* mem, unsigned int size,
-                     std::string* msg) {
+bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg) {
   if ((mem == NULL) || (size < 32)) {
     if (msg) {
       (*msg) = "Invalid argument. argument is null or invalid.\n";
@@ -4730,8 +4904,7 @@ bool IsDNGFromMemory(const char* mem, unsigned int size,
   return true;
 }
 
-bool IsDNG(const char* filename,
-           std::string* msg) {
+bool IsDNG(const char* filename, std::string* msg) {
   std::stringstream ss;
 
 #ifdef _MSC_VER
@@ -4769,8 +4942,7 @@ bool IsDNG(const char* filename,
   fclose(fp);
 
   return IsDNGFromMemory(reinterpret_cast<const char*>(whole_data.data()),
-                         static_cast<unsigned int>(whole_data.size()),
-                         msg);
+                         static_cast<unsigned int>(whole_data.size()), msg);
 }
 
 #ifdef __clang__
