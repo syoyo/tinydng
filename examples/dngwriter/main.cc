@@ -15,7 +15,7 @@ static void CreateImage(tinydngwriter::DNGImage *dng_image, const unsigned short
 {
     unsigned int image_width = 512;
     unsigned int image_height = 512;
-    dng_image->SetSubfileType(tinydngwriter::FILETYPE_REDUCEDIMAGE);
+    dng_image->SetSubfileType(false, false, false);
     dng_image->SetImageWidth(image_width);
     dng_image->SetImageLength(image_height);
     dng_image->SetRowsPerStrip(image_height);
@@ -23,6 +23,9 @@ static void CreateImage(tinydngwriter::DNGImage *dng_image, const unsigned short
     dng_image->SetPlanarConfig(tinydngwriter::PLANARCONFIG_CONTIG);
     dng_image->SetCompression(tinydngwriter::COMPRESSION_NONE);
     dng_image->SetPhotometric(tinydngwriter::PHOTOMETRIC_RGB);
+    dng_image->SetXResolution(1.0);
+    dng_image->SetYResolution(1.2);
+    dng_image->SetResolutionUnit(tinydngwriter::RESUNIT_NONE);
     dng_image->SetSamplesPerPixel(3);
 
     std::vector<unsigned short> buf;

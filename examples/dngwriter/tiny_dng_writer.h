@@ -32,6 +32,8 @@ THE SOFTWARE.
 #include <sstream>
 #include <vector>
 
+// TODO(syoyo): Sort tags when writing a DNG/TIFF.
+
 namespace tinydngwriter {
 
 typedef enum {
@@ -47,6 +49,10 @@ typedef enum {
   TIFFTAG_STRIP_BYTE_COUNTS = 279,
   TIFFTAG_PLANAR_CONFIG = 284,
   TIFFTAG_ORIENTATION = 274,
+
+  TIFFTAG_XRESOLUTION = 282,  // rational
+  TIFFTAG_YRESOLUTION = 283,  // rational
+  TIFFTAG_RESOLUTION_UNIT = 296,
 
   TIFFTAG_SAMPLEFORMAT = 339,
 
@@ -70,7 +76,7 @@ typedef enum {
   TIFFTAG_FORWARD_MATRIX2 = 50965
 } Tag;
 
-// SUBFILETYPE
+// SUBFILETYPE(bit field)
 static const int FILETYPE_REDUCEDIMAGE = 1;
 static const int FILETYPE_PAGE = 2;
 static const int FILETYPE_MASK = 4;
@@ -93,17 +99,23 @@ static const int ORIENTATION_RIGHTTOP = 6;
 static const int ORIENTATION_RIGHTBOT = 7;
 static const int ORIENTATION_LEFTBOT = 8;
 
+// RESOLUTIONUNIT
+static const int RESUNIT_NONE = 1;
+static const int RESUNIT_INCH = 2;
+static const int RESUNIT_CENTIMETER = 2;
+
 // PHOTOMETRIC
 // TODO(syoyo): more photometric types.
+static const int PHOTOMETRIC_WHITE_IS_ZERO = 0;  // For bilevel and grayscale
+static const int PHOTOMETRIC_BLACK_IS_ZERO = 2;  // For bilevel and grayscale
 static const int PHOTOMETRIC_RGB = 2;            // Default
 static const int PHOTOMETRIC_CFA = 32893;        // DNG ext
 static const int PHOTOMETRIC_LINEARRAW = 34892;  // DNG ext
 
 // Sample format
-static const int SAMPLEFORMAT_UINT = 1;          // Default
-static const int SAMPLEFORMAT_INT  = 2;
-static const int SAMPLEFORMAT_IEEEFP = 3;        // floating point
-
+static const int SAMPLEFORMAT_UINT = 1;  // Default
+static const int SAMPLEFORMAT_INT = 2;
+static const int SAMPLEFORMAT_IEEEFP = 3;  // floating point
 
 struct IFDTag {
   unsigned short tag;
@@ -121,7 +133,12 @@ class DNGImage {
   /// Optional: Explicitly specify endian swapness.
   bool SwapEndian(bool swap_endian);
 
-  bool SetSubfileType(unsigned int value);
+  ///
+  /// Default = 0
+  ///
+  bool SetSubfileType(bool reduced_image = false, bool page = false,
+                      bool mask = false);
+
   bool SetImageWidth(unsigned int value);
   bool SetImageLength(unsigned int value);
   bool SetRowsPerStrip(unsigned int value);
@@ -132,6 +149,9 @@ class DNGImage {
   bool SetOrientation(unsigned short value);
   bool SetCompression(unsigned short value);
   bool SetSampleFormat(unsigned short value);
+  bool SetXResolution(double value);
+  bool SetYResolution(double value);
+  bool SetResolutionUnit(const unsigned short value);
 
   bool SetActiveArea(const unsigned int values[4]);
 
@@ -198,7 +218,7 @@ class DNGWriter {
   std::vector<const DNGImage *> images_;
 };
 
-}  // namespace tinydng
+}  // namespace tinydngwriter
 
 #endif  // TINY_DNG_WRITER_H_
 
@@ -214,6 +234,7 @@ class DNGWriter {
 
 #include <algorithm>
 #include <cassert>
+#include <cfloat>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -288,6 +309,48 @@ typedef enum {
 } DataType;
 
 const static int kHeaderSize = 8;  // TIFF header size.
+
+// floating point to integer rational value conversion
+// https://stackoverflow.com/questions/51142275/exact-value-of-a-floating-point-number-as-a-rational
+//
+// Return error flag
+static int DoubleToRational(double x, double *numerator, double *denominator) {
+  if (!isfinite(x)) {
+    *numerator = *denominator = 0.0;
+    if (x > 0.0) *numerator = 1.0;
+    if (x < 0.0) *numerator = -1.0;
+    return 1;
+  }
+
+  // TIFF Rational use two uint32's, so reduce the bits
+  int bdigits = FLT_MANT_DIG;
+  int expo;
+  *denominator = 1.0;
+  *numerator = std::frexp(x, &expo) * std::pow(2.0, bdigits);
+  expo -= bdigits;
+  if (expo > 0) {
+    *numerator *= std::pow(2.0, expo);
+  } else if (expo < 0) {
+    expo = -expo;
+    if (expo >= FLT_MAX_EXP - 1) {
+      *numerator /= std::pow(2.0, expo - (FLT_MAX_EXP - 1));
+      *denominator *= std::pow(2.0, FLT_MAX_EXP - 1);
+      return fabs(*numerator) < 1.0;
+    } else {
+      *denominator *= std::pow(2.0, expo);
+    }
+  }
+
+  while ((std::fabs(*numerator) > 0.0) &&
+         (std::fabs(std::fmod(*numerator, 2)) <
+          std::numeric_limits<double>::epsilon()) &&
+         (std::fabs(std::fmod(*denominator, 2)) <
+          std::numeric_limits<double>::epsilon())) {
+    *numerator /= 2.0;
+    *denominator /= 2.0;
+  }
+  return 0;
+}
 
 static inline bool IsBigEndian() {
   unsigned int i = 0x01020304;
@@ -418,13 +481,23 @@ DNGImage::DNGImage()
   }
 }
 
-bool DNGImage::SetSubfileType(const unsigned int value) {
+bool DNGImage::SetSubfileType(bool reduced_image, bool page, bool mask) {
   unsigned int count = 1;
 
-  unsigned int data = value;
+  unsigned int bits = 0;
+  if (reduced_image) {
+    bits |= FILETYPE_REDUCEDIMAGE;
+  }
+  if (page) {
+    bits |= FILETYPE_PAGE;
+  }
+  if (mask) {
+    bits |= FILETYPE_MASK;
+  }
+
   bool ret = WriteTIFFTag(
       static_cast<unsigned short>(TIFFTAG_SUB_FILETYPE), TIFF_LONG, count,
-      reinterpret_cast<const unsigned char *>(&data), &ifd_tags_, &data_os_);
+      reinterpret_cast<const unsigned char *>(&bits), &ifd_tags_, &data_os_);
 
   if (!ret) {
     return false;
@@ -529,7 +602,9 @@ bool DNGImage::SetBitsPerSample(const unsigned short value) {
 }
 
 bool DNGImage::SetPhotometric(const unsigned short value) {
-  if ((value == PHOTOMETRIC_LINEARRAW) || (value == PHOTOMETRIC_RGB)) {
+  if ((value == PHOTOMETRIC_LINEARRAW) || (value == PHOTOMETRIC_RGB) ||
+      (value == PHOTOMETRIC_WHITE_IS_ZERO) ||
+      (value == PHOTOMETRIC_BLACK_IS_ZERO)) {
     // OK
   } else {
     return false;
@@ -597,8 +672,7 @@ bool DNGImage::SetCompression(const unsigned short value) {
 bool DNGImage::SetSampleFormat(const unsigned short value) {
   unsigned int count = 1;
 
-  if ((value == SAMPLEFORMAT_UINT) ||
-      (value == SAMPLEFORMAT_INT) ||
+  if ((value == SAMPLEFORMAT_UINT) || (value == SAMPLEFORMAT_INT) ||
       (value == SAMPLEFORMAT_IEEEFP)) {
     // OK
   } else {
@@ -653,11 +727,30 @@ bool DNGImage::SetBlackLevelRational(unsigned int num_samples,
     return false;
   }
 
+  std::vector<unsigned int> vs(num_samples * 2);
+  for (size_t i = 0; i < vs.size(); i++) {
+    double numerator, denominator;
+    if (DoubleToRational(values[i], &numerator, &denominator) != 0) {
+      // Couldn't represent fp value as integer rational value.
+      return false;
+    }
+
+    vs[2 * i + 0] = static_cast<unsigned int>(numerator);
+    vs[2 * i + 1] = static_cast<unsigned int>(denominator);
+
+    // TODO(syoyo): Swap rational value(8 bytes) when writing IFD tag, not here.
+    if (!IsBigEndian()) {
+      swap4(&vs[2 * i + 0]);
+      swap4(&vs[2 * i + 1]);
+    }
+  }
+
   unsigned int count = num_samples;
 
-  bool ret = WriteTIFFTag(
-      static_cast<unsigned short>(TIFFTAG_BLACK_LEVEL), TIFF_RATIONAL, count,
-      reinterpret_cast<const unsigned char *>(values), &ifd_tags_, &data_os_);
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_BLACK_LEVEL),
+                          TIFF_RATIONAL, count,
+                          reinterpret_cast<const unsigned char *>(vs.data()),
+                          &ifd_tags_, &data_os_);
 
   if (!ret) {
     return false;
@@ -677,11 +770,111 @@ bool DNGImage::SetWhiteLevelRational(unsigned int num_samples,
     return false;
   }
 
+  std::vector<unsigned int> vs(num_samples * 2);
+  for (size_t i = 0; i < vs.size(); i++) {
+    double numerator, denominator;
+    if (DoubleToRational(values[i], &numerator, &denominator) != 0) {
+      // Couldn't represent fp value as integer rational value.
+      return false;
+    }
+
+    vs[2 * i + 0] = static_cast<unsigned int>(numerator);
+    vs[2 * i + 1] = static_cast<unsigned int>(denominator);
+
+    // TODO(syoyo): Swap rational value(8 bytes) when writing IFD tag, not here.
+    if (!IsBigEndian()) {
+      swap4(&vs[2 * i + 0]);
+      swap4(&vs[2 * i + 1]);
+    }
+  }
+
   unsigned int count = num_samples;
 
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_WHITE_LEVEL),
+                          TIFF_RATIONAL, count,
+                          reinterpret_cast<const unsigned char *>(vs.data()),
+                          &ifd_tags_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGImage::SetXResolution(const double value) {
+  double numerator, denominator;
+  if (DoubleToRational(value, &numerator, &denominator) != 0) {
+    // Couldn't represent fp value as integer rational value.
+    return false;
+  }
+
+  unsigned int data[2];
+  data[0] = static_cast<unsigned int>(numerator);
+  data[1] = static_cast<unsigned int>(denominator);
+
+  // TODO(syoyo): Swap rational value(8 bytes) when writing IFD tag, not here.
+  if (!IsBigEndian()) {
+    swap4(&data[0]);
+    swap4(&data[1]);
+  }
+
   bool ret = WriteTIFFTag(
-      static_cast<unsigned short>(TIFFTAG_WHITE_LEVEL), TIFF_RATIONAL, count,
-      reinterpret_cast<const unsigned char *>(values), &ifd_tags_, &data_os_);
+      static_cast<unsigned short>(TIFFTAG_XRESOLUTION), TIFF_RATIONAL, 1,
+      reinterpret_cast<const unsigned char *>(data), &ifd_tags_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGImage::SetYResolution(const double value) {
+  double numerator, denominator;
+  if (DoubleToRational(value, &numerator, &denominator) != 0) {
+    // Couldn't represent fp value as integer rational value.
+    return false;
+  }
+
+  unsigned int data[2];
+  data[0] = static_cast<unsigned int>(numerator);
+  data[1] = static_cast<unsigned int>(denominator);
+
+  // TODO(syoyo): Swap rational value(8 bytes) when writing IFD tag, not here.
+  if (!IsBigEndian()) {
+    swap4(&data[0]);
+    swap4(&data[1]);
+  }
+
+  bool ret = WriteTIFFTag(
+      static_cast<unsigned short>(TIFFTAG_YRESOLUTION), TIFF_RATIONAL, 1,
+      reinterpret_cast<const unsigned char *>(data), &ifd_tags_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGImage::SetResolutionUnit(const unsigned short value) {
+  unsigned int count = 1;
+
+  if ((value == RESUNIT_NONE) || (value == RESUNIT_INCH) ||
+      (value == RESUNIT_CENTIMETER)) {
+    // OK
+  } else {
+    return false;
+  }
+
+  const unsigned short data = value;
+  bool ret = WriteTIFFTag(
+      static_cast<unsigned short>(TIFFTAG_RESOLUTION_UNIT), TIFF_SHORT, count,
+      reinterpret_cast<const unsigned char *>(&data), &ifd_tags_, &data_os_);
 
   if (!ret) {
     return false;
@@ -928,7 +1121,8 @@ bool DNGWriter::WriteToFile(const char *filename, std::string *err) const {
   // std::cout << "swap endian " << swap_endian_ << std::endl;
 
   // 3. Write header
-  ofs.write(header.str().c_str(), static_cast<std::streamsize>(header.str().length()));
+  ofs.write(header.str().c_str(),
+            static_cast<std::streamsize>(header.str().length()));
 
   // 4. Write image and meta data
   for (size_t i = 0; i < images_.size(); i++) {
@@ -940,7 +1134,6 @@ bool DNGWriter::WriteToFile(const char *filename, std::string *err) const {
 
   // 5. Write IFD entries;
   for (size_t i = 0; i < images_.size(); i++) {
-
     bool ok = images_[i]->WriteIFDToStream(
         static_cast<unsigned int>(offset_table[i]), &ofs, err);
     if (!ok) {
@@ -969,6 +1162,6 @@ bool DNGWriter::WriteToFile(const char *filename, std::string *err) const {
 #pragma clang diagnostic pop
 #endif
 
-}  // namespace tinydng
+}  // namespace tinydngwriter
 
 #endif  // TINY_DNG_WRITER_IMPLEMENTATION
