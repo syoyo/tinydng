@@ -32,8 +32,6 @@ THE SOFTWARE.
 #include <sstream>
 #include <vector>
 
-// TODO(syoyo): Sort tags when writing a DNG/TIFF.
-
 namespace tinydngwriter {
 
 typedef enum {
@@ -130,8 +128,11 @@ class DNGImage {
   DNGImage();
   ~DNGImage() {}
 
-  /// Optional: Explicitly specify endian swapness.
-  bool SwapEndian(bool swap_endian);
+  ///
+  /// Optional: Explicitly specify endian.
+  /// Must be called before calling other Set methods.
+  ///
+  void SetBigEndian(bool big_endian);
 
   ///
   /// Default = 0
@@ -178,8 +179,8 @@ class DNGImage {
 
  private:
   std::ostringstream data_os_;
-  bool is_host_big_endian_;
   bool swap_endian_;
+  bool dng_big_endian_;
   unsigned short num_fields_;
   unsigned int samples_per_pixels_;
 
@@ -188,11 +189,9 @@ class DNGImage {
 
 class DNGWriter {
  public:
-  DNGWriter();
+  // TODO(syoyo): Use same endian setting with DNGImage.
+  DNGWriter(bool big_endian);
   ~DNGWriter() {}
-
-  /// Optional: Explicitly specify endian swapness.
-  bool SwapEndian(bool swap_endian);
 
   ///
   /// Add DNGImage.
@@ -211,9 +210,8 @@ class DNGWriter {
   bool WriteToFile(const char *filename, std::string *err) const;
 
  private:
-  bool is_host_big_endian_;
   bool swap_endian_;
-  char pad[6];
+  bool dng_big_endian_;  // Endianness of DNG file.
 
   std::vector<const DNGImage *> images_;
 };
@@ -457,28 +455,33 @@ static bool WriteTIFFTag(const unsigned short tag, const unsigned short type,
   return true;
 }
 
-static bool WriteTIFFVersionHeader(std::ostringstream *out) {
+static bool WriteTIFFVersionHeader(std::ostringstream *out, bool big_endian) {
   // TODO(syoyo): Support BigTIFF?
 
   // 4d 4d = Big endian. 49 49 = Little endian.
-  Write1(0x4d, out);
-  Write1(0x4d, out);
-  Write1(0x0, out);
-  Write1(0x2a, out);  // Tiff version ID
+  if (big_endian) {
+    Write1(0x4d, out);
+    Write1(0x4d, out);
+    Write1(0x0, out);
+    Write1(0x2a, out);  // Tiff version ID
+  } else {
+    Write1(0x49, out);
+    Write1(0x49, out);
+    Write1(0x2a, out);  // Tiff version ID
+    Write1(0x0, out);
+  }
 
   return true;
 }
 
 DNGImage::DNGImage()
-    : is_host_big_endian_(false),
-      swap_endian_(true),
-      num_fields_(0),
-      samples_per_pixels_(0) {
-  // Data is stored in big endian, thus no byteswapping required for big endian
-  // machine.
-  if (IsBigEndian()) {
-    swap_endian_ = false;
-  }
+    : dng_big_endian_(true), num_fields_(0), samples_per_pixels_(0) {
+  swap_endian_ = (IsBigEndian() != dng_big_endian_);
+}
+
+void DNGImage::SetBigEndian(bool big_endian) {
+  dng_big_endian_ = big_endian;
+  swap_endian_ = (IsBigEndian() != dng_big_endian_);
 }
 
 bool DNGImage::SetSubfileType(bool reduced_image, bool page, bool mask) {
@@ -739,7 +742,7 @@ bool DNGImage::SetBlackLevelRational(unsigned int num_samples,
     vs[2 * i + 1] = static_cast<unsigned int>(denominator);
 
     // TODO(syoyo): Swap rational value(8 bytes) when writing IFD tag, not here.
-    if (!IsBigEndian()) {
+    if (swap_endian_) {
       swap4(&vs[2 * i + 0]);
       swap4(&vs[2 * i + 1]);
     }
@@ -782,7 +785,7 @@ bool DNGImage::SetWhiteLevelRational(unsigned int num_samples,
     vs[2 * i + 1] = static_cast<unsigned int>(denominator);
 
     // TODO(syoyo): Swap rational value(8 bytes) when writing IFD tag, not here.
-    if (!IsBigEndian()) {
+    if (swap_endian_) {
       swap4(&vs[2 * i + 0]);
       swap4(&vs[2 * i + 1]);
     }
@@ -815,7 +818,7 @@ bool DNGImage::SetXResolution(const double value) {
   data[1] = static_cast<unsigned int>(denominator);
 
   // TODO(syoyo): Swap rational value(8 bytes) when writing IFD tag, not here.
-  if (!IsBigEndian()) {
+  if (swap_endian_) {
     swap4(&data[0]);
     swap4(&data[1]);
   }
@@ -844,7 +847,7 @@ bool DNGImage::SetYResolution(const double value) {
   data[1] = static_cast<unsigned int>(denominator);
 
   // TODO(syoyo): Swap rational value(8 bytes) when writing IFD tag, not here.
-  if (!IsBigEndian()) {
+  if (swap_endian_) {
     swap4(&data[0]);
     swap4(&data[1]);
   }
@@ -1067,12 +1070,8 @@ bool DNGImage::WriteIFDToStream(const unsigned int data_base_offset,
 
 // -------------------------------------------
 
-DNGWriter::DNGWriter() : is_host_big_endian_(false), swap_endian_(true) {
-  // Data is stored in big endian, thus no byteswapping required for big endian
-  // machine.
-  if (IsBigEndian()) {
-    swap_endian_ = false;
-  }
+DNGWriter::DNGWriter(bool big_endian) : dng_big_endian_(big_endian) {
+  swap_endian_ = (IsBigEndian() != dng_big_endian_);
 }
 
 bool DNGWriter::WriteToFile(const char *filename, std::string *err) const {
@@ -1087,7 +1086,7 @@ bool DNGWriter::WriteToFile(const char *filename, std::string *err) const {
   }
 
   std::ostringstream header;
-  bool ret = WriteTIFFVersionHeader(&header);
+  bool ret = WriteTIFFVersionHeader(&header, dng_big_endian_);
   if (!ret) {
     return false;
   }

@@ -1,2 +1,2 @@
 all:
-	clang++ -fsanitize=address -Weverything -Werror -Wno-variadic-macros -I. main.cc
+	clang++ -fsanitize=address -Weverything -Werror -Wno-variadic-macros -Wno-padded -I. main.cc
