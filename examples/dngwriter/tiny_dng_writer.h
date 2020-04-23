@@ -1,11 +1,11 @@
 //
-// TinyDNGWriter, single header only DNG writer.
+// TinyDNGWriter, single header only DNG writer in C++11.
 //
 
 /*
 The MIT License (MIT)
 
-Copyright (c) 2016 - 2017 Syoyo Fujita.
+Copyright (c) 2016 - 2020 Syoyo Fujita.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -105,7 +105,7 @@ static const int RESUNIT_CENTIMETER = 2;
 // PHOTOMETRIC
 // TODO(syoyo): more photometric types.
 static const int PHOTOMETRIC_WHITE_IS_ZERO = 0;  // For bilevel and grayscale
-static const int PHOTOMETRIC_BLACK_IS_ZERO = 2;  // For bilevel and grayscale
+static const int PHOTOMETRIC_BLACK_IS_ZERO = 1;  // For bilevel and grayscale
 static const int PHOTOMETRIC_RGB = 2;            // Default
 static const int PHOTOMETRIC_CFA = 32893;        // DNG ext
 static const int PHOTOMETRIC_LINEARRAW = 34892;  // DNG ext
@@ -183,6 +183,7 @@ class DNGImage {
   bool dng_big_endian_;
   unsigned short num_fields_;
   unsigned int samples_per_pixels_;
+  unsigned int bits_per_sample_;
 
   std::vector<IFDTag> ifd_tags_;
 };
@@ -238,6 +239,7 @@ class DNGWriter {
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <cstdint>
 
 namespace tinydngwriter {
 
@@ -377,6 +379,21 @@ static void swap4(unsigned int *val) {
   dst[3] = src[0];
 }
 
+static void swap8(uint64_t *val) {
+  uint64_t tmp = *val;
+  unsigned char *dst = reinterpret_cast<unsigned char *>(val);
+  unsigned char *src = reinterpret_cast<unsigned char *>(&tmp);
+
+  dst[0] = src[7];
+  dst[1] = src[6];
+  dst[2] = src[5];
+  dst[3] = src[4];
+  dst[4] = src[3];
+  dst[5] = src[2];
+  dst[6] = src[1];
+  dst[7] = src[0];
+}
+
 static void Write1(const unsigned char c, std::ostringstream *out) {
   unsigned char value = c;
   out->write(reinterpret_cast<const char *>(&value), 1);
@@ -475,7 +492,10 @@ static bool WriteTIFFVersionHeader(std::ostringstream *out, bool big_endian) {
 }
 
 DNGImage::DNGImage()
-    : dng_big_endian_(true), num_fields_(0), samples_per_pixels_(0) {
+    : dng_big_endian_(true),
+      num_fields_(0),
+      samples_per_pixels_(0),
+      bits_per_sample_(0) {
   swap_endian_ = (IsBigEndian() != dng_big_endian_);
 }
 
@@ -599,6 +619,8 @@ bool DNGImage::SetBitsPerSample(const unsigned short value) {
   if (!ret) {
     return false;
   }
+
+  bits_per_sample_ = value;  // Store BPS for later use.
 
   num_fields_++;
   return true;
@@ -981,8 +1003,58 @@ bool DNGImage::WriteDataToStream(std::ostream *ofs, std::string *err) const {
     return false;
   }
 
-  ofs->write(data_os_.str().c_str(),
-             static_cast<std::streamsize>(data_os_.str().length()));
+  if ((bits_per_sample_ == 0) || (samples_per_pixels_ == 0)) {
+    if (err) {
+      (*err) += "Both BitsPerSample and SamplesPerPixels must be set.\n";
+    }
+    return false;
+  }
+
+  // FIXME(syoyo): Assume all channels use sample bps
+
+  // We also need to swap endian for pixel data.
+  if (swap_endian_) {
+    if (bits_per_sample_ == 16) {
+      std::vector<uint16_t> data(data_os_.str().length() / sizeof(uint16_t));
+      memcpy(data.data(), data_os_.str().data(),
+             data.size() * sizeof(uint16_t));
+
+      for (size_t i = 0; i < data.size(); i++) {
+        swap2(&data[i]);
+      }
+      ofs->write(reinterpret_cast<const char *>(data.data()),
+                 static_cast<std::streamsize>(data.size() * sizeof(uint16_t)));
+
+    } else if (bits_per_sample_ == 32) {
+      std::vector<uint32_t> data(data_os_.str().length() / sizeof(uint32_t));
+      memcpy(data.data(), data_os_.str().data(),
+             data.size() * sizeof(uint32_t));
+
+      for (size_t i = 0; i < data.size(); i++) {
+        swap4(&data[i]);
+      }
+      ofs->write(reinterpret_cast<const char *>(data.data()),
+                 static_cast<std::streamsize>(data.size() * sizeof(uint32_t)));
+
+    } else if (bits_per_sample_ == 64) {
+      std::vector<uint64_t> data(data_os_.str().length() / sizeof(uint64_t));
+      memcpy(data.data(), data_os_.str().data(),
+             data.size() * sizeof(uint64_t));
+
+      for (size_t i = 0; i < data.size(); i++) {
+        swap8(&data[i]);
+      }
+      ofs->write(reinterpret_cast<const char *>(data.data()),
+                 static_cast<std::streamsize>(data.size() * sizeof(uint64_t)));
+    } else {
+      // TODO(syoyo): How we should do for bps 10, 12, etc?
+      ofs->write(data_os_.str().c_str(),
+                 static_cast<std::streamsize>(data_os_.str().length()));
+    }
+  } else {
+    ofs->write(data_os_.str().c_str(),
+               static_cast<std::streamsize>(data_os_.str().length()));
+  }
 
   return true;
 }

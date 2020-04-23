@@ -87,6 +87,11 @@ int main(int argc, char **argv) {
 
   // DNG write test
   bool big_endian = false;
+
+  if (argc > 2) {
+    big_endian = bool(atoi(argv[2]));
+  }
+
   {
     tinydngwriter::DNGImage dng_image0;
     dng_image0.SetBigEndian(big_endian);
