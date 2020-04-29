@@ -240,6 +240,7 @@ class DNGWriter {
 #include <iostream>
 #include <sstream>
 #include <cstdint>
+#include <cmath>
 
 namespace tinydngwriter {
 
@@ -315,7 +316,7 @@ const static int kHeaderSize = 8;  // TIFF header size.
 //
 // Return error flag
 static int DoubleToRational(double x, double *numerator, double *denominator) {
-  if (!isfinite(x)) {
+  if (!std::isfinite(x)) {
     *numerator = *denominator = 0.0;
     if (x > 0.0) *numerator = 1.0;
     if (x < 0.0) *numerator = -1.0;
