@@ -27,6 +27,7 @@ static void CreateImage(tinydngwriter::DNGImage *dng_image,
   dng_image->SetYResolution(1.2); // fractioal test
   dng_image->SetResolutionUnit(tinydngwriter::RESUNIT_NONE);
   dng_image->SetSamplesPerPixel(3);
+  dng_image->SetImageDescription("bora");
 
   std::vector<unsigned short> buf;
   buf.resize(image_width * image_height * 3);

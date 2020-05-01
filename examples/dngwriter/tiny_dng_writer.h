@@ -41,6 +41,7 @@ typedef enum {
   TIFFTAG_BITS_PER_SAMPLE = 258,
   TIFFTAG_COMPRESSION = 259,
   TIFFTAG_PHOTOMETRIC = 262,
+  TIFFTAG_IMAGEDESCRIPTION = 270,
   TIFFTAG_STRIP_OFFSET = 273,
   TIFFTAG_SAMPLES_PER_PIXEL = 277,
   TIFFTAG_ROWS_PER_STRIP = 278,
@@ -153,6 +154,8 @@ class DNGImage {
   bool SetXResolution(double value);
   bool SetYResolution(double value);
   bool SetResolutionUnit(const unsigned short value);
+
+  bool SetImageDescription(const std::string &ascii);
 
   bool SetActiveArea(const unsigned int values[4]);
 
@@ -901,6 +904,31 @@ bool DNGImage::SetResolutionUnit(const unsigned short value) {
   bool ret = WriteTIFFTag(
       static_cast<unsigned short>(TIFFTAG_RESOLUTION_UNIT), TIFF_SHORT, count,
       reinterpret_cast<const unsigned char *>(&data), &ifd_tags_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGImage::SetImageDescription(const std::string &ascii) {
+  unsigned int count = static_cast<unsigned int>(ascii.length() + 1); // +1 for '\0'
+
+  if (count < 2) {
+    // empty string
+    return false;
+  }
+
+  if (count > (1024*1024)) {
+    // too large
+    return false;
+  }
+
+  bool ret = WriteTIFFTag(
+      static_cast<unsigned short>(TIFFTAG_IMAGEDESCRIPTION), TIFF_ASCII, count,
+      reinterpret_cast<const unsigned char *>(ascii.data()), &ifd_tags_, &data_os_);
 
   if (!ret) {
     return false;
