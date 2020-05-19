@@ -258,6 +258,10 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 
 #ifdef TINY_DNG_LOADER_IMPLEMENTATION
 
+#if defined(_WIN32)
+#include <windows.h> // wchar apis
+#endif
+
 #include <stdint.h>  // for lj92
 #include <cassert>
 #include <cmath>
@@ -2664,7 +2668,7 @@ static bool DecompressZIPedTile(const StreamReader& sr, unsigned char* dst_data,
       tmp_buf.resize(uncompressed_size);
 
       if (!DecompressZIP(tmp_buf.data(), &uncompressed_size, sr.data() + offset,
-                         input_len, err)) {
+                         static_cast<unsigned long>(input_len), err)) {
         if (err) {
           (*err) += "Failed to decode ZIP data.\n";
         }
@@ -2744,7 +2748,7 @@ static bool DecompressZIPedTile(const StreamReader& sr, unsigned char* dst_data,
     tmp_buf.resize(uncompressed_size);
 
     if (!DecompressZIP(tmp_buf.data(), &uncompressed_size, sr.data() + offset,
-                       input_len, err)) {
+                       static_cast<unsigned long>(input_len), err)) {
       if (err) {
         (*err) += "Failed to decode non-tiled ZIP data.\n";
       }
@@ -4250,6 +4254,22 @@ static int easyDecode(const unsigned char* compressed,
 
 }  // namespace lzw
 
+#if defined(_WIN32)
+namespace {
+
+static inline std::wstring UTF8ToWchar(const std::string &str) {
+  int wstr_size =
+      MultiByteToWideChar(CP_UTF8, 0, str.data(), int(str.size()), nullptr, 0);
+  TINY_DNG_ASSERT(wstr_size >= 0, "wstr_size must be positive");
+  std::wstring wstr(size_t(wstr_size), 0);
+  MultiByteToWideChar(CP_UTF8, 0, str.data(), int(str.size()), &wstr[0],
+                      int(wstr.size()));
+  return wstr;
+}
+
+} // namespace local
+#endif
+
 bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
              std::vector<DNGImage>* images, std::string* warn,
              std::string* err) {
@@ -4258,12 +4278,26 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 
   TINY_DNG_ASSERT(images, "Invalid images pointer.");
 
-#ifdef _MSC_VER
   FILE* fp;
-  fopen_s(&fp, filename, "rb");
+#if defined(_WIN32)
+
+#if defined(_MSC_VER) || defined(__MINGW32__) // MSVC, MinGW gcc or clang
+  errno_t errcode = _wfopen_s(&fp, UTF8ToWchar(filename).c_str(), L"rb");
+  if (errcode != 0) {
+    if (err) {
+      (*err) += "Error opening file: " + std::string(filename) + "(errno " + std::to_string(errcode) + ")\n";
+    }
+    return false;
+  }
 #else
-  FILE* fp = fopen(filename, "rb");
+  // Unknown compiler
+  fp = fopen(filename, "rb");
 #endif
+
+#else
+  fp = fopen(filename, "rb");
+#endif
+
   if (!fp) {
     ss << "File not found or cannot open file " << filename << std::endl;
     if (err) {
@@ -4907,11 +4941,24 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg) {
 bool IsDNG(const char* filename, std::string* msg) {
   std::stringstream ss;
 
-#ifdef _MSC_VER
-  FILE* fp;
-  fopen_s(&fp, filename, "rb");
+  FILE *fp = nullptr;
+#if defined(_WIN32)
+
+#if defined(_MSC_VER) || defined(__MINGW32__) // MSVC, MinGW gcc or clang
+  errno_t errcode = _wfopen_s(&fp, UTF8ToWchar(filename).c_str(), L"rb");
+  if (errcode != 0) {
+    if (msg) {
+      (*msg) += "Error opening file: " + std::string(filename) + "(errno " + std::to_string(errcode) + ")\n";
+    }
+    return false;
+  }
 #else
-  FILE* fp = fopen(filename, "rb");
+  // Unknown compiler
+  fp = fopen(filename, "rb");
+#endif
+
+#else
+  fp = fopen(filename, "rb");
 #endif
   if (!fp) {
     ss << "File not found or cannot open file " << filename << std::endl;
