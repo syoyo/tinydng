@@ -259,10 +259,11 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 #ifdef TINY_DNG_LOADER_IMPLEMENTATION
 
 #if defined(_WIN32)
-#include <windows.h> // wchar apis
+#include <windows.h>  // wchar apis
 #endif
 
 #include <stdint.h>  // for lj92
+
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -4257,7 +4258,7 @@ static int easyDecode(const unsigned char* compressed,
 #if defined(_WIN32)
 namespace {
 
-static inline std::wstring UTF8ToWchar(const std::string &str) {
+static inline std::wstring UTF8ToWchar(const std::string& str) {
   int wstr_size =
       MultiByteToWideChar(CP_UTF8, 0, str.data(), int(str.size()), nullptr, 0);
   TINY_DNG_ASSERT(wstr_size >= 0, "wstr_size must be positive");
@@ -4267,7 +4268,7 @@ static inline std::wstring UTF8ToWchar(const std::string &str) {
   return wstr;
 }
 
-} // namespace local
+}  // namespace
 #endif
 
 bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
@@ -4281,11 +4282,12 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
   FILE* fp;
 #if defined(_WIN32)
 
-#if defined(_MSC_VER) || defined(__MINGW32__) // MSVC, MinGW gcc or clang
+#if defined(_MSC_VER) || defined(__MINGW32__)  // MSVC, MinGW gcc or clang
   errno_t errcode = _wfopen_s(&fp, UTF8ToWchar(filename).c_str(), L"rb");
   if (errcode != 0) {
     if (err) {
-      (*err) += "Error opening file: " + std::string(filename) + "(errno " + std::to_string(errcode) + ")\n";
+      (*err) += "Error opening file: " + std::string(filename) + "(errno " +
+                std::to_string(errcode) + ")\n";
     }
     return false;
   }
@@ -4941,14 +4943,15 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg) {
 bool IsDNG(const char* filename, std::string* msg) {
   std::stringstream ss;
 
-  FILE *fp = nullptr;
+  FILE* fp = nullptr;
 #if defined(_WIN32)
 
-#if defined(_MSC_VER) || defined(__MINGW32__) // MSVC, MinGW gcc or clang
+#if defined(_MSC_VER) || defined(__MINGW32__)  // MSVC, MinGW gcc or clang
   errno_t errcode = _wfopen_s(&fp, UTF8ToWchar(filename).c_str(), L"rb");
   if (errcode != 0) {
     if (msg) {
-      (*msg) += "Error opening file: " + std::string(filename) + "(errno " + std::to_string(errcode) + ")\n";
+      (*msg) += "Error opening file: " + std::string(filename) + "(errno " +
+                std::to_string(errcode) + ")\n";
     }
     return false;
   }
