@@ -11,7 +11,7 @@
 
 #include "tiny_dng_writer.h"
 
-static void CreateImage(tinydngwriter::DNGImage *dng_image,
+static void CreateRGBImage(tinydngwriter::DNGImage *dng_image,
                         const unsigned short basecol) {
   unsigned int image_width = 512;
   unsigned int image_height = 512;
@@ -19,14 +19,15 @@ static void CreateImage(tinydngwriter::DNGImage *dng_image,
   dng_image->SetImageWidth(image_width);
   dng_image->SetImageLength(image_height);
   dng_image->SetRowsPerStrip(image_height);
-  dng_image->SetBitsPerSample(16);
+  dng_image->SetSamplesPerPixel(3);
+  uint16_t bps[3] = {16, 16, 16};
+  dng_image->SetBitsPerSample(3, bps);
   dng_image->SetPlanarConfig(tinydngwriter::PLANARCONFIG_CONTIG);
   dng_image->SetCompression(tinydngwriter::COMPRESSION_NONE);
   dng_image->SetPhotometric(tinydngwriter::PHOTOMETRIC_RGB);
   dng_image->SetXResolution(1.0);
   dng_image->SetYResolution(1.2); // fractioal test
   dng_image->SetResolutionUnit(tinydngwriter::RESUNIT_NONE);
-  dng_image->SetSamplesPerPixel(3);
   dng_image->SetImageDescription("bora");
 
   std::vector<unsigned short> buf;
@@ -51,7 +52,9 @@ static void CreateGrayscale32bitFpTiff(tinydngwriter::DNGImage *dng_image) {
   dng_image->SetImageWidth(image_width);
   dng_image->SetImageLength(image_height);
   dng_image->SetRowsPerStrip(image_height);
-  dng_image->SetBitsPerSample(32);
+  dng_image->SetSamplesPerPixel(1);
+  uint16_t bps =32;
+  dng_image->SetBitsPerSample(1, &bps);
   dng_image->SetPlanarConfig(tinydngwriter::PLANARCONFIG_CONTIG);
   dng_image->SetCompression(tinydngwriter::COMPRESSION_NONE);
   dng_image->SetPhotometric(
@@ -59,7 +62,6 @@ static void CreateGrayscale32bitFpTiff(tinydngwriter::DNGImage *dng_image) {
   dng_image->SetXResolution(1.0);
   dng_image->SetYResolution(1.1);
   dng_image->SetResolutionUnit(tinydngwriter::RESUNIT_NONE);
-  dng_image->SetSamplesPerPixel(1);
   dng_image->SetSampleFormat(tinydngwriter::SAMPLEFORMAT_IEEEFP);
 
   std::vector<float> buf;
@@ -99,8 +101,8 @@ int main(int argc, char **argv) {
     tinydngwriter::DNGImage dng_image1;
     dng_image1.SetBigEndian(big_endian);
 
-    CreateImage(&dng_image0, 12000);
-    CreateImage(&dng_image1, 42000);
+    CreateRGBImage(&dng_image0, 12000);
+    CreateRGBImage(&dng_image1, 42000);
 
     tinydngwriter::DNGWriter dng_writer(big_endian);
     bool ret = dng_writer.AddImage(&dng_image0);

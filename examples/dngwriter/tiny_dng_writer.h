@@ -145,7 +145,8 @@ class DNGImage {
   bool SetImageLength(unsigned int value);
   bool SetRowsPerStrip(unsigned int value);
   bool SetSamplesPerPixel(unsigned short value);
-  bool SetBitsPerSample(unsigned short value);
+  // Set bits for each samples
+  bool SetBitsPerSample(const unsigned int num_samples, const unsigned short *values);
   bool SetPhotometric(unsigned short value);
   bool SetPlanarConfig(unsigned short value);
   bool SetOrientation(unsigned short value);
@@ -180,13 +181,19 @@ class DNGImage {
   bool WriteIFDToStream(const unsigned int data_base_offset, std::ostream *ofs,
                         std::string *err) const;
 
+  std::string Error() const {
+    return err_;
+  }
+
  private:
   std::ostringstream data_os_;
   bool swap_endian_;
   bool dng_big_endian_;
   unsigned short num_fields_;
   unsigned int samples_per_pixels_;
-  unsigned int bits_per_sample_;
+  unsigned short bits_per_sample_;
+
+  std::string err_; // Error message
 
   std::vector<IFDTag> ifd_tags_;
 };
@@ -608,26 +615,53 @@ bool DNGImage::SetSamplesPerPixel(const unsigned short value) {
   return true;
 }
 
-bool DNGImage::SetBitsPerSample(const unsigned short value) {
-  if (value > 32) {
+bool DNGImage::SetBitsPerSample(const unsigned int num_samples, const unsigned short *values) {
+
+  // `SetSamplesPerPixel()` must be called in advance and SPP shoud be equal to
+  // `num_samples`.
+  if ((num_samples > 0) && (num_samples == samples_per_pixels_)) {
+    // OK
+  } else {
+    err_ += "SetSamplesPerPixel() must be called before SetBitsPerSample().\n";
     return false;
   }
 
-  unsigned int count = 1;
+  unsigned short bps = values[0];
 
-  const unsigned short data = value;
-  bool ret = WriteTIFFTag(
-      static_cast<unsigned short>(TIFFTAG_BITS_PER_SAMPLE), TIFF_SHORT, count,
-      reinterpret_cast<const unsigned char *>(&data), &ifd_tags_, &data_os_);
+  std::vector<unsigned short> vs(num_samples);
+  for (size_t i = 0; i < vs.size(); i++) {
+
+    // FIXME(syoyo): Currently bps must be same for all samples
+    if (bps != values[i]) {
+      err_ += "BitsPerSample must be same among samples at the moment.\n";
+      return false;
+    }
+
+    vs[i] = values[i];
+
+    // TODO(syoyo): Swap values when writing IFD tag, not here.
+    if (swap_endian_) {
+      swap2(&vs[i]);
+    }
+  }
+
+  unsigned int count = num_samples;
+
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_BITS_PER_SAMPLE),
+                          TIFF_SHORT, count,
+                          reinterpret_cast<const unsigned char *>(vs.data()),
+                          &ifd_tags_, &data_os_);
 
   if (!ret) {
     return false;
   }
 
-  bits_per_sample_ = value;  // Store BPS for later use.
+  // Store BPS for later use.
+  bits_per_sample_ = bps;
 
   num_fields_++;
   return true;
+
 }
 
 bool DNGImage::SetPhotometric(const unsigned short value) {
