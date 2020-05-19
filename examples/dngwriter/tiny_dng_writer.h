@@ -151,7 +151,7 @@ class DNGImage {
   bool SetPlanarConfig(unsigned short value);
   bool SetOrientation(unsigned short value);
   bool SetCompression(unsigned short value);
-  bool SetSampleFormat(unsigned short value);
+  bool SetSampleFormat(const unsigned int num_samples, const unsigned short *values);
   bool SetXResolution(double value);
   bool SetYResolution(double value);
   bool SetResolutionUnit(const unsigned short value);
@@ -732,20 +732,48 @@ bool DNGImage::SetCompression(const unsigned short value) {
   return true;
 }
 
-bool DNGImage::SetSampleFormat(const unsigned short value) {
-  unsigned int count = 1;
+bool DNGImage::SetSampleFormat(const unsigned int num_samples, const unsigned short *values) {
 
-  if ((value == SAMPLEFORMAT_UINT) || (value == SAMPLEFORMAT_INT) ||
-      (value == SAMPLEFORMAT_IEEEFP)) {
+  // `SetSamplesPerPixel()` must be called in advance
+  if ((num_samples > 0) && (num_samples == samples_per_pixels_)) {
     // OK
   } else {
+    err_ += "SetSamplesPerPixel() must be called before SetSampleFormat().\n";
     return false;
   }
 
-  const unsigned short data = value;
+  unsigned short format = values[0];
+
+  std::vector<unsigned short> vs(num_samples);
+  for (size_t i = 0; i < vs.size(); i++) {
+
+    // FIXME(syoyo): Currently format must be same for all samples
+    if (format != values[i]) {
+      err_ += "SampleFormat must be same among samples at the moment.\n";
+      return false;
+    }
+
+    if ((format == SAMPLEFORMAT_UINT) || (format == SAMPLEFORMAT_INT) ||
+        (format == SAMPLEFORMAT_IEEEFP)) {
+      // OK
+    } else {
+      err_ += "Invalid format value specified for SetSampleFormat().\n";
+      return false;
+    }
+
+    vs[i] = values[i];
+
+    // TODO(syoyo): Swap values when writing IFD tag, not here.
+    if (swap_endian_) {
+      swap2(&vs[i]);
+    }
+  }
+
+  unsigned int count = num_samples;
+
   bool ret = WriteTIFFTag(
       static_cast<unsigned short>(TIFFTAG_SAMPLEFORMAT), TIFF_SHORT, count,
-      reinterpret_cast<const unsigned char *>(&data), &ifd_tags_, &data_os_);
+      reinterpret_cast<const unsigned char *>(vs.data()), &ifd_tags_, &data_os_);
 
   if (!ret) {
     return false;

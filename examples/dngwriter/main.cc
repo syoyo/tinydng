@@ -62,7 +62,9 @@ static void CreateGrayscale32bitFpTiff(tinydngwriter::DNGImage *dng_image) {
   dng_image->SetXResolution(1.0);
   dng_image->SetYResolution(1.1);
   dng_image->SetResolutionUnit(tinydngwriter::RESUNIT_NONE);
-  dng_image->SetSampleFormat(tinydngwriter::SAMPLEFORMAT_IEEEFP);
+
+  uint16_t format = tinydngwriter::SAMPLEFORMAT_IEEEFP;
+  dng_image->SetSampleFormat(1, &format);
 
   std::vector<float> buf;
   buf.resize(image_width * image_height);
