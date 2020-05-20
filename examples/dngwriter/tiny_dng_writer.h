@@ -146,12 +146,14 @@ class DNGImage {
   bool SetRowsPerStrip(unsigned int value);
   bool SetSamplesPerPixel(unsigned short value);
   // Set bits for each samples
-  bool SetBitsPerSample(const unsigned int num_samples, const unsigned short *values);
+  bool SetBitsPerSample(const unsigned int num_samples,
+                        const unsigned short *values);
   bool SetPhotometric(unsigned short value);
   bool SetPlanarConfig(unsigned short value);
   bool SetOrientation(unsigned short value);
   bool SetCompression(unsigned short value);
-  bool SetSampleFormat(const unsigned int num_samples, const unsigned short *values);
+  bool SetSampleFormat(const unsigned int num_samples,
+                       const unsigned short *values);
   bool SetXResolution(double value);
   bool SetYResolution(double value);
   bool SetResolutionUnit(const unsigned short value);
@@ -177,13 +179,25 @@ class DNGImage {
 
   size_t GetDataSize() const { return data_os_.str().length(); }
 
+  size_t GetStripOffset() const { return data_strip_offset_; }
+  size_t GetStripBytes() const { return data_strip_bytes_; }
+
+  /// Write aux IFD data and strip image data to stream
   bool WriteDataToStream(std::ostream *ofs, std::string *err) const;
-  bool WriteIFDToStream(const unsigned int data_base_offset, std::ostream *ofs,
+
+  ///
+  /// Write IFD to stream.
+  ///
+  /// @param[in] data_base_offset : Byte offset to data
+  /// @param[in] strip_offset : Byte offset to image strip data
+  ///
+  /// TODO(syoyo): Support multiple strips
+  ///
+  bool WriteIFDToStream(const unsigned int data_base_offset,
+                        const unsigned int strip_offset, std::ostream *ofs,
                         std::string *err) const;
 
-  std::string Error() const {
-    return err_;
-  }
+  std::string Error() const { return err_; }
 
  private:
   std::ostringstream data_os_;
@@ -193,7 +207,11 @@ class DNGImage {
   unsigned int samples_per_pixels_;
   unsigned short bits_per_sample_;
 
-  std::string err_; // Error message
+  // TODO(syoyo): Support multiple strips
+  size_t data_strip_offset_{0};
+  size_t data_strip_bytes_{0};
+
+  std::string err_;  // Error message
 
   std::vector<IFDTag> ifd_tags_;
 };
@@ -244,13 +262,13 @@ class DNGWriter {
 #include <algorithm>
 #include <cassert>
 #include <cfloat>
+#include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <sstream>
-#include <cstdint>
-#include <cmath>
 
 namespace tinydngwriter {
 
@@ -506,7 +524,9 @@ DNGImage::DNGImage()
     : dng_big_endian_(true),
       num_fields_(0),
       samples_per_pixels_(0),
-      bits_per_sample_(0) {
+      bits_per_sample_(0),
+      data_strip_offset_{0},
+      data_strip_bytes_{0} {
   swap_endian_ = (IsBigEndian() != dng_big_endian_);
 }
 
@@ -615,8 +635,8 @@ bool DNGImage::SetSamplesPerPixel(const unsigned short value) {
   return true;
 }
 
-bool DNGImage::SetBitsPerSample(const unsigned int num_samples, const unsigned short *values) {
-
+bool DNGImage::SetBitsPerSample(const unsigned int num_samples,
+                                const unsigned short *values) {
   // `SetSamplesPerPixel()` must be called in advance and SPP shoud be equal to
   // `num_samples`.
   if ((num_samples > 0) && (num_samples == samples_per_pixels_)) {
@@ -630,7 +650,6 @@ bool DNGImage::SetBitsPerSample(const unsigned int num_samples, const unsigned s
 
   std::vector<unsigned short> vs(num_samples);
   for (size_t i = 0; i < vs.size(); i++) {
-
     // FIXME(syoyo): Currently bps must be same for all samples
     if (bps != values[i]) {
       err_ += "BitsPerSample must be same among samples at the moment.\n";
@@ -661,7 +680,6 @@ bool DNGImage::SetBitsPerSample(const unsigned int num_samples, const unsigned s
 
   num_fields_++;
   return true;
-
 }
 
 bool DNGImage::SetPhotometric(const unsigned short value) {
@@ -732,8 +750,8 @@ bool DNGImage::SetCompression(const unsigned short value) {
   return true;
 }
 
-bool DNGImage::SetSampleFormat(const unsigned int num_samples, const unsigned short *values) {
-
+bool DNGImage::SetSampleFormat(const unsigned int num_samples,
+                               const unsigned short *values) {
   // `SetSamplesPerPixel()` must be called in advance
   if ((num_samples > 0) && (num_samples == samples_per_pixels_)) {
     // OK
@@ -746,7 +764,6 @@ bool DNGImage::SetSampleFormat(const unsigned int num_samples, const unsigned sh
 
   std::vector<unsigned short> vs(num_samples);
   for (size_t i = 0; i < vs.size(); i++) {
-
     // FIXME(syoyo): Currently format must be same for all samples
     if (format != values[i]) {
       err_ += "SampleFormat must be same among samples at the moment.\n";
@@ -771,9 +788,10 @@ bool DNGImage::SetSampleFormat(const unsigned int num_samples, const unsigned sh
 
   unsigned int count = num_samples;
 
-  bool ret = WriteTIFFTag(
-      static_cast<unsigned short>(TIFFTAG_SAMPLEFORMAT), TIFF_SHORT, count,
-      reinterpret_cast<const unsigned char *>(vs.data()), &ifd_tags_, &data_os_);
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_SAMPLEFORMAT),
+                          TIFF_SHORT, count,
+                          reinterpret_cast<const unsigned char *>(vs.data()),
+                          &ifd_tags_, &data_os_);
 
   if (!ret) {
     return false;
@@ -976,21 +994,23 @@ bool DNGImage::SetResolutionUnit(const unsigned short value) {
 }
 
 bool DNGImage::SetImageDescription(const std::string &ascii) {
-  unsigned int count = static_cast<unsigned int>(ascii.length() + 1); // +1 for '\0'
+  unsigned int count =
+      static_cast<unsigned int>(ascii.length() + 1);  // +1 for '\0'
 
   if (count < 2) {
     // empty string
     return false;
   }
 
-  if (count > (1024*1024)) {
+  if (count > (1024 * 1024)) {
     // too large
     return false;
   }
 
-  bool ret = WriteTIFFTag(
-      static_cast<unsigned short>(TIFFTAG_IMAGEDESCRIPTION), TIFF_ASCII, count,
-      reinterpret_cast<const unsigned char *>(ascii.data()), &ifd_tags_, &data_os_);
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_IMAGEDESCRIPTION),
+                          TIFF_ASCII, count,
+                          reinterpret_cast<const unsigned char *>(ascii.data()),
+                          &ifd_tags_, &data_os_);
 
   if (!ret) {
     return false;
@@ -1020,6 +1040,9 @@ bool DNGImage::SetImageData(const unsigned char *data, const size_t data_len) {
   if ((data == NULL) || (data_len < 1)) {
     return false;
   }
+
+  data_strip_offset_ = size_t(data_os_.tellp());
+  data_strip_bytes_ = data_len;
 
   data_os_.write(reinterpret_cast<const char *>(data),
                  static_cast<std::streamsize>(data_len));
@@ -1089,7 +1112,7 @@ static bool IFDComparator(const IFDTag &a, const IFDTag &b) {
 bool DNGImage::WriteDataToStream(std::ostream *ofs, std::string *err) const {
   if ((data_os_.str().length() == 0)) {
     if (err) {
-      (*err) += "Empty image data.\n";
+      (*err) += "Empty IFD data and image data.\n";
     }
     return false;
   }
@@ -1101,56 +1124,54 @@ bool DNGImage::WriteDataToStream(std::ostream *ofs, std::string *err) const {
     return false;
   }
 
-  // FIXME(syoyo): Assume all channels use sample bps
+  std::vector<uint8_t> data(data_os_.str().length());
+  memcpy(data.data(), data_os_.str().data(), data.size());
 
-  // We also need to swap endian for pixel data.
-  if (swap_endian_) {
-    if (bits_per_sample_ == 16) {
-      std::vector<uint16_t> data(data_os_.str().length() / sizeof(uint16_t));
-      memcpy(data.data(), data_os_.str().data(),
-             data.size() * sizeof(uint16_t));
-
-      for (size_t i = 0; i < data.size(); i++) {
-        swap2(&data[i]);
-      }
-      ofs->write(reinterpret_cast<const char *>(data.data()),
-                 static_cast<std::streamsize>(data.size() * sizeof(uint16_t)));
-
-    } else if (bits_per_sample_ == 32) {
-      std::vector<uint32_t> data(data_os_.str().length() / sizeof(uint32_t));
-      memcpy(data.data(), data_os_.str().data(),
-             data.size() * sizeof(uint32_t));
-
-      for (size_t i = 0; i < data.size(); i++) {
-        swap4(&data[i]);
-      }
-      ofs->write(reinterpret_cast<const char *>(data.data()),
-                 static_cast<std::streamsize>(data.size() * sizeof(uint32_t)));
-
-    } else if (bits_per_sample_ == 64) {
-      std::vector<uint64_t> data(data_os_.str().length() / sizeof(uint64_t));
-      memcpy(data.data(), data_os_.str().data(),
-             data.size() * sizeof(uint64_t));
-
-      for (size_t i = 0; i < data.size(); i++) {
-        swap8(&data[i]);
-      }
-      ofs->write(reinterpret_cast<const char *>(data.data()),
-                 static_cast<std::streamsize>(data.size() * sizeof(uint64_t)));
-    } else {
-      // TODO(syoyo): How we should do for bps 10, 12, etc?
-      ofs->write(data_os_.str().c_str(),
-                 static_cast<std::streamsize>(data_os_.str().length()));
-    }
+  if (data_strip_bytes_ == 0) {
+    // May ok?.
   } else {
-    ofs->write(data_os_.str().c_str(),
-               static_cast<std::streamsize>(data_os_.str().length()));
+    // FIXME(syoyo): Assume all channels use sample bps
+
+    // We may need to swap endian for pixel data.
+    if (swap_endian_) {
+      if (bits_per_sample_ == 16) {
+        size_t n = data_strip_bytes_ / sizeof(uint16_t);
+        uint16_t *ptr =
+            reinterpret_cast<uint16_t *>(data.data() + data_strip_offset_);
+
+        for (size_t i = 0; i < n; i++) {
+          swap2(&ptr[i]);
+        }
+
+      } else if (bits_per_sample_ == 32) {
+        size_t n = data_strip_bytes_ / sizeof(uint32_t);
+        uint32_t *ptr =
+            reinterpret_cast<uint32_t *>(data.data() + data_strip_offset_);
+
+        for (size_t i = 0; i < n; i++) {
+          swap4(&ptr[i]);
+        }
+
+      } else if (bits_per_sample_ == 64) {
+        size_t n = data_strip_bytes_ / sizeof(uint64_t);
+        uint64_t *ptr =
+            reinterpret_cast<uint64_t *>(data.data() + data_strip_offset_);
+
+        for (size_t i = 0; i < n; i++) {
+          swap8(&ptr[i]);
+        }
+      }
+    }
   }
+
+  ofs->write(reinterpret_cast<const char *>(data.data()),
+             static_cast<std::streamsize>(data.size()));
 
   return true;
 }
 
 bool DNGImage::WriteIFDToStream(const unsigned int data_base_offset,
+                                const unsigned int strip_offset,
                                 std::ostream *ofs, std::string *err) const {
   if ((num_fields_ == 0) || (ifd_tags_.size() < 1)) {
     if (err) {
@@ -1164,7 +1185,7 @@ bool DNGImage::WriteIFDToStream(const unsigned int data_base_offset,
   {
     // For STRIP_OFFSET we need the actual offset value to data(image),
     // thus write STRIP_OFFSET here.
-    unsigned int offset = data_base_offset + kHeaderSize;
+    unsigned int offset = strip_offset + kHeaderSize;
     IFDTag ifd;
     ifd.tag = TIFFTAG_STRIP_OFFSET;
     ifd.type = TIFF_LONG;
@@ -1262,11 +1283,15 @@ bool DNGWriter::WriteToFile(const char *filename, std::string *err) const {
     return false;
   }
 
-  // 1. Compute offset and data size
+  // 1. Compute offset and data size(exclude TIFF header bytes)
   size_t data_len = 0;
-  std::vector<size_t> offset_table;
+  size_t strip_offset = 0;
+  std::vector<size_t> data_offset_table;
+  std::vector<size_t> strip_offset_table;
   for (size_t i = 0; i < images_.size(); i++) {
-    offset_table.push_back(data_len);
+    strip_offset = data_len + images_[i]->GetStripOffset();
+    data_offset_table.push_back(data_len);
+    strip_offset_table.push_back(strip_offset);
     data_len += images_[i]->GetDataSize();
   }
 
@@ -1287,6 +1312,7 @@ bool DNGWriter::WriteToFile(const char *filename, std::string *err) const {
             static_cast<std::streamsize>(header.str().length()));
 
   // 4. Write image and meta data
+  // TODO(syoyo): Write IFD first, then image/meta data
   for (size_t i = 0; i < images_.size(); i++) {
     bool ok = images_[i]->WriteDataToStream(&ofs, err);
     if (!ok) {
@@ -1297,7 +1323,8 @@ bool DNGWriter::WriteToFile(const char *filename, std::string *err) const {
   // 5. Write IFD entries;
   for (size_t i = 0; i < images_.size(); i++) {
     bool ok = images_[i]->WriteIFDToStream(
-        static_cast<unsigned int>(offset_table[i]), &ofs, err);
+        static_cast<unsigned int>(data_offset_table[i]),
+        static_cast<unsigned int>(strip_offset_table[i]), &ofs, err);
     if (!ok) {
       return false;
     }
