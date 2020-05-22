@@ -4260,7 +4260,7 @@ namespace {
 
 static inline std::wstring UTF8ToWchar(const std::string& str) {
   int wstr_size =
-      MultiByteToWideChar(CP_UTF8, 0, str.data(), int(str.size()), nullptr, 0);
+      MultiByteToWideChar(CP_UTF8, 0, str.data(), int(str.size()), NULL, 0);
   TINY_DNG_ASSERT(wstr_size >= 0, "wstr_size must be positive");
   std::wstring wstr(size_t(wstr_size), 0);
   MultiByteToWideChar(CP_UTF8, 0, str.data(), int(str.size()), &wstr[0],
@@ -4943,7 +4943,7 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg) {
 bool IsDNG(const char* filename, std::string* msg) {
   std::stringstream ss;
 
-  FILE* fp = nullptr;
+  FILE* fp = NULL;
 #if defined(_WIN32)
 
 #if defined(_MSC_VER) || defined(__MINGW32__)  // MSVC, MinGW gcc or clang
