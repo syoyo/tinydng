@@ -53,6 +53,8 @@ typedef enum {
   TIFFTAG_YRESOLUTION = 283,  // rational
   TIFFTAG_RESOLUTION_UNIT = 296,
 
+  TIFFTAG_SOFTWARE = 305,
+
   TIFFTAG_SAMPLEFORMAT = 339,
 
   // DNG extension
@@ -158,7 +160,17 @@ class DNGImage {
   bool SetYResolution(double value);
   bool SetResolutionUnit(const unsigned short value);
 
+  ///
+  /// Set arbitrary string for image description.
+  /// Currently we limit to 1024*1024 chars at max.
+  ///
   bool SetImageDescription(const std::string &ascii);
+
+  ///
+  /// Set software description(string).
+  /// Currently we limit to 4095 chars at max.
+  ///
+  bool SetSoftware(const std::string &ascii);
 
   bool SetActiveArea(const unsigned int values[4]);
 
@@ -1019,6 +1031,34 @@ bool DNGImage::SetImageDescription(const std::string &ascii) {
   num_fields_++;
   return true;
 }
+
+bool DNGImage::SetSoftware(const std::string &ascii) {
+  unsigned int count =
+      static_cast<unsigned int>(ascii.length() + 1);  // +1 for '\0'
+
+  if (count < 2) {
+    // empty string
+    return false;
+  }
+
+  if (count > 4096) {
+    // too large
+    return false;
+  }
+
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_SOFTWARE),
+                          TIFF_ASCII, count,
+                          reinterpret_cast<const unsigned char *>(ascii.data()),
+                          &ifd_tags_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
 
 bool DNGImage::SetActiveArea(const unsigned int values[4]) {
   unsigned int count = 4;
