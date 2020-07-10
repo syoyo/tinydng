@@ -195,7 +195,7 @@ class DNGImage {
   size_t GetStripBytes() const { return data_strip_bytes_; }
 
   /// Write aux IFD data and strip image data to stream
-  bool WriteDataToStream(std::ostream *ofs, std::string *err) const;
+  bool WriteDataToStream(std::ostream *ofs) const;
 
   ///
   /// Write IFD to stream.
@@ -206,8 +206,7 @@ class DNGImage {
   /// TODO(syoyo): Support multiple strips
   ///
   bool WriteIFDToStream(const unsigned int data_base_offset,
-                        const unsigned int strip_offset, std::ostream *ofs,
-                        std::string *err) const;
+                        const unsigned int strip_offset, std::ostream *ofs) const;
 
   std::string Error() const { return err_; }
 
@@ -223,7 +222,7 @@ class DNGImage {
   size_t data_strip_offset_{0};
   size_t data_strip_bytes_{0};
 
-  std::string err_;  // Error message
+  mutable std::string err_;  // Error message
 
   std::vector<IFDTag> ifd_tags_;
 };
@@ -1151,34 +1150,26 @@ static bool IFDComparator(const IFDTag &a, const IFDTag &b) {
   return (a.tag < b.tag);
 }
 
-bool DNGImage::WriteDataToStream(std::ostream *ofs, std::string *err) const {
+bool DNGImage::WriteDataToStream(std::ostream *ofs) const {
   if ((data_os_.str().length() == 0)) {
-    if (err) {
-      (*err) += "Empty IFD data and image data.\n";
-    }
+    err_ += "Empty IFD data and image data.\n";
     return false;
   }
 
   if (bits_per_samples_.empty()) {
-    if (err) {
-      (*err) += "BitsPerSample is not set\n";
-    }
+    err_ += "BitsPerSample is not set\n";
     return false;
   }
 
   for (size_t i = 0; i < bits_per_samples_.size(); i++) {
     if (bits_per_samples_[i] == 0) {
-      if (err) {
-        (*err) += std::to_string(i) + "'th BitsPerSample is zero";
-      }
+      err_ += std::to_string(i) + "'th BitsPerSample is zero";
       return false;
     }
   }
 
   if (samples_per_pixels_ == 0) {
-    if (err) {
-      (*err) += "SamplesPerPixels is not set or zero.";
-    }
+    err_ += "SamplesPerPixels is not set or zero.";
     return false;
   }
 
@@ -1231,11 +1222,9 @@ bool DNGImage::WriteDataToStream(std::ostream *ofs, std::string *err) const {
 
 bool DNGImage::WriteIFDToStream(const unsigned int data_base_offset,
                                 const unsigned int strip_offset,
-                                std::ostream *ofs, std::string *err) const {
+                                std::ostream *ofs) const {
   if ((num_fields_ == 0) || (ifd_tags_.size() < 1)) {
-    if (err) {
-      (*err) += "No TIFF Tags.\n";
-    }
+    err_ += "No TIFF Tags.\n";
     return false;
   }
 
@@ -1373,7 +1362,7 @@ bool DNGWriter::WriteToFile(const char *filename, std::string *err) const {
   // 4. Write image and meta data
   // TODO(syoyo): Write IFD first, then image/meta data
   for (size_t i = 0; i < images_.size(); i++) {
-    bool ok = images_[i]->WriteDataToStream(&ofs, err);
+    bool ok = images_[i]->WriteDataToStream(&ofs);
     if (!ok) {
       return false;
     }
@@ -1383,7 +1372,7 @@ bool DNGWriter::WriteToFile(const char *filename, std::string *err) const {
   for (size_t i = 0; i < images_.size(); i++) {
     bool ok = images_[i]->WriteIFDToStream(
         static_cast<unsigned int>(data_offset_table[i]),
-        static_cast<unsigned int>(strip_offset_table[i]), &ofs, err);
+        static_cast<unsigned int>(strip_offset_table[i]), &ofs);
     if (!ok) {
       return false;
     }
