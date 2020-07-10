@@ -1159,7 +1159,7 @@ bool DNGImage::WriteDataToStream(std::ostream *ofs, std::string *err) const {
 
   if ((bits_per_sample_ == 0) || (samples_per_pixels_ == 0)) {
     if (err) {
-      (*err) += "Both BitsPerSample and SamplesPerPixels must be set.\n";
+      (*err) += "Both BitsPerSample(" + std::to_string(bits_per_sample_) + ") and SamplesPerPixels(" + std::to_string(samples_per_pixels_) + ") must be non-zero.\n";
     }
     return false;
   }
