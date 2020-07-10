@@ -217,7 +217,7 @@ class DNGImage {
   bool dng_big_endian_;
   unsigned short num_fields_;
   unsigned int samples_per_pixels_;
-  unsigned short bits_per_sample_;
+  std::vector<unsigned short> bits_per_samples_;
 
   // TODO(syoyo): Support multiple strips
   size_t data_strip_offset_{0};
@@ -536,7 +536,6 @@ DNGImage::DNGImage()
     : dng_big_endian_(true),
       num_fields_(0),
       samples_per_pixels_(0),
-      bits_per_sample_(0),
       data_strip_offset_{0},
       data_strip_bytes_{0} {
   swap_endian_ = (IsBigEndian() != dng_big_endian_);
@@ -688,7 +687,10 @@ bool DNGImage::SetBitsPerSample(const unsigned int num_samples,
   }
 
   // Store BPS for later use.
-  bits_per_sample_ = bps;
+  bits_per_samples_.resize(num_samples);
+  for (size_t i = 0; i < num_samples; i++) {
+    bits_per_samples_[i] = values[i];
+  }
 
   num_fields_++;
   return true;
@@ -1157,9 +1159,25 @@ bool DNGImage::WriteDataToStream(std::ostream *ofs, std::string *err) const {
     return false;
   }
 
-  if ((bits_per_sample_ == 0) || (samples_per_pixels_ == 0)) {
+  if (bits_per_samples_.empty()) {
     if (err) {
-      (*err) += "Both BitsPerSample(" + std::to_string(bits_per_sample_) + ") and SamplesPerPixels(" + std::to_string(samples_per_pixels_) + ") must be non-zero.\n";
+      (*err) += "BitsPerSample is not set\n";
+    }
+    return false;
+  }
+
+  for (size_t i = 0; i < bits_per_samples_.size(); i++) {
+    if (bits_per_samples_[i] == 0) {
+      if (err) {
+        (*err) += std::to_string(i) + "'th BitsPerSample is zero";
+      }
+      return false;
+    }
+  }
+
+  if (samples_per_pixels_ == 0) {
+    if (err) {
+      (*err) += "SamplesPerPixels is not set or zero.";
     }
     return false;
   }
@@ -1171,10 +1189,11 @@ bool DNGImage::WriteDataToStream(std::ostream *ofs, std::string *err) const {
     // May ok?.
   } else {
     // FIXME(syoyo): Assume all channels use sample bps
+    uint32_t bps = bits_per_samples_[0];
 
     // We may need to swap endian for pixel data.
     if (swap_endian_) {
-      if (bits_per_sample_ == 16) {
+      if (bps == 16) {
         size_t n = data_strip_bytes_ / sizeof(uint16_t);
         uint16_t *ptr =
             reinterpret_cast<uint16_t *>(data.data() + data_strip_offset_);
@@ -1183,7 +1202,7 @@ bool DNGImage::WriteDataToStream(std::ostream *ofs, std::string *err) const {
           swap2(&ptr[i]);
         }
 
-      } else if (bits_per_sample_ == 32) {
+      } else if (bps == 32) {
         size_t n = data_strip_bytes_ / sizeof(uint32_t);
         uint32_t *ptr =
             reinterpret_cast<uint32_t *>(data.data() + data_strip_offset_);
@@ -1192,7 +1211,7 @@ bool DNGImage::WriteDataToStream(std::ostream *ofs, std::string *err) const {
           swap4(&ptr[i]);
         }
 
-      } else if (bits_per_sample_ == 64) {
+      } else if (bps == 64) {
         size_t n = data_strip_bytes_ / sizeof(uint64_t);
         uint64_t *ptr =
             reinterpret_cast<uint64_t *>(data.data() + data_strip_offset_);
