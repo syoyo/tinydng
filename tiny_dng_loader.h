@@ -259,7 +259,11 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 #ifdef TINY_DNG_LOADER_IMPLEMENTATION
 
 #if defined(_WIN32)
+#if defined(__MINGW32__)
 #include <windows.h>  // wchar apis
+#else
+#include <Windows.h>
+#endif
 #endif
 
 #include <stdint.h>  // for lj92
