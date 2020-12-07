@@ -299,6 +299,7 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 #pragma clang diagnostic ignored "-Wc++98-compat-pedantic"
 #endif
 
+#define TINY_DNG_LOADER_DEBUG
 #ifdef TINY_DNG_LOADER_DEBUG
 #define TINY_DNG_DPRINTF(...) printf(__VA_ARGS__)
 #else
@@ -1106,16 +1107,17 @@ static int parseScan(ljp* self) {
 
         diff = nextdiff(self, huff_idx, Px);
         left = Px + diff;
-        // TINY_DNG_DPRINTF("c[%d] Px = %d, diff = %d, left = %d\n", c, Px,
+        //TINY_DNG_DPRINTF("c[%d] Px = %d, diff = %d, left = %d\n", c, Px,
         // diff, left);
-        TINY_DNG_ASSERT(left >= 0 && left < (1 << self->bits),
-                        "Error huffman decoding.");
+        // Apple ProRAW gives -1 for `left`(=65535?), so uncommented negative left value check.
+        //TINY_DNG_ASSERT(left >= 0 && left < (1 << self->bits),
+        //                "Error huffman decoding.");
         // TINY_DNG_DPRINTF("pix = %d\n", left);
         // TINY_DNG_DPRINTF("%d %d %d\n",c,diff,left);
-        int linear;
+        int linear; // TODO: use u16?
         if (self->linearize) {
           if (left > self->linlen) return LJ92_ERROR_CORRUPT;
-          linear = self->linearize[left];
+          linear = self->linearize[u16(left)];
         } else {
           linear = left;
         }
@@ -2860,12 +2862,12 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
       // TINY_DNG_DPRINTF("col = %d, tiff_w = %d / %d\n", column_step, tiff_w,
       // image_info.width);
 
-      TINY_DNG_ASSERT((lj_width * ljp->components * lj_height) ==
+      TINY_DNG_ASSERT((lj_width * lj_height) ==
                           image_info.tile_width * image_info.tile_length,
                       "Unexpected JPEG tile size.");
 
-      // int write_length = image_info.tile_width;
-      // int skip_length = dst_width - image_info.tile_width;
+      int write_length = image_info.tile_width;
+      int skip_length = dst_width - image_info.tile_width;
       // TINY_DNG_DPRINTF("write_len = %d, skip_len = %d\n", write_length,
       // skip_length);
 
@@ -2880,6 +2882,7 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
           static_cast<size_t>(lj_width * lj_height * ljp->components));
 
       ret = lj92_decode(ljp, tmpbuf.data(), image_info.tile_width, 0, NULL, 0);
+      //ret = lj92_decode(ljp, tmpbuf.data(), write_length, skip_length, NULL, 0);
       TINY_DNG_ASSERT(ret == LJ92_ERROR_NONE, "Error decoding JPEG stream.");
       // ret = lj92_decode(ljp, dst_data + dst_offset, write_length,
       // skip_length,
