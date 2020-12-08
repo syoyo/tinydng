@@ -432,6 +432,8 @@ namespace tinydng {
 
 namespace {
 // Begin liblj92, Lossless JPEG decode/encoder ------------------------------
+//
+// With fixes: https://github.com/ilia3101/MLV-App/pull/151
 
 /*
 lj92.c
@@ -936,6 +938,7 @@ static int parsePred6(ljp* self) {
                   0);  // FIXME(syoyo): Is using (self->num_huff_idx-1) correct?
   Px = 1 << (self->bits - 1);
   left = Px + diff;
+  left = (u16)(left%65536);
   if (self->linearize)
     linear = self->linearize[left];
   else
@@ -952,6 +955,7 @@ static int parsePred6(ljp* self) {
     diff = nextdiff(self, self->num_huff_idx - 1, 0);
     Px = left;
     left = Px + diff;
+    left = (u16)(left%65536);
     if (self->linearize)
       linear = self->linearize[left];
     else
@@ -980,6 +984,7 @@ static int parsePred6(ljp* self) {
     diff = nextdiff(self, self->num_huff_idx - 1, 0);
     Px = lastrow[col];  // Use value above for first pixel in row
     left = Px + diff;
+    left = (u16)(left%65536);
     if (self->linearize) {
       if (left > self->linlen) return LJ92_ERROR_CORRUPT;
       linear = self->linearize[left];
@@ -998,6 +1003,7 @@ static int parsePred6(ljp* self) {
       diff = nextdiff(self, self->num_huff_idx - 1, 0);
       Px = lastrow[col] + ((left - lastrow[col - 1]) >> 1);
       left = Px + diff;
+      left = (u16)(left%65536);
       // TINY_DNG_DPRINTF("%d %d %d %d %d
       // %x\n",col,diff,left,lastrow[col],lastrow[col-1],&lastrow[col]);
       if (self->linearize) {
@@ -1107,6 +1113,7 @@ static int parseScan(ljp* self) {
 
         diff = nextdiff(self, huff_idx, Px);
         left = Px + diff;
+        left = (u16)(left%65536);
         //TINY_DNG_DPRINTF("c[%d] Px = %d, diff = %d, left = %d\n", c, Px,
         // diff, left);
         // Apple ProRAW gives -1 for `left`(=65535?), so uncommented negative left value check.
@@ -1278,6 +1285,7 @@ void lj92_close(lj92 lj) {
 }
 
 #if 0  // not used in tinydngloader
+// Fix of https://github.com/ilia3101/MLV-App/pull/151/files is not reflected here fully.
 /* Encoder implementation */
 
 // Very simple count leading zero implementation.
@@ -1302,12 +1310,12 @@ typedef struct _lje {
   uint8_t* encoded;
   int encodedWritten;
   int encodedLength;
-  int hist[17];  // SSSS frequency histogram
-  int bits[17];
-  int huffval[17];
-  u16 huffenc[17];
-  u16 huffbits[17];
-  int huffsym[17];
+  int hist[18];  // SSSS frequency histogram
+  int bits[18];
+  int huffval[18];
+  u16 huffenc[18];
+  u16 huffbits[18];
+  int huffsym[18];
 } lje;
 
 int frequencyScan(lje* self) {
@@ -1350,6 +1358,7 @@ int frequencyScan(lje* self) {
     else
       Px = rows[0][col] + ((rows[1][col - 1] - rows[0][col - 1]) >> 1);
     diff = rows[1][col] - Px;
+    diff = diff%65536;
     // int ssss = 32 - __builtin_clz(abs(diff));
     int ssss = 32 - clz32(abs(diff));
     if (diff == 0) ssss = 0;

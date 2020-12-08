@@ -1140,7 +1140,7 @@ void InitGLDisplay(GLContext* ctx, int width, int height) {
   BindUniform(ctx->uv_offset_loc, ctx->program, "uOffset");
   BindUniform(ctx->uv_scale_loc, ctx->program, "uScale");
   BindUniform(ctx->intensity_loc, ctx->program, "uIntensity");
-  //BindUniform(ctx->texture_size_loc, ctx->program, "uTexsize");
+  // BindUniform(ctx->texture_size_loc, ctx->program, "uTexsize");
 
   // Init texture for display.
   {
@@ -1278,7 +1278,7 @@ void Display(const GLContext& ctx, const UIParam& param) {
   glUniform1f(ctx.uv_scale_loc, (float)(100.0f) / (float)param.view_scale);
   glUniform1f(ctx.gamma_loc, param.display_gamma);
   glUniform1f(ctx.intensity_loc, param.intensity);
-  //glUniform2f(ctx.texture_size_loc, gRAWImage.width, gRAWImage.height);
+  // glUniform2f(ctx.texture_size_loc, gRAWImage.width, gRAWImage.height);
   CheckGLError("uniform");
 
   glActiveTexture(GL_TEXTURE0);
@@ -1317,13 +1317,18 @@ int main(int argc, char** argv) {
     input_filename = std::string(argv[1]);
   }
 
+  int layer_id = -1;  // -1 = use largest image.
+  if (argc > 2) {
+    layer_id = atoi(argv[2]);
+  }
+
   {
     std::string warn, err;
     std::vector<tinydng::DNGImage> images;
     std::vector<tinydng::FieldInfo> custom_fields;
 
-    bool ret =
-        tinydng::LoadDNG(input_filename.c_str(), custom_fields, &images, &warn, &err);
+    bool ret = tinydng::LoadDNG(input_filename.c_str(), custom_fields, &images,
+                                &warn, &err);
 
     if (!warn.empty()) {
       std::cout << "WARN: " << warn << std::endl;
@@ -1340,18 +1345,35 @@ int main(int argc, char** argv) {
 
     assert(images.size() > 0);
 
-    // Find largest image(based on width pixels).
+    std::cout << "Layers in DNG: " << images.size() << std::endl;
+
+    // print info
+    for (size_t i = 0; i < images.size(); i++) {
+      std::cout << "image[" << i << "]\n";
+      std::cout << "  width : " << images[i].width << "\n";
+      std::cout << "  height: " << images[i].height << "\n";
+      std::cout << "  bits per sample : " << images[i].bits_per_sample << "\n";
+    }
+
     size_t largest = 0;
-    int largest_width = images[0].width;
-    for (size_t i = 1; i < images.size(); i++) {
-      std::cout << largest_width << ", " << images[i].width << std::endl;
-      if (largest_width < images[i].width) {
-        largest = i;
-        largest_width = images[i].width;
+
+    if (layer_id < 0) {
+      // Find largest image(based on width pixels).
+      int largest_width = images[0].width;
+      for (size_t i = 1; i < images.size(); i++) {
+        if (largest_width < images[i].width) {
+          largest = i;
+          largest_width = images[i].width;
+        }
+      }
+    } else {
+      largest = layer_id;
+      if (largest >= images.size()) {
+        largest = images.size() - 1;
       }
     }
 
-    std::cout << "largest = " << largest << std::endl;
+    std::cout << "Use layer id = " << largest << std::endl;
 
     gRAWImage.largest_idx = largest;
     gRAWImage.width = images[largest].width;
