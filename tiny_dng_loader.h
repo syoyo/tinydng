@@ -204,6 +204,9 @@ struct DNGImage {
   unsigned short cr2_slices[3];
   unsigned short pad_c;
 
+  // Apple ProRAW
+  std::string semantic_name;
+
   std::vector<unsigned char>
       data;  // Decoded pixel data(len = spp * width * height * bps / 8)
 
@@ -1840,6 +1843,10 @@ typedef enum {
   TAG_CR2_META1 = 50656,
   TAG_CR2_SLICES = 50752,
   TAG_CR2_META2 = 50885,
+
+  // DNG 1.6(Apple ProRAW)
+  //ahttps://helpx.adobe.com/photoshop/kb/dng-specification-tags.html
+  TAG_SEMANTIC_NAME = 52526, // Type: ASCII, Count: String length including null, Value: null-terminated string
 
   TAG_INVALID = 65535
 } TiffTag;
@@ -3713,6 +3720,29 @@ static bool ParseTIFFIFD(const StreamReader& sr,
         //  image.cr2_slices[0],
         //  image.cr2_slices[1],
         //  image.cr2_slices[2]);
+      } break;
+
+      case TAG_SEMANTIC_NAME: {
+        size_t readLen = len;
+        if (readLen < 1) {
+          if (err) {
+            (*err) += "Null string for SemanticName Tag.\n";
+          }
+
+          return false;
+        }
+
+        std::vector<uint8_t> buf(readLen); // readLen includes null char
+        if (!sr.read(readLen, readLen, reinterpret_cast<unsigned char *>(buf.data()))) {
+          if (err) {
+            (*err) += "Failed to parse SemanticName Tag.\n";
+          }
+          return false;
+        }
+
+        image.semantic_name = std::string(buf.begin(), buf.end());
+
+        TINY_DNG_DPRINTF("semantic_name = %s\n", image.semantic_name.c_str());
       } break;
 
       default: {
