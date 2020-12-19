@@ -1032,6 +1032,7 @@ static int parseScan(ljp* self) {
   memset(self->sssshist, 0, sizeof(self->sssshist));
   self->ix = self->scanstart;
   int compcount = self->data[self->ix + 2];
+  TINY_DNG_DPRINTF("comp count = %d\n", compcount);
   int pred = self->data[self->ix + 3 + 2 * compcount];
   if (pred < 0 || pred > 7) return ret;
   if (pred == 6) return parsePred6(self);  // Fast path
@@ -1148,6 +1149,8 @@ static int parseScan(ljp* self) {
 
   ret = LJ92_ERROR_NONE;
 
+  //TINY_DNG_DPRINTF("out written = %d\n", int(out - self->image));
+
   // if (++col == self->x) {
   //	col = 0;
   //	row++;
@@ -1172,15 +1175,16 @@ static int parseImage(ljp* self) {
   while (1) {
     int nextMarker = find(self);
     TINY_DNG_DPRINTF("marker = 0x%08x\n", nextMarker);
-    if (nextMarker == 0xc4)
+    if (nextMarker == 0xc4) {
+      TINY_DNG_DPRINTF("Parse huffman table.\n");
       ret = parseHuff(self);
-    else if (nextMarker == 0xc3)
+    } else if (nextMarker == 0xc3) {
       ret = parseSof3(self);
-    else if (nextMarker == 0xfe)  // Comment
+    } else if (nextMarker == 0xfe) { // Comment
       ret = parseBlock(self, nextMarker);
-    else if (nextMarker == 0xd9)  // End of image
+    } else if (nextMarker == 0xd9) { // End of image
       break;
-    else if (nextMarker == 0xda) {
+    } else if (nextMarker == 0xda) {
       self->scanstart = self->ix;
       ret = LJ92_ERROR_NONE;
       break;
@@ -2875,10 +2879,13 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
                           image_info.tile_width * image_info.tile_length,
                       "Unexpected JPEG tile size.");
 
+      TINY_DNG_ASSERT(ljp->components ==
+                          image_info.samples_per_pixel,
+                      "# of color channels does not match.");
+
       int write_length = image_info.tile_width;
-      int skip_length = dst_width - image_info.tile_width;
-      // TINY_DNG_DPRINTF("write_len = %d, skip_len = %d\n", write_length,
-      // skip_length);
+      //int skip_length = dst_width - image_info.tile_width;
+      //TINY_DNG_DPRINTF("write_len = %d, skip_len = %d\n", write_length, skip_length);
 
       // size_t dst_offset =
       //    column_step * static_cast<size_t>(image_info.tile_width) +
@@ -2900,6 +2907,8 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
       // Copy to dest buffer.
       // NOTE: For some DNG file, tiled image may exceed the extent of target
       // image resolution.
+
+#if 0 // TODO: remove
       for (unsigned int y = 0;
            y < static_cast<unsigned int>(image_info.tile_length); y++) {
         unsigned int y_offset = y + tiff_h;
@@ -2918,6 +2927,36 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
         for (size_t x = 0; x < x_len; x++) {
           dst_data[dst_offset + x] =
               tmpbuf[y * static_cast<size_t>(image_info.tile_width) + x];
+        }
+      }
+#endif
+
+      const size_t spp = size_t(image_info.samples_per_pixel);
+
+      const size_t tile_size = size_t(image_info.tile_width) * size_t(image_info.tile_length);
+      for (unsigned int y = 0;
+           y < static_cast<unsigned int>(image_info.tile_length); y++) {
+        unsigned int y_offset = y + tiff_h;
+        if (y_offset >= static_cast<unsigned int>(image_info.height)) {
+          continue;
+        }
+
+        size_t dst_offset =
+            tiff_w + static_cast<unsigned int>(dst_width) * y_offset;
+
+        size_t x_len = static_cast<size_t>(image_info.tile_width);
+        if ((tiff_w + static_cast<unsigned int>(image_info.tile_width)) >=
+            static_cast<unsigned int>(dst_width)) {
+          x_len = static_cast<size_t>(dst_width) - tiff_w;
+        }
+
+        for (size_t x = 0; x < x_len; x++) {
+          for (size_t c = 0; c < spp; c++) {
+            // Channel last(RRR...GGG...BBB...) -> channel first(RGBRGBRGB...)
+            dst_data[spp * (dst_offset + x) + c] =
+                tmpbuf[c * tile_size + (y * static_cast<size_t>(image_info.tile_width) +
+                               x)];
+          }
         }
       }
 
@@ -4430,7 +4469,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
     // std::cout << "tile_offt = \n" << image->tile_offset << std::endl;
     // std::cout << "data_offset = " << data_offset << std::endl;
 
-    TINY_DNG_DPRINTF("compression = %d\n", image->compression);
+    TINY_DNG_DPRINTF("image[%d].compression = %d\n", int(i), image->compression);
 
     if (image->compression == COMPRESSION_NONE) {  // no compression
 
@@ -4821,6 +4860,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
                               8);
       TINY_DNG_ASSERT(len > 0, "Invalid length.");
       image->data.resize(len);
+      TINY_DNG_DPRINTF("image.data.size = %d\n", int(len));
 
       if (sr.size() < data_offset) {
         if (err) {

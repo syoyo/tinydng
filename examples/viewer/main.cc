@@ -724,31 +724,28 @@ static void compute_color_matrix(double dst[3][3],
   // MatrixMult(dst, chromatic_abbrebiation, camera_to_xyz);
 }
 
-// @todo { Support CFA pattern other than RGGB }
 static void pre_color_correction(std::vector<float>& out,
-                                 std::vector<float>& in, int black_level,
-                                 int white_level,
-                                 const float color_matrix[3][3], int width,
-                                 int height, float scale) {
-  if (out.size() != width * height) {
-    out.resize(width * height);
-  }
+                                 const std::vector<float>& in,
+                                 const int* black_levels,  // per channel black levels
+                                 const int* white_levels,  // per channel white levels
+                                 int width, int height, int channels,
+                                 float scale) {
+  assert(in.size() == (width * height * channels));
 
-  double min_value = black_level;
-  double max_value = white_level;
-  max_value -= min_value;
+  if (out.size() != width * height * channels) {
+    out.resize(width * height * channels);
+  }
 
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < width; x++) {
-      int xx = x % 2;
-      int yy = y % 2;
-      int i = (yy << 1) | xx;
-      double val = in[y * width + x];
+      for (int c = 0; c < channels; c++) {
+        double val = in[channels * (y * width + x) + c];
 
-      // Assume BlackLevel is same for all color channel.
-      val -= min_value;
+        val -= black_levels[c];
 
-      out[y * width + x] = fclamp(val, 0.0, 65535.0);
+        out[channels * (y * width + x)  + c] =
+            fclamp(val, 0.0, std::min(double(white_levels[c]), 65535.0));
+      }
     }
   }
 }
@@ -931,16 +928,16 @@ double color_correction(std::vector<float>& out, const std::vector<float>& in,
 }
 
 void DecodeToHDR(RAWImage* raw, bool swap_endian) {
-  raw->hdr_image.resize(raw->width * raw->height);
+  raw->hdr_image.resize(raw->width * raw->height * raw->components);
 
   if (raw->bits == 12) {
-    decode12_hdr(raw->hdr_image, raw->image.data.data(), raw->width,
+    decode12_hdr(raw->hdr_image, raw->image.data.data(), raw->width * raw->components,
                  raw->height, swap_endian);
   } else if (raw->bits == 14) {
-    decode14_hdr(raw->hdr_image, raw->image.data.data(), raw->width,
+    decode14_hdr(raw->hdr_image, raw->image.data.data(), raw->width * raw->components,
                  raw->height, swap_endian);
   } else if (raw->bits == 16) {
-    decode16_hdr(raw->hdr_image, raw->image.data.data(), raw->width,
+    decode16_hdr(raw->hdr_image, raw->image.data.data(), raw->width * raw->components,
                  raw->height, swap_endian);
   } else {
     assert(0);
@@ -962,21 +959,27 @@ void Develop(RAWImage* raw, const UIParam& param) {
 
   std::vector<float> pre_color_corrected;
   pre_color_correction(pre_color_corrected, raw->hdr_image,
-                       param.black_level[0], param.white_level[0],
-                       param.color_matrix, raw->width, raw->height,
+                       param.black_level, param.white_level,
+                       raw->width, raw->height, raw->components,
                        /* scale */ 1.0f);
 
-  std::vector<float> debayed;
-  gUIParam.debayer_msec = debayer(debayed, pre_color_corrected, raw->width,
-                                  raw->height, param.cfa_offset);
+  std::vector<float> demosaiced;
+  if (raw->components == 3) {
+    // RAW contains demosaiced image.
+    demosaiced = pre_color_corrected;
+  } else {
+    gUIParam.debayer_msec = debayer(demosaiced, pre_color_corrected, raw->width,
+                                    raw->height, param.cfa_offset);
+  }
 
+#if 0
   double srgb_color_matrix[3][3];
   compute_color_matrix(srgb_color_matrix, raw->image.color_matrix1,
                        param.raw_white_balance);
 
   std::vector<float> color_corrected;
   gUIParam.color_correction_msec = color_correction(
-      color_corrected, debayed, raw->width, raw->height, srgb_color_matrix);
+      color_corrected, demosaiced, raw->width, raw->height, srgb_color_matrix);
 
   // filter
   float maxValue =
@@ -989,6 +992,10 @@ void Develop(RAWImage* raw, const UIParam& param) {
                       param.brightness, param.contrast, maxValue);
   vibrance(color_corrected, color_corrected, raw->width, raw->height,
            param.vibranceAmount, maxValue);
+
+#else
+  std::vector<float> color_corrected = demosaiced;
+#endif
 
   for (size_t y = 0; y < raw->height; y++) {
     for (size_t x = 0; x < raw->width; x++) {
@@ -1172,7 +1179,8 @@ void InitGLDisplay(GLContext* ctx, int width, int height) {
 void keyboardCallback(int keycode, int state) {
   printf("hello key %d, state %d(ctrl %d)\n", keycode, state,
          window->isModifierKeyPressed(B3G_CONTROL));
-  // if (keycode == 'q' && window && window->isModifierKeyPressed(B3G_SHIFT)) {
+  // if (keycode == 'q' && window && window->isModifierKeyPressed(B3G_SHIFT))
+  // {
   if (keycode == 27) {  // ESC
     if (window) window->setRequestExit();
   } else if (keycode == 32) {  // Space
@@ -1357,19 +1365,28 @@ int main(int argc, char** argv) {
 
     size_t largest = 0;
 
-    if (layer_id < 0) {
-      // Find largest image(based on width pixels).
-      int largest_width = images[0].width;
-      for (size_t i = 1; i < images.size(); i++) {
-        if (largest_width < images[i].width) {
-          largest = i;
-          largest_width = images[i].width;
+    {
+      if (layer_id < 0) {
+        // Find largest image(based on width pixels and bit depth).
+        int largest_width = images[0].width;
+        int largest_bits = images[0].bits_per_sample;
+
+        for (size_t i = 1; i < images.size(); i++) {
+          if (largest_width < images[i].width) {
+            largest = i;
+            largest_width = images[i].width;
+          } else if (largest_width == images[i].width) {
+            if (largest_bits < images[i].bits_per_sample) {
+              largest = i;
+              largest_bits = images[i].bits_per_sample;
+            }
+          }
         }
-      }
-    } else {
-      largest = layer_id;
-      if (largest >= images.size()) {
-        largest = images.size() - 1;
+      } else {
+        largest = layer_id;
+        if (largest >= images.size()) {
+          largest = images.size() - 1;
+        }
       }
     }
 
@@ -1379,6 +1396,8 @@ int main(int argc, char** argv) {
     gRAWImage.width = images[largest].width;
     gRAWImage.height = images[largest].height;
     gRAWImage.bits = images[largest].bits_per_sample;
+    gRAWImage.components = images[largest].samples_per_pixel;
+
     // gRAWImage.data = images[largest].data;
 
     gRAWImage.image = images[largest];
@@ -1386,6 +1405,7 @@ int main(int argc, char** argv) {
     std::cout << "width " << gRAWImage.width << std::endl;
     std::cout << "height " << gRAWImage.height << std::endl;
     std::cout << "bits " << gRAWImage.bits << std::endl;
+    std::cout << "samples_per_pixel " << gRAWImage.components << std::endl;
 
     // gRAWImage.dng_info = dng_info;
 
