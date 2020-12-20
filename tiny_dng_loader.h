@@ -2838,6 +2838,7 @@ static bool DecompressZIPedTile(const StreamReader& sr, unsigned char* dst_data,
 static bool DecompressLosslessJPEG(const StreamReader& sr,
                                    unsigned short* dst_data, int dst_width,
                                    const DNGImage& image_info,
+                                   int *ljbits_out,
                                    std::string* err) {
   unsigned int tiff_h = 0, tiff_w = 0;
   int offset = 0;
@@ -2888,6 +2889,7 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
       int lj_width = 0;
       int lj_height = 0;
       int lj_bits = 0;
+
       lj92 ljp;
 
       size_t input_len = sr.size() - static_cast<size_t>(offset);
@@ -3000,6 +3002,11 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
       TINY_DNG_ASSERT(ret == LJ92_ERROR_NONE,
                       "Error opening JPEG stream.");  // @fixme: redundant?
 
+      if (ljbits_out && (lj_bits > 0)) {
+        // Assume all tiles have same lj_bits value.
+        (*ljbits_out) = lj_bits;
+      }
+
       lj92_close(ljp);
 
       tiff_w += static_cast<unsigned int>(image_info.tile_width);
@@ -3038,6 +3045,7 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
         lj92_open(&ljp, reinterpret_cast<const uint8_t*>(sr.data() + offset),
                   /* data_len */ static_cast<int>(input_len), &lj_width,
                   &lj_height, &lj_bits);
+
     // TINY_DNG_DPRINTF("ret = %d\n", ret);
     TINY_DNG_ASSERT(ret == LJ92_ERROR_NONE, "Error opening JPEG stream.");
 
@@ -3052,6 +3060,11 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
     TINY_DNG_ASSERT(ret == LJ92_ERROR_NONE, "Error decoding JPEG stream.");
 
     lj92_close(ljp);
+
+    if (ljbits_out && (lj_bits > 0)) {
+      (*ljbits_out) = lj_bits;
+    }
+
   }
 
 #ifdef TINY_DNG_LOADER_PROFILING
@@ -4523,8 +4536,13 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         image->width = 0;
         image->height = 0;
 
-        // Assume 8bit
-        image->bits_per_sample = image->bits_per_sample_original = 8;
+        if (image->bits_per_sample_original < 0) {
+          // Assume 8bit
+          image->bits_per_sample_original = 8;
+        }
+
+        image->bits_per_sample = image->bits_per_sample_original;
+
 
       } else {
         TINY_DNG_ASSERT(image->bits_per_sample_original > 0,
@@ -4802,7 +4820,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
                                        image->samples_per_pixel));
 
         bool ok =
-            DecompressLosslessJPEG(sr, &buf.at(0), image->width, (*image), err);
+            DecompressLosslessJPEG(sr, &buf.at(0), image->width, (*image), nullptr, err);
         if (!ok) {
           if (err) {
             std::stringstream ss;
@@ -4898,22 +4916,6 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
                COMPRESSION_NEW_JPEG) {  //  new JPEG(baseline DCT JPEG or
                                         //  lossless JPEG)
 
-      // Get bps from LJPEG header.
-      {
-        size_t data_len = sr.size() - data_offset;
-        int lj_width = -1, lj_height = -1, lj_bits = -1, lj_components = -1;
-        if (!IsLosslessJPEG(sr.data() + data_offset, static_cast<int>(data_len),
-                            &lj_width, &lj_height, &lj_bits, &lj_components)) {
-          if (err) {
-            std::stringstream ss;
-            ss << "Data is not lossless JPEG data." << std::endl;
-            (*err) = ss.str();
-          }
-          return false;
-        }
-        image->bits_per_sample_original = lj_bits;
-      }
-
       // lj92 decodes data into 16bits, so modify bps.
       image->bits_per_sample = 16;
 
@@ -4945,9 +4947,11 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         return false;
       }
 
+      int lj_bits = 0;
+
       bool ok = DecompressLosslessJPEG(
           sr, reinterpret_cast<unsigned short*>(&(image->data.at(0))),
-          image->width, (*image), err);
+          image->width, (*image), &lj_bits, err);
       if (!ok) {
         if (err) {
           std::stringstream ss;
@@ -4955,6 +4959,10 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
           (*err) = ss.str();
         }
         return false;
+      }
+
+      if (image->bits_per_sample_original <= 0) {
+        image->bits_per_sample_original = lj_bits;
       }
 
     } else if (image->compression == 8) {  // ZIP
@@ -5016,12 +5024,20 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
       }
 #endif
     } else if (image->compression == 34892) {  // lossy JPEG
+
+      image->bits_per_sample_original = 1; // FIXME
+      image->bits_per_sample = 1; // FIXME
+
       if (err) {
         std::stringstream ss;
         ss << "lossy JPEG compression is not supported." << std::endl;
         (*err) = ss.str();
       }
     } else if (image->compression == 34713) {  // NEF lossless?
+
+      image->bits_per_sample_original = 1; // FIXME
+      image->bits_per_sample = 1; // FIXME
+
       if (err) {
         std::stringstream ss;
         ss << "Seems a NEF RAW. This compression is not supported."
@@ -5059,7 +5075,16 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         } else {
           TINY_DNG_ASSERT(image->bits_per_sample_original < 32,
                           "Cannot handle >= 32 bits per sample.");
-          image->white_level[s] = (1 << image->bits_per_sample_original);
+          image->white_level[s] = (1 << image->bits_per_sample_original) - 1;
+        }
+      }
+
+      // Shrink value when TIFF tag white level is larger than (2**bps)
+      // e.g. Set to 4096 if TIFF white_balance tag has 65535 but bps == 12
+      // FIXME: Is this ok according to DNG spec?
+      if ((image->bits_per_sample_original > 0) && (image->bits_per_sample_original < 30)) {
+        if (image->white_level[s] >= (1 << image->bits_per_sample_original)) {
+          image->white_level[s] = (1 << image->bits_per_sample_original) - 1;
         }
       }
     }

@@ -200,8 +200,8 @@ typedef struct {
   double develop_msec;
 
   // Per channel black/white level.
-  int black_level[4];
-  int white_level[4];
+  int black_level[4] = {0, 0, 0, 0};
+  int white_level[4] = {-1, -1, -1, -1};
 
   float hue;
   float saturation;
@@ -1361,6 +1361,9 @@ int main(int argc, char** argv) {
       std::cout << "  width : " << images[i].width << "\n";
       std::cout << "  height: " << images[i].height << "\n";
       std::cout << "  bits per sample : " << images[i].bits_per_sample << "\n";
+      std::cout << "  bits per sample(in stored image) : " << images[i].bits_per_sample_original << "\n";
+      std::cout << "  black_level[0] " << images[i].black_level[0] << std::endl;
+      std::cout << "  white_level[1] " << images[i].white_level[0] << std::endl;
     }
 
     size_t largest = 0;
@@ -1406,6 +1409,7 @@ int main(int argc, char** argv) {
     std::cout << "height " << gRAWImage.height << std::endl;
     std::cout << "bits " << gRAWImage.bits << std::endl;
     std::cout << "samples_per_pixel " << gRAWImage.components << std::endl;
+
 
     // gRAWImage.dng_info = dng_info;
 
@@ -1533,10 +1537,12 @@ int main(int argc, char** argv) {
 
       for (int s = 0; s < gRAWImage.image.samples_per_pixel; s++) {
         ImGui::Text("Image [%d]", s);
-        if (ImGui::InputInt("  black level", &(gUIParam.black_level[s]))) {
+        std::string tag = "  black level##" + std::to_string(s);
+        if (ImGui::InputInt(tag.c_str(), &(gUIParam.black_level[s]))) {
           Develop(&gRAWImage, gUIParam);
         }
-        if (ImGui::InputInt("  white level", &(gUIParam.white_level[s]))) {
+        tag = "  while level##" + std::to_string(s);
+        if (ImGui::InputInt(tag.c_str(), &(gUIParam.white_level[s]))) {
           Develop(&gRAWImage, gUIParam);
         }
       }
