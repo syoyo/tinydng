@@ -302,7 +302,7 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 #pragma clang diagnostic ignored "-Wc++98-compat-pedantic"
 #endif
 
-#define TINY_DNG_LOADER_DEBUG
+//#define TINY_DNG_LOADER_DEBUG
 #ifdef TINY_DNG_LOADER_DEBUG
 #define TINY_DNG_DPRINTF(...) printf(__VA_ARGS__)
 #else
@@ -577,6 +577,7 @@ static int find(ljp* self) {
   return data[ix - 1];
 }
 
+// swap endian
 #define BEH(ptr) ((((int)(*&ptr)) << 8) | (*(&ptr + 1)))
 
 static int parseHuff(ljp* self) {
@@ -911,6 +912,7 @@ inline static int nextdiff(ljp* self, int component_idx, int Px) {
 }
 
 static int parsePred6(ljp* self) {
+  // TODO: Consider self->components
   TINY_DNG_DPRINTF("parsePred6\n");
   int ret = LJ92_ERROR_CORRUPT;
   self->ix = self->scanstart;
@@ -1037,8 +1039,13 @@ static int parseScan(ljp* self) {
   int compcount = self->data[self->ix + 2];
   TINY_DNG_DPRINTF("comp count = %d\n", compcount);
   int pred = self->data[self->ix + 3 + 2 * compcount];
+  TINY_DNG_DPRINTF("predicator %d\n", pred);
+
   if (pred < 0 || pred > 7) return ret;
-  if (pred == 6) return parsePred6(self);  // Fast path
+
+  // Disable until parsePred6() consideres self->components.
+  //if (pred == 6) return parsePred6(self);  // Fast path
+
   // TINY_DNG_DPRINTF("pref = %d\n", pred);
   self->ix += BEH(self->data[self->ix]);
   self->cnt = 0;
@@ -1062,9 +1069,14 @@ static int parseScan(ljp* self) {
   // self->y,
   //       self->components, self->skiplen);
   for (int row = 0; row < self->y; row++) {
-    // TINY_DNG_DPRINTF("row = %d / %d\n", row, self->y);
+    TINY_DNG_DPRINTF("row = %d / %d\n", row, self->y);
+    TINY_DNG_DPRINTF("thisrow %p, lastrow %p\n", thisrow, lastrow);
     for (int col = 0; col < self->x; col++) {
       int colx = col * self->components;
+
+      //
+      // NOTE: pixel data is stored in interleaved manner(RGBRGBRGB...)
+      //
       for (int c = 0; c < self->components; c++) {
         // TINY_DNG_DPRINTF("c = %d, col = %d, row = %d\n", c, col, row);
         if ((col == 0) && (row == 0)) {
@@ -1077,6 +1089,10 @@ static int parseScan(ljp* self) {
           Px = lastrow[c];  // Use value above for first pixel in row
         } else {
           int prev_colx = (col - 1) * self->components;
+
+          // previous pixel
+          left = thisrow[prev_colx + c];
+
           // TINY_DNG_DPRINTF("pred = %d\n", pred);
           switch (pred) {
             case 0:
@@ -1102,13 +1118,14 @@ static int parseScan(ljp* self) {
               break;
             case 7:
               Px = (left + lastrow[colx + c]) >> 1;
+              //printf("Px = %d, left = %d, lastrow[colx + c] = %d\n", Px, left, lastrow[colx + c]);
               break;
           }
         }
 
         int huff_idx = c;
         if (c >= self->num_huff_idx) {
-          // It looks huffman tables are shared for all components.
+          // Invalid huffman table index.
           // Currently we assume # of huffman tables is 1.
           TINY_DNG_ASSERT(self->num_huff_idx == 1,
                           "Cannot handle >1 huffman tables.");
@@ -1117,9 +1134,12 @@ static int parseScan(ljp* self) {
 
         diff = nextdiff(self, huff_idx, Px);
         left = Px + diff;
+
+        TINY_DNG_ASSERT(left >= 0, "left value must be positive.");
+        TINY_DNG_ASSERT(left < 65536, "left value must be less than u16 max(65536).");
+
         left = (u16)(left%65536);
-        //TINY_DNG_DPRINTF("c[%d] Px = %d, diff = %d, left = %d\n", c, Px,
-        // diff, left);
+        TINY_DNG_DPRINTF("row[%d] col[%d] c[%d] Px = %d, diff = %d, left = %d\n", row, col, c, Px, diff, left);
         // Apple ProRAW gives -1 for `left`(=65535?), so uncommented negative left value check.
         //TINY_DNG_ASSERT(left >= 0 && left < (1 << self->bits),
         //                "Error huffman decoding.");
@@ -1139,14 +1159,17 @@ static int parseScan(ljp* self) {
       }                          // c
     }                            // col
 
+    // Swap pointers for input and working row buffer
     u16* temprow = lastrow;
     lastrow = thisrow;
     thisrow = temprow;
 
+    // Advance row of output buffer.
+    // NOTE: multiply
     out += self->x * self->components + self->skiplen;
-    // out += self->skiplen;
     // TINY_DNG_DPRINTF("out = %p, %p, diff = %lld\n", out, self->image, out -
     // self->image);
+
 
   }  // row
 
@@ -1254,7 +1277,7 @@ int lj92_open(lj92* lj, const uint8_t* data, int datalen, int* width,
     else {
       self->rowcache = rowcache;
       self->outrow[0] = rowcache;
-      self->outrow[1] = &rowcache[self->x];
+      self->outrow[1] = &rowcache[self->x * self->components];
     }
   }
 
@@ -1347,7 +1370,7 @@ int frequencyScan(lje* self) {
       if (p >= self->delinearizeLength) {
         free(rowcache);
         return LJ92_ERROR_TOO_WIDE;
-      }
+      o
       p = self->delinearize[p];
     }
     if (p >= maxval) {
@@ -2957,12 +2980,13 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
           x_len = static_cast<size_t>(dst_width) - tiff_w;
         }
 
+        // Decoded ljpeg data is already channel first(RGBRGBRGB...)
         for (size_t x = 0; x < x_len; x++) {
           for (size_t c = 0; c < spp; c++) {
-            // Channel last(RRR...GGG...BBB...) -> channel first(RGBRGBRGB...)
             dst_data[spp * (dst_offset + x) + c] =
-                tmpbuf[c * tile_size + (y * static_cast<size_t>(image_info.tile_width) +
-                               x)];
+                tmpbuf[spp * (y * static_cast<size_t>(image_info.tile_width) +
+                               x) +
+                        c];
           }
         }
       }
