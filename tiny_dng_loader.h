@@ -943,7 +943,7 @@ static int parsePred6(ljp* self) {
                   0);  // FIXME(syoyo): Is using (self->num_huff_idx-1) correct?
   Px = 1 << (self->bits - 1);
   left = Px + diff;
-  left = (u16)(left%65536);
+  left = (u16)(left % 65536);
   if (self->linearize)
     linear = self->linearize[left];
   else
@@ -960,7 +960,7 @@ static int parsePred6(ljp* self) {
     diff = nextdiff(self, self->num_huff_idx - 1, 0);
     Px = left;
     left = Px + diff;
-    left = (u16)(left%65536);
+    left = (u16)(left % 65536);
     if (self->linearize)
       linear = self->linearize[left];
     else
@@ -989,7 +989,7 @@ static int parsePred6(ljp* self) {
     diff = nextdiff(self, self->num_huff_idx - 1, 0);
     Px = lastrow[col];  // Use value above for first pixel in row
     left = Px + diff;
-    left = (u16)(left%65536);
+    left = (u16)(left % 65536);
     if (self->linearize) {
       if (left > self->linlen) return LJ92_ERROR_CORRUPT;
       linear = self->linearize[left];
@@ -1008,7 +1008,7 @@ static int parsePred6(ljp* self) {
       diff = nextdiff(self, self->num_huff_idx - 1, 0);
       Px = lastrow[col] + ((left - lastrow[col - 1]) >> 1);
       left = Px + diff;
-      left = (u16)(left%65536);
+      left = (u16)(left % 65536);
       // TINY_DNG_DPRINTF("%d %d %d %d %d
       // %x\n",col,diff,left,lastrow[col],lastrow[col-1],&lastrow[col]);
       if (self->linearize) {
@@ -1044,7 +1044,7 @@ static int parseScan(ljp* self) {
   if (pred < 0 || pred > 7) return ret;
 
   // Disable until parsePred6() consideres self->components.
-  //if (pred == 6) return parsePred6(self);  // Fast path
+  // if (pred == 6) return parsePred6(self);  // Fast path
 
   // TINY_DNG_DPRINTF("pref = %d\n", pred);
   self->ix += BEH(self->data[self->ix]);
@@ -1069,8 +1069,8 @@ static int parseScan(ljp* self) {
   // self->y,
   //       self->components, self->skiplen);
   for (int row = 0; row < self->y; row++) {
-    TINY_DNG_DPRINTF("row = %d / %d\n", row, self->y);
-    TINY_DNG_DPRINTF("thisrow %p, lastrow %p\n", thisrow, lastrow);
+    // TINY_DNG_DPRINTF("row = %d / %d\n", row, self->y);
+    // TINY_DNG_DPRINTF("thisrow %p, lastrow %p\n", thisrow, lastrow);
     for (int col = 0; col < self->x; col++) {
       int colx = col * self->components;
 
@@ -1118,7 +1118,8 @@ static int parseScan(ljp* self) {
               break;
             case 7:
               Px = (left + lastrow[colx + c]) >> 1;
-              //printf("Px = %d, left = %d, lastrow[colx + c] = %d\n", Px, left, lastrow[colx + c]);
+              // printf("Px = %d, left = %d, lastrow[colx + c] = %d\n", Px,
+              // left, lastrow[colx + c]);
               break;
           }
         }
@@ -1136,16 +1137,19 @@ static int parseScan(ljp* self) {
         left = Px + diff;
 
         TINY_DNG_ASSERT(left >= 0, "left value must be positive.");
-        TINY_DNG_ASSERT(left < 65536, "left value must be less than u16 max(65536).");
+        TINY_DNG_ASSERT(left < 65536,
+                        "left value must be less than u16 max(65536).");
 
-        left = (u16)(left%65536);
-        TINY_DNG_DPRINTF("row[%d] col[%d] c[%d] Px = %d, diff = %d, left = %d\n", row, col, c, Px, diff, left);
-        // Apple ProRAW gives -1 for `left`(=65535?), so uncommented negative left value check.
-        //TINY_DNG_ASSERT(left >= 0 && left < (1 << self->bits),
+        left = (u16)(left % 65536);
+        // TINY_DNG_DPRINTF("row[%d] col[%d] c[%d] Px = %d, diff = %d, left =
+        // %d\n", row, col, c, Px, diff, left);
+        // Apple ProRAW gives -1 for `left`(=65535?), so uncommented negative
+        // left value check.
+        // TINY_DNG_ASSERT(left >= 0 && left < (1 << self->bits),
         //                "Error huffman decoding.");
         // TINY_DNG_DPRINTF("pix = %d\n", left);
         // TINY_DNG_DPRINTF("%d %d %d\n",c,diff,left);
-        int linear; // TODO: use u16?
+        int linear;  // TODO: use u16?
         if (self->linearize) {
           if (left > self->linlen) return LJ92_ERROR_CORRUPT;
           linear = self->linearize[u16(left)];
@@ -1155,9 +1159,9 @@ static int parseScan(ljp* self) {
 
         // TINY_DNG_DPRINTF("linear = %d\n", linear);
         thisrow[colx + c] = left;
-        out[colx + c] = linear;  // HACK
-      }                          // c
-    }                            // col
+        out[colx + c] = linear;
+      }  // c
+    }    // col
 
     // Swap pointers for input and working row buffer
     u16* temprow = lastrow;
@@ -1170,12 +1174,11 @@ static int parseScan(ljp* self) {
     // TINY_DNG_DPRINTF("out = %p, %p, diff = %lld\n", out, self->image, out -
     // self->image);
 
-
   }  // row
 
   ret = LJ92_ERROR_NONE;
 
-  //TINY_DNG_DPRINTF("out written = %d\n", int(out - self->image));
+  // TINY_DNG_DPRINTF("out written = %d\n", int(out - self->image));
 
   // if (++col == self->x) {
   //	col = 0;
@@ -1206,9 +1209,9 @@ static int parseImage(ljp* self) {
       ret = parseHuff(self);
     } else if (nextMarker == 0xc3) {
       ret = parseSof3(self);
-    } else if (nextMarker == 0xfe) { // Comment
+    } else if (nextMarker == 0xfe) {  // Comment
       ret = parseBlock(self, nextMarker);
-    } else if (nextMarker == 0xd9) { // End of image
+    } else if (nextMarker == 0xd9) {  // End of image
       break;
     } else if (nextMarker == 0xda) {
       self->scanstart = self->ix;
@@ -1868,8 +1871,9 @@ typedef enum {
   TAG_CR2_META2 = 50885,
 
   // DNG 1.6(Apple ProRAW)
-  //ahttps://helpx.adobe.com/photoshop/kb/dng-specification-tags.html
-  TAG_SEMANTIC_NAME = 52526, // Type: ASCII, Count: String length including null, Value: null-terminated string
+  // ahttps://helpx.adobe.com/photoshop/kb/dng-specification-tags.html
+  TAG_SEMANTIC_NAME = 52526,  // Type: ASCII, Count: String length including
+                              // null, Value: null-terminated string
 
   TAG_INVALID = 65535
 } TiffTag;
@@ -2529,7 +2533,7 @@ static void InitializeDNGImage(tinydng::DNGImage* image) {
 
   image->samples_per_pixel = 1;
   image->rows_per_strip = -1;  // 2^32 - 1
-  image->bits_per_sample_original = 1;
+  image->bits_per_sample_original = -1;
 
   image->sample_format = SAMPLEFORMAT_UINT;
 
@@ -2909,13 +2913,13 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
                           image_info.tile_width * image_info.tile_length,
                       "Unexpected JPEG tile size.");
 
-      TINY_DNG_ASSERT(ljp->components ==
-                          image_info.samples_per_pixel,
+      TINY_DNG_ASSERT(ljp->components == image_info.samples_per_pixel,
                       "# of color channels does not match.");
 
       int write_length = image_info.tile_width;
-      //int skip_length = dst_width - image_info.tile_width;
-      //TINY_DNG_DPRINTF("write_len = %d, skip_len = %d\n", write_length, skip_length);
+      // int skip_length = dst_width - image_info.tile_width;
+      // TINY_DNG_DPRINTF("write_len = %d, skip_len = %d\n", write_length,
+      // skip_length);
 
       // size_t dst_offset =
       //    column_step * static_cast<size_t>(image_info.tile_width) +
@@ -2928,7 +2932,8 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
           static_cast<size_t>(lj_width * lj_height * ljp->components));
 
       ret = lj92_decode(ljp, tmpbuf.data(), image_info.tile_width, 0, NULL, 0);
-      //ret = lj92_decode(ljp, tmpbuf.data(), write_length, skip_length, NULL, 0);
+      // ret = lj92_decode(ljp, tmpbuf.data(), write_length, skip_length, NULL,
+      // 0);
       TINY_DNG_ASSERT(ret == LJ92_ERROR_NONE, "Error decoding JPEG stream.");
       // ret = lj92_decode(ljp, dst_data + dst_offset, write_length,
       // skip_length,
@@ -2938,7 +2943,7 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
       // NOTE: For some DNG file, tiled image may exceed the extent of target
       // image resolution.
 
-#if 0 // TODO: remove
+#if 0  // TODO: remove
       for (unsigned int y = 0;
            y < static_cast<unsigned int>(image_info.tile_length); y++) {
         unsigned int y_offset = y + tiff_h;
@@ -2963,7 +2968,8 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
 
       const size_t spp = size_t(image_info.samples_per_pixel);
 
-      const size_t tile_size = size_t(image_info.tile_width) * size_t(image_info.tile_length);
+      const size_t tile_size =
+          size_t(image_info.tile_width) * size_t(image_info.tile_length);
       for (unsigned int y = 0;
            y < static_cast<unsigned int>(image_info.tile_length); y++) {
         unsigned int y_offset = y + tiff_h;
@@ -2985,8 +2991,8 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
           for (size_t c = 0; c < spp; c++) {
             dst_data[spp * (dst_offset + x) + c] =
                 tmpbuf[spp * (y * static_cast<size_t>(image_info.tile_width) +
-                               x) +
-                        c];
+                              x) +
+                       c];
           }
         }
       }
@@ -3756,8 +3762,9 @@ static bool ParseTIFFIFD(const StreamReader& sr,
           return false;
         }
 
-        std::vector<uint8_t> buf(readLen); // readLen includes null char
-        if (!sr.read(readLen, readLen, reinterpret_cast<unsigned char *>(buf.data()))) {
+        std::vector<uint8_t> buf(readLen);  // readLen includes null char
+        if (!sr.read(readLen, readLen,
+                     reinterpret_cast<unsigned char*>(buf.data()))) {
           if (err) {
             (*err) += "Failed to parse SemanticName Tag.\n";
           }
@@ -3912,28 +3919,6 @@ static bool ParseDNGFromMemory(const StreamReader& sr,
     }
 
     TINY_DNG_DPRINTF("Next IFD offset = %d\n", offt);
-  }
-
-  for (size_t i = 0; i < images->size(); i++) {
-    tinydng::DNGImage* image = &((*images)[i]);
-    TINY_DNG_ASSERT(image->samples_per_pixel <= 4,
-                    "Cannot handle > 4 samples per pixel.");
-    for (int s = 0; s < image->samples_per_pixel; s++) {
-      if (image->white_level[s] == -1) {
-        // Set white level with (2 ** BitsPerSample) according to the DNG spec.
-        TINY_DNG_ASSERT(image->bits_per_sample_original > 0,
-                        "White level has to be > 0.");
-
-        if (image->bits_per_sample_original >=
-            32) {  // workaround for 32bit floating point TIFF.
-          image->white_level[s] = -1;
-        } else {
-          TINY_DNG_ASSERT(image->bits_per_sample_original < 32,
-                          "Cannot handle >= 32 bits per sample.");
-          image->white_level[s] = (1 << image->bits_per_sample_original);
-        }
-      }
-    }
   }
 
   return true;
@@ -4504,6 +4489,9 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
     return false;
   }
 
+  //
+  // Decode image data.
+  //
   for (size_t i = 0; i < images->size(); i++) {
     tinydng::DNGImage* image = &((*images)[i]);
 
@@ -4523,7 +4511,8 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
     // std::cout << "tile_offt = \n" << image->tile_offset << std::endl;
     // std::cout << "data_offset = " << data_offset << std::endl;
 
-    TINY_DNG_DPRINTF("image[%d].compression = %d\n", int(i), image->compression);
+    TINY_DNG_DPRINTF("image[%d].compression = %d\n", int(i),
+                     image->compression);
 
     if (image->compression == COMPRESSION_NONE) {  // no compression
 
@@ -4533,7 +4522,13 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         // TODO(syoyo): Decode jpeg data.
         image->width = 0;
         image->height = 0;
+
+        // Assume 8bit
+        image->bits_per_sample = image->bits_per_sample_original = 8;
+
       } else {
+        TINY_DNG_ASSERT(image->bits_per_sample_original > 0,
+                        "bits_per_sample information not found in the tag.");
         image->bits_per_sample = image->bits_per_sample_original;
         // std::cout << "sample_per_pixel " << image->samples_per_pixel << "\n";
         // std::cout << "width " << image->width << "\n";
@@ -4562,6 +4557,9 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         }
       }
     } else if (image->compression == COMPRESSION_LZW) {  // lzw compression
+      TINY_DNG_ASSERT(image->bits_per_sample_original > 0,
+                      "bits_per_sample information not found in the tag.");
+
       image->bits_per_sample = image->bits_per_sample_original;
       TINY_DNG_DPRINTF("bps = %d\n", image->bits_per_sample);
       TINY_DNG_DPRINTF("counts = %d\n", int(image->strip_byte_counts.size()));
@@ -4858,6 +4856,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
       } else {
         // Baseline 8bit JPEG
 
+        image->bits_per_sample_original = 8;
         image->bits_per_sample = 8;
 
         size_t jpeg_len = static_cast<size_t>(image->jpeg_byte_count);
@@ -4898,6 +4897,22 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
     } else if (image->compression ==
                COMPRESSION_NEW_JPEG) {  //  new JPEG(baseline DCT JPEG or
                                         //  lossless JPEG)
+
+      // Get bps from LJPEG header.
+      {
+        size_t data_len = sr.size() - data_offset;
+        int lj_width = -1, lj_height = -1, lj_bits = -1, lj_components = -1;
+        if (!IsLosslessJPEG(sr.data() + data_offset, static_cast<int>(data_len),
+                            &lj_width, &lj_height, &lj_bits, &lj_components)) {
+          if (err) {
+            std::stringstream ss;
+            ss << "Data is not lossless JPEG data." << std::endl;
+            (*err) = ss.str();
+          }
+          return false;
+        }
+        image->bits_per_sample_original = lj_bits;
+      }
 
       // lj92 decodes data into 16bits, so modify bps.
       image->bits_per_sample = 16;
@@ -4944,6 +4959,8 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
     } else if (image->compression == 8) {  // ZIP
 #ifdef TINY_DNG_LOADER_ENABLE_ZIP
+      TINY_DNG_ASSERT(image->bits_per_sample_original > 0,
+                      "bits_per_sample information not found in the tag.");
       image->bits_per_sample = image->bits_per_sample_original;
       TINY_DNG_DPRINTF("bps = %d\n", image->bits_per_sample);
       TINY_DNG_DPRINTF("data_offset = %d\n", int(data_offset));
@@ -5020,6 +5037,31 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         (*err) = ss.str();
       }
       return false;
+    }
+  }
+
+  //
+  // Postprocessing. Calculate while_level.
+  //
+  for (size_t i = 0; i < images->size(); i++) {
+    tinydng::DNGImage* image = &((*images)[i]);
+    TINY_DNG_ASSERT(image->samples_per_pixel <= 4,
+                    "Cannot handle > 4 samples per pixel.");
+    for (int s = 0; s < image->samples_per_pixel; s++) {
+      if (image->white_level[s] == -1) {
+        // Set white level with (2 ** BitsPerSample) according to the DNG spec.
+        TINY_DNG_ASSERT(image->bits_per_sample_original > 0,
+                        "Bits per sample of image has to be > 0.");
+
+        if (image->bits_per_sample_original >=
+            32) {  // workaround for 32bit floating point TIFF.
+          image->white_level[s] = -1;
+        } else {
+          TINY_DNG_ASSERT(image->bits_per_sample_original < 32,
+                          "Cannot handle >= 32 bits per sample.");
+          image->white_level[s] = (1 << image->bits_per_sample_original);
+        }
+      }
     }
   }
 
