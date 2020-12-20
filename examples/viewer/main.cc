@@ -1460,6 +1460,7 @@ int main(int argc, char** argv) {
     for (int s = 0; s < gRAWImage.image.samples_per_pixel; s++) {
       gUIParam.black_level[s] = gRAWImage.image.black_level[s];
       gUIParam.white_level[s] = gRAWImage.image.white_level[s];
+      std::cout << "channel[" << s << "] black level " << gRAWImage.image.black_level[s] << ", white level " << gRAWImage.image.white_level[s] << "\n";
     }
 
     gUIParam.hue = 0.0;
