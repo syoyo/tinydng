@@ -154,6 +154,7 @@ Here is the list of great articles on how to decode RAW file and how to develop 
 
 ## TODO
 
+* [ ] Move to C++11.
 * [ ] Parse semantic map in Apple ProRAW.
 * [ ] Add DNG header load only mode
 * [ ] Parse more DNG headers

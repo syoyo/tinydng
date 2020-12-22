@@ -5,7 +5,7 @@
 /*
 The MIT License (MIT)
 
-Copyright (c) 2016 - 2018 Syoyo Fujita and many contributors.
+Copyright (c) 2016 - 2020 Syoyo Fujita and many contributors.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -40,6 +40,10 @@ THE SOFTWARE.
 #endif
 
 namespace tinydng {
+
+// TODO: Deal with out-of-memory error
+// e.g. limit maximum images in one DNG/TIFF file
+// constexpr uint32_t kMaxImages = 10240;
 
 typedef enum {
   LIGHTSOURCE_UNKNOWN = 0,
@@ -4832,7 +4836,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
                                        image->samples_per_pixel));
 
         bool ok =
-            DecompressLosslessJPEG(sr, &buf.at(0), image->width, (*image), nullptr, err);
+            DecompressLosslessJPEG(sr, &buf.at(0), image->width, (*image), NULL, err);
         if (!ok) {
           if (err) {
             std::stringstream ss;
