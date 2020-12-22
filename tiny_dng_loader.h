@@ -2257,6 +2257,11 @@ class StreamReader {
         return false;
       }
 
+      if (val1 == 0) {
+        // Seems invalid
+        return false;
+      }
+
       (*ret) = static_cast<unsigned int>(val0 / val1);
       return true;
 
@@ -2918,7 +2923,7 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
       TINY_DNG_ASSERT(ljp->components == image_info.samples_per_pixel,
                       "# of color channels does not match.");
 
-      int write_length = image_info.tile_width;
+      //int write_length = image_info.tile_width;
       // int skip_length = dst_width - image_info.tile_width;
       // TINY_DNG_DPRINTF("write_len = %d, skip_len = %d\n", write_length,
       // skip_length);
@@ -2970,8 +2975,8 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
 
       const size_t spp = size_t(image_info.samples_per_pixel);
 
-      const size_t tile_size =
-          size_t(image_info.tile_width) * size_t(image_info.tile_length);
+      //const size_t tile_size =
+      //    size_t(image_info.tile_width) * size_t(image_info.tile_length);
       for (unsigned int y = 0;
            y < static_cast<unsigned int>(image_info.tile_length); y++) {
         unsigned int y_offset = y + tiff_h;
@@ -3178,6 +3183,13 @@ static bool ParseTIFFIFD(const StreamReader& sr,
                          std::vector<tinydng::DNGImage>* images,
                          std::string* warn, std::string* err) {
   (void)warn;
+
+  if (!images) {
+    if (err) {
+      (*err) += "`images` argument is null.\n";
+    }
+    return false;
+  }
 
   tinydng::DNGImage image;
   InitializeDNGImage(&image);
