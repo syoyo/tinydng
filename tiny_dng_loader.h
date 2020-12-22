@@ -43,7 +43,7 @@ namespace tinydng {
 
 // TODO: Deal with out-of-memory error
 // e.g. limit maximum images in one DNG/TIFF file
-// constexpr uint32_t kMaxImages = 10240;
+const uint32_t kMaxImages = 10240;
 
 typedef enum {
   LIGHTSOURCE_UNKNOWN = 0,
@@ -3186,8 +3186,6 @@ static bool ParseTIFFIFD(const StreamReader& sr,
                          const std::vector<FieldInfo>& custom_field_lists,
                          std::vector<tinydng::DNGImage>* images,
                          std::string* warn, std::string* err) {
-  (void)warn;
-
   if (!images) {
     if (err) {
       (*err) += "`images` argument is null.\n";
@@ -3899,7 +3897,13 @@ static bool ParseTIFFIFD(const StreamReader& sr,
   //
 
   // Add to images.
-  images->push_back(image);
+  if (images->size() < kMaxImages) {
+    images->push_back(image);
+  } else {
+    if (warn) {
+      (*warn) = "Too many images in one DNG file. Skipped some images\n";
+    }
+  }
 
   // TINY_DNG_DPRINTF("DONE ---------\n");
 
