@@ -3507,8 +3507,6 @@ static bool ParseTIFFIFD(const StreamReader& sr,
         char buf[16];
         size_t readLen = len;
         if (readLen > 16) readLen = 16;
-        // Assume 2x2 CFAPattern.
-        TINY_DNG_ASSERT(readLen == 4, "Unsupported CFA pattern.");
 
         if (!sr.read(readLen, 16, reinterpret_cast<unsigned char*>(buf))) {
           if (err) {
@@ -3517,10 +3515,18 @@ static bool ParseTIFFIFD(const StreamReader& sr,
           return false;
         }
 
-        image.cfa_pattern[0][0] = buf[0];
-        image.cfa_pattern[0][1] = buf[1];
-        image.cfa_pattern[1][0] = buf[2];
-        image.cfa_pattern[1][1] = buf[3];
+        // Only 2x2 CFAPattern is supported at the moment.
+        if (readLen == 4) {
+          image.cfa_pattern[0][0] = buf[0];
+          image.cfa_pattern[0][1] = buf[1];
+          image.cfa_pattern[1][0] = buf[2];
+          image.cfa_pattern[1][1] = buf[3];
+        } else {
+          if (err) {
+            (*err) = "Length of CFA pattern other than 4(2x2) is not supported yet.\n";
+          }
+          return false;
+        }
       } break;
 
       case TAG_DNG_VERSION: {
@@ -3931,6 +3937,8 @@ static bool ParseDNGFromMemory(const StreamReader& sr,
 
   TINY_DNG_DPRINTF("First IFD offt: %d\n", offt);
 
+  size_t count = 0;
+
   while (offt) {
     if (!sr.seek_set(offt)) {
       if (err) {
@@ -3952,6 +3960,15 @@ static bool ParseDNGFromMemory(const StreamReader& sr,
     }
 
     TINY_DNG_DPRINTF("Next IFD offset = %d\n", offt);
+
+    // Avoid infinite loop
+    count++;
+    if (count > kMaxImages) {
+      if (warn) {
+        (*warn) += "Too many IFDs. IFD offset seems invalid.\n";
+      }
+      break;
+    }
   }
 
   return true;
@@ -4565,20 +4582,40 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
 
       } else {
-        TINY_DNG_ASSERT(image->bits_per_sample_original > 0,
-                        "bits_per_sample information not found in the tag.");
+        if (image->bits_per_sample_original <= 0) {
+          if (err) {
+            (*err) += "bits_per_sample information not found in the tag.\n";
+          }
+          return false;
+        }
+
         image->bits_per_sample = image->bits_per_sample_original;
         // std::cout << "sample_per_pixel " << image->samples_per_pixel << "\n";
         // std::cout << "width " << image->width << "\n";
         // std::cout << "height " << image->height << "\n";
         // std::cout << "bps " << image->bits_per_sample << "\n";
-        TINY_DNG_ASSERT(
-            ((image->width * image->height * image->bits_per_sample) % 8) == 0,
-            "Image size must be multiple of 8.");
+
+        if (((image->width * image->height * image->bits_per_sample) % 8) == 0) {
+          // OK
+        } else {
+          if (err) {
+            (*err) += "Image size must be multiple of 8.";
+          }
+          return false;
+        }
+
+
         const size_t len = size_t(image->samples_per_pixel) *
                            size_t(image->width) * size_t(image->height) *
                            size_t(image->bits_per_sample) / size_t(8);
-        TINY_DNG_ASSERT(len > 0, "Unexpected length.");
+
+        if (len == 0) {
+          if (err) {
+            (*err) += "Unexpected length.";
+          }
+          return false;
+        }
+
         image->data.resize(len);
         if (!sr.seek_set(data_offset)) {
           if (err) {
@@ -4595,8 +4632,13 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         }
       }
     } else if (image->compression == COMPRESSION_LZW) {  // lzw compression
-      TINY_DNG_ASSERT(image->bits_per_sample_original > 0,
-                      "bits_per_sample information not found in the tag.");
+
+      if (image->bits_per_sample_original <= 0) {
+        if (err) {
+          (*err) += "bits_per_sample information not found in the tag.\n";
+        }
+        return false;
+      }
 
       image->bits_per_sample = image->bits_per_sample_original;
       TINY_DNG_DPRINTF("bps = %d\n", image->bits_per_sample);
