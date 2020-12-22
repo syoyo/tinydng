@@ -140,6 +140,9 @@ int main(int argc, char **argv) {
 * [examples/dng2exr](examples/dng2exr) Simple DNG to OpenEXR converter.
 * [examples/dngwriter](examples/dngwriter) Simple DNG writer example.
 
+## Fuzzing test
+
+* [fuzzer](fuzzer/) Fuzzing test.
 
 ## Resource
 
