@@ -43,7 +43,7 @@ namespace tinydng {
 
 // TODO: Deal with out-of-memory error
 // e.g. limit maximum images in one DNG/TIFF file
-const uint32_t kMaxImages = 10240;
+const size_t kMaxImages = 10240;
 
 typedef enum {
   LIGHTSOURCE_UNKNOWN = 0,
