@@ -1321,7 +1321,7 @@ void lj92_close(lj92 lj) {
   free(self);
 }
 
-#if 0  // not used in tinydngloader
+#if 0  // not used in tinydngloader at the moment.
 // Fix of https://github.com/ilia3101/MLV-App/pull/151/files is not reflected here fully.
 /* Encoder implementation */
 
@@ -1364,20 +1364,22 @@ int frequencyScan(lje* self) {
   uint16_t* rowcache = (uint16_t*)calloc(1, self->width * self->components * 4);
   uint16_t* rows[2];
   rows[0] = rowcache;
-  rows[1] = &rowcache[self->width];
+  rows[1] = &rowcache[self->width * self->components];
 
   int col = 0;
   int row = 0;
   int Px = 0;
   int32_t diff = 0;
   int maxval = (1 << self->bitdepth);
+
+  // TODO: consider self->components
   while (pixcount--) {
     uint16_t p = *pixel;
     if (self->delinearize) {
       if (p >= self->delinearizeLength) {
         free(rowcache);
         return LJ92_ERROR_TOO_WIDE;
-      o
+      }
       p = self->delinearize[p];
     }
     if (p >= maxval) {
@@ -1579,6 +1581,7 @@ void createEncodeTable(lje* self) {
 #endif
 }
 
+// TODO: Support components of 2>
 void writeHeader(lje* self) {
   int w = self->encodedWritten;
   uint8_t* e = self->encoded;
