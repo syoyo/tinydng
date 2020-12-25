@@ -4930,7 +4930,6 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
       bool decoded = false;
 
-#if 0
       if (image->bits_per_sample_original == 8) {
         // bps TAG exists. probably ordinal JPEG
 
@@ -4946,25 +4945,38 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
           jpeg_len = sr.size() - data_offset;
         }
 
+        int w_info = 0, h_info = 0, components_info = 0;
         int w = 0, h = 0, components = 0;
-        unsigned char* decoded_image = stbi_load_from_memory(
-            sr.data() + data_offset, static_cast<int>(jpeg_len), &w, &h,
-            &components, /* desired_channels */ 3);
-
-        if (!decoded_image) {
-          // Try to decode image as lossless JPEG.
+        int is_jpeg = stbi_info_from_memory(sr.data() + data_offset, static_cast<int>(jpeg_len), &w_info, &h_info, &components_info);
+        if (is_jpeg != 1) {
+            // Try to decode image as lossless JPEG.
         } else {
-          // HACK
-          printf("decoded as JPEG. w %d, h %d, c %d\n", w, h, components);
-          decoded = true;
-#if defined(TINY_DNG_DEBUG_SAVEIMAGE)
-          std::string output_filename = "layer-" + std::to_string(i) + ".png";
-          stbi_write_png(output_filename.c_str(), w, h, components, reinterpret_cast<const void *>(decoded_image), /* stride */0);
-#endif
-          free(decoded_image);
+
+          unsigned char* decoded_image = stbi_load_from_memory(
+              sr.data() + data_offset, static_cast<int>(jpeg_len), &w, &h,
+              &components, /* desired_channels */ components_info);
+
+          if (!decoded_image) {
+            // Try to decode image as lossless JPEG.
+          } else {
+            decoded = true;
+
+            image->width = w;
+            image->height = h;
+            image->samples_per_pixel = components;
+
+            const size_t len =
+                static_cast<size_t>((image->samples_per_pixel * image->width *
+                                     image->height * image->bits_per_sample) /
+                                    8);
+            image->data.resize(len);
+
+            memcpy(image->data.data(), decoded_image, len);
+
+            free(decoded_image);
+          }
         }
       }
-#endif
 
       if (!decoded) {
 
@@ -5080,6 +5092,8 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 #endif
     } else if (image->compression == COMPRESSION_LOSSY) {  // lossy JPEG
 
+        // TOOD: Check bps and photometric_interpretation.
+
         printf("jpeg_byte_count = %d\n", int(image->jpeg_byte_count));
         size_t jpeg_len = static_cast<size_t>(image->jpeg_byte_count);
         if (image->jpeg_byte_count == -1) {
@@ -5099,10 +5113,8 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
             &components, /* desired_channels */ 1);
 
         if (!decoded_image) {
-          // Try to decode image as lossless JPEG.
+          // Probably 16bit JPEG?
         } else {
-          // HACK
-          printf("decoded as JPEG. w %d, h %d, c %d\n", w, h, components);
 
 #if defined(TINY_DNG_DEBUG_SAVEIMAGE)
           std::string output_filename = "layer-" + std::to_string(i) + ".png";
