@@ -5,7 +5,7 @@
 /*
 The MIT License (MIT)
 
-Copyright (c) 2016 - 2018 Syoyo Fujita and many contributors.
+Copyright (c) 2016 - 2020 Syoyo Fujita and many contributors.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -41,6 +41,10 @@ THE SOFTWARE.
 
 namespace tinydng {
 
+// TODO: Deal with out-of-memory error
+// e.g. limit maximum images in one DNG/TIFF file
+const size_t kMaxImages = 10240;
+
 typedef enum {
   LIGHTSOURCE_UNKNOWN = 0,
   LIGHTSOURCE_DAYLIGHT = 1,
@@ -71,7 +75,7 @@ typedef enum {
   COMPRESSION_OLD_JPEG = 6,   // JPEG or lossless JPEG
   COMPRESSION_NEW_JPEG = 7,   // Usually lossles JPEG, may be JPEG
   COMPRESSION_ZIP = 8,         // ZIP
-  COMPRESSION_LOSSY = 34892,  // Lossy JPEGG
+  COMPRESSION_LOSSY = 34892,  // Lossy JPEG(usually 8-bit standard JPEG)
   COMPRESSION_NEF = 34713     // NIKON RAW
 } Compression;
 
@@ -299,8 +303,7 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 
 #ifdef __clang__
 #pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wvariadic-macros"
-#pragma clang diagnostic ignored "-Wc++98-compat-pedantic"
+#pragma clang diagnostic ignored "-Weverything"
 #endif
 
 #define TINY_DNG_LOADER_DEBUG
@@ -350,37 +353,7 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 
 #ifdef __clang__
 #pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wc++11-extensions"
-#pragma clang diagnostic ignored "-Wold-style-cast"
-#pragma clang diagnostic ignored "-Wconversion"
-#pragma clang diagnostic ignored "-Wunused-parameter"
-#pragma clang diagnostic ignored "-Wcast-align"
-#pragma clang diagnostic ignored "-Wconditional-uninitialized"
-#pragma clang diagnostic ignored "-Wunused-function"
-#pragma clang diagnostic ignored "-Wpadded"
-#pragma clang diagnostic ignored "-Wmissing-prototypes"
-#pragma clang diagnostic ignored "-Wreserved-id-macro"
-#pragma clang diagnostic ignored "-Wdisabled-macro-expansion"
-#pragma clang diagnostic ignored "-Wdouble-promotion"
-#pragma clang diagnostic ignored "-Wimplicit-fallthrough"
-#if __has_warning("-Wcomma")
-#pragma clang diagnostic ignored "-Wcomma"
-#endif
-#if __has_warning("-Wcast-qual")
-#pragma clang diagnostic ignored "-Wcast-qual"
-#endif
-#if __has_warning("-Wzero-as-null-pointer-constant")
-#pragma clang diagnostic ignored "-Wzero-as-null-pointer-constant"
-#endif
-#if __has_warning("-Wparentheses-equality")
-#pragma clang diagnostic ignored "-Wparentheses-equality"
-#endif
-#if __has_warning("-Wextra-semi-stmt")
-#pragma clang diagnostic ignored "-Wextra-semi-stmt"
-#endif
-#if __has_warning("-Wsign-compare")
-#pragma clang diagnostic ignored "-Wsign-compare"
-#endif
+#pragma clang diagnostic ignored "-Weverything"
 #endif
 
 #ifdef _MSC_VER
@@ -1327,7 +1300,7 @@ void lj92_close(lj92 lj) {
   free(self);
 }
 
-#if 0  // not used in tinydngloader
+#if 0  // not used in tinydngloader at the moment.
 // Fix of https://github.com/ilia3101/MLV-App/pull/151/files is not reflected here fully.
 /* Encoder implementation */
 
@@ -1370,20 +1343,22 @@ int frequencyScan(lje* self) {
   uint16_t* rowcache = (uint16_t*)calloc(1, self->width * self->components * 4);
   uint16_t* rows[2];
   rows[0] = rowcache;
-  rows[1] = &rowcache[self->width];
+  rows[1] = &rowcache[self->width * self->components];
 
   int col = 0;
   int row = 0;
   int Px = 0;
   int32_t diff = 0;
   int maxval = (1 << self->bitdepth);
+
+  // TODO: consider self->components
   while (pixcount--) {
     uint16_t p = *pixel;
     if (self->delinearize) {
       if (p >= self->delinearizeLength) {
         free(rowcache);
         return LJ92_ERROR_TOO_WIDE;
-      o
+      }
       p = self->delinearize[p];
     }
     if (p >= maxval) {
@@ -1585,6 +1560,7 @@ void createEncodeTable(lje* self) {
 #endif
 }
 
+// TODO: Support components of 2>
 void writeHeader(lje* self) {
   int w = self->encodedWritten;
   uint8_t* e = self->encoded;
@@ -2267,6 +2243,11 @@ class StreamReader {
         return false;
       }
 
+      if (val1 == 0) {
+        // Seems invalid
+        return false;
+      }
+
       (*ret) = static_cast<unsigned int>(val0 / val1);
       return true;
 
@@ -2930,7 +2911,7 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
       TINY_DNG_ASSERT(ljp->components == image_info.samples_per_pixel,
                       "# of color channels does not match.");
 
-      int write_length = image_info.tile_width;
+      //int write_length = image_info.tile_width;
       // int skip_length = dst_width - image_info.tile_width;
       // TINY_DNG_DPRINTF("write_len = %d, skip_len = %d\n", write_length,
       // skip_length);
@@ -2982,8 +2963,8 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
 
       const size_t spp = size_t(image_info.samples_per_pixel);
 
-      const size_t tile_size =
-          size_t(image_info.tile_width) * size_t(image_info.tile_length);
+      //const size_t tile_size =
+      //    size_t(image_info.tile_width) * size_t(image_info.tile_length);
       for (unsigned int y = 0;
            y < static_cast<unsigned int>(image_info.tile_length); y++) {
         unsigned int y_offset = y + tiff_h;
@@ -3189,7 +3170,12 @@ static bool ParseTIFFIFD(const StreamReader& sr,
                          const std::vector<FieldInfo>& custom_field_lists,
                          std::vector<tinydng::DNGImage>* images,
                          std::string* warn, std::string* err) {
-  (void)warn;
+  if (!images) {
+    if (err) {
+      (*err) += "`images` argument is null.\n";
+    }
+    return false;
+  }
 
   tinydng::DNGImage image;
   InitializeDNGImage(&image);
@@ -3505,8 +3491,6 @@ static bool ParseTIFFIFD(const StreamReader& sr,
         char buf[16];
         size_t readLen = len;
         if (readLen > 16) readLen = 16;
-        // Assume 2x2 CFAPattern.
-        TINY_DNG_ASSERT(readLen == 4, "Unsupported CFA pattern.");
 
         if (!sr.read(readLen, 16, reinterpret_cast<unsigned char*>(buf))) {
           if (err) {
@@ -3515,10 +3499,18 @@ static bool ParseTIFFIFD(const StreamReader& sr,
           return false;
         }
 
-        image.cfa_pattern[0][0] = buf[0];
-        image.cfa_pattern[0][1] = buf[1];
-        image.cfa_pattern[1][0] = buf[2];
-        image.cfa_pattern[1][1] = buf[3];
+        // Only 2x2 CFAPattern is supported at the moment.
+        if (readLen == 4) {
+          image.cfa_pattern[0][0] = buf[0];
+          image.cfa_pattern[0][1] = buf[1];
+          image.cfa_pattern[1][0] = buf[2];
+          image.cfa_pattern[1][1] = buf[3];
+        } else {
+          if (err) {
+            (*err) = "Length of CFA pattern other than 4(2x2) is not supported yet.\n";
+          }
+          return false;
+        }
       } break;
 
       case TAG_DNG_VERSION: {
@@ -3895,7 +3887,13 @@ static bool ParseTIFFIFD(const StreamReader& sr,
   //
 
   // Add to images.
-  images->push_back(image);
+  if (images->size() < kMaxImages) {
+    images->push_back(image);
+  } else {
+    if (warn) {
+      (*warn) = "Too many images in one DNG file. Skipped some images\n";
+    }
+  }
 
   // TINY_DNG_DPRINTF("DONE ---------\n");
 
@@ -3923,6 +3921,8 @@ static bool ParseDNGFromMemory(const StreamReader& sr,
 
   TINY_DNG_DPRINTF("First IFD offt: %d\n", offt);
 
+  size_t count = 0;
+
   while (offt) {
     if (!sr.seek_set(offt)) {
       if (err) {
@@ -3944,6 +3944,15 @@ static bool ParseDNGFromMemory(const StreamReader& sr,
     }
 
     TINY_DNG_DPRINTF("Next IFD offset = %d\n", offt);
+
+    // Avoid infinite loop
+    count++;
+    if (count > kMaxImages) {
+      if (warn) {
+        (*warn) += "Too many IFDs. IFD offset seems invalid.\n";
+      }
+      break;
+    }
   }
 
   return true;
@@ -4557,20 +4566,40 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
 
       } else {
-        TINY_DNG_ASSERT(image->bits_per_sample_original > 0,
-                        "bits_per_sample information not found in the tag.");
+        if (image->bits_per_sample_original <= 0) {
+          if (err) {
+            (*err) += "bits_per_sample information not found in the tag.\n";
+          }
+          return false;
+        }
+
         image->bits_per_sample = image->bits_per_sample_original;
         // std::cout << "sample_per_pixel " << image->samples_per_pixel << "\n";
         // std::cout << "width " << image->width << "\n";
         // std::cout << "height " << image->height << "\n";
         // std::cout << "bps " << image->bits_per_sample << "\n";
-        TINY_DNG_ASSERT(
-            ((image->width * image->height * image->bits_per_sample) % 8) == 0,
-            "Image size must be multiple of 8.");
+
+        if (((image->width * image->height * image->bits_per_sample) % 8) == 0) {
+          // OK
+        } else {
+          if (err) {
+            (*err) += "Image size must be multiple of 8.";
+          }
+          return false;
+        }
+
+
         const size_t len = size_t(image->samples_per_pixel) *
                            size_t(image->width) * size_t(image->height) *
                            size_t(image->bits_per_sample) / size_t(8);
-        TINY_DNG_ASSERT(len > 0, "Unexpected length.");
+
+        if (len == 0) {
+          if (err) {
+            (*err) += "Unexpected length.";
+          }
+          return false;
+        }
+
         image->data.resize(len);
         if (!sr.seek_set(data_offset)) {
           if (err) {
@@ -4587,8 +4616,13 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         }
       }
     } else if (image->compression == COMPRESSION_LZW) {  // lzw compression
-      TINY_DNG_ASSERT(image->bits_per_sample_original > 0,
-                      "bits_per_sample information not found in the tag.");
+
+      if (image->bits_per_sample_original <= 0) {
+        if (err) {
+          (*err) += "bits_per_sample information not found in the tag.\n";
+        }
+        return false;
+      }
 
       image->bits_per_sample = image->bits_per_sample_original;
       TINY_DNG_DPRINTF("bps = %d\n", image->bits_per_sample);
@@ -4832,7 +4866,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
                                        image->samples_per_pixel));
 
         bool ok =
-            DecompressLosslessJPEG(sr, &buf.at(0), image->width, (*image), nullptr, err);
+            DecompressLosslessJPEG(sr, &buf.at(0), image->width, (*image), NULL, err);
         if (!ok) {
           if (err) {
             std::stringstream ss;
@@ -4903,10 +4937,35 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         TINY_DNG_ASSERT(jpeg_len > 0, "Invalid length.");
 
         // Assume RGB jpeg
+        //
+        // First check the header.
+        int w_info = 0, h_info = 0, components_info = 0;
+        int is_jpeg = stbi_info_from_memory(sr.data() + data_offset, static_cast<int>(jpeg_len), &w_info, &h_info, &components_info);
+        if (is_jpeg != 1) {
+          if (err) {
+            (*err) += "Not a JPEG data.\n";
+          }
+          return false;
+        }
+
+        if ((components_info == 1) || (components_info == 3)) {
+          if (err) {
+            (*err) += "Unsupported channels in JPEG data.\n";
+          }
+          return false;
+        }
+
+        if ((w_info < 1) || (h_info < 1)) {
+          if (err) {
+            (*err) += "Invalid JPEG image resolution.\n";
+          }
+          return false;
+        }
+
         int w = 0, h = 0, components = 0;
         unsigned char* decoded_image = stbi_load_from_memory(
             sr.data() + data_offset, static_cast<int>(jpeg_len), &w, &h,
-            &components, /* desired_channels */ 3);
+            &components, /* desired_channels */ components_info);
         TINY_DNG_ASSERT(decoded_image, "Could not decode JPEG image.");
 
         // Currently we just discard JPEG image(since JPEG image would be just a
@@ -4946,12 +5005,12 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         }
 
         int w_info = 0, h_info = 0, components_info = 0;
-        int w = 0, h = 0, components = 0;
         int is_jpeg = stbi_info_from_memory(sr.data() + data_offset, static_cast<int>(jpeg_len), &w_info, &h_info, &components_info);
         if (is_jpeg != 1) {
             // Try to decode image as lossless JPEG.
         } else {
 
+          int w = 0, h = 0, components = 0;
           unsigned char* decoded_image = stbi_load_from_memory(
               sr.data() + data_offset, static_cast<int>(jpeg_len), &w, &h,
               &components, /* desired_channels */ components_info);
@@ -4981,7 +5040,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
       if (!decoded) {
 
         // Try to decode as lossless JPEG.
-      
+
         // lj92 decodes data into 16bits, so modify bps.
         image->bits_per_sample = 16;
 
@@ -5094,7 +5153,6 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
         // TOOD: Check bps and photometric_interpretation.
 
-        printf("jpeg_byte_count = %d\n", int(image->jpeg_byte_count));
         size_t jpeg_len = static_cast<size_t>(image->jpeg_byte_count);
         if (image->jpeg_byte_count == -1) {
           // No jpeg datalen. Set to the size of file - offset.
@@ -5110,7 +5168,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         int w = 0, h = 0, components = 0;
         unsigned char* decoded_image = stbi_load_from_memory(
             sr.data() + data_offset, static_cast<int>(jpeg_len), &w, &h,
-            &components, /* desired_channels */ 1);
+            &components, /* desired_channels */ components_info);
 
         if (!decoded_image) {
           // Probably 16bit JPEG?
