@@ -26,7 +26,7 @@ TinyDNGLoader can also be used as an TIFF RGB image loader(8bit, 16bit and 32bit
 * Experimental
   * Apple ProRAW(Lossless JPEG 12bit)
     * [x] Lossless JPEG 12bit
-    * [ ] Semantic map
+    * [x] Semantic map(8bit Standard JPEG)
   * Decode Canon RAW(CR2)
     * [x] RAW
     * [ ] mRAW
@@ -45,7 +45,7 @@ Here is the list of supported DNG files.
 * [x] iPhone DNG
 * [ ] Apple ProRAW
   * [x] Lossless JPEG 12bit
-  * [ ] Semantic map
+  * [x] Semantic map
 * [x] Black magic DNG
   * CinemaDNG(lossy compression) is **not supported**.
 * [x] Canon CR2(experimental)
@@ -155,7 +155,7 @@ Here is the list of great articles on how to decode RAW file and how to develop 
 ## TODO
 
 * [ ] Move to C++11.
-* [ ] Parse semantic map in Apple ProRAW.
+* [ ] Parse semantic map tags in Apple ProRAW.
 * [ ] Add DNG header load only mode
 * [ ] Parse more DNG headers
 * [ ] Parse more custom DNG(TIFF) tags
