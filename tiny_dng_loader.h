@@ -375,6 +375,11 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 #if __has_warning("-Wextra-semi-stmt")
 #pragma clang diagnostic ignored "-Wextra-semi-stmt"
 #endif
+
+#if __has_warning("-Wsign-compare")
+#pragma clang diagnostic ignored "-Wsign-compare"
+#endif
+
 #endif
 
 #ifdef _MSC_VER
@@ -4956,10 +4961,34 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         TINY_DNG_ASSERT(jpeg_len > 0, "Invalid length.");
 
         // Assume RGB jpeg
+        //
+        // First check the header.
         int w = 0, h = 0, components = 0;
+        int is_jpeg = stbi_info_from_memory(sr.data() + data_offset, static_cast<int>(jpeg_len), &w, &h, &components);
+        if (is_jpeg != 1) {
+          if (err) {
+            (*err) += "Not a JPEG data.\n";
+          }
+          return false;
+        }
+
+        if ((components == 1) || (components == 3)) {
+          if (err) {
+            (*err) += "Unsupported channels in JPEG data.\n";
+          }
+          return false;
+        }
+
+        if ((w < 1) || (h < 1)) {
+          if (err) {
+            (*err) += "Invalid JPEG image resolution.\n";
+          }
+          return false;
+        }
+
         unsigned char* decoded_image = stbi_load_from_memory(
             sr.data() + data_offset, static_cast<int>(jpeg_len), &w, &h,
-            &components, /* desired_channels */ 3);
+            &components, /* desired_channels */ components);
         TINY_DNG_ASSERT(decoded_image, "Could not decode JPEG image.");
 
         // Currently we just discard JPEG image(since JPEG image would be just a
