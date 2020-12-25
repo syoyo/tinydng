@@ -74,7 +74,7 @@ typedef enum {
   COMPRESSION_LZW = 5,        // LZW
   COMPRESSION_OLD_JPEG = 6,   // JPEG or lossless JPEG
   COMPRESSION_NEW_JPEG = 7,   // Usually lossles JPEG, may be JPEG
-  COMPRESSION_ZIP = 8,         // ZIP
+  COMPRESSION_ZIP = 8,        // ZIP
   COMPRESSION_LOSSY = 34892,  // Lossy JPEG(usually 8-bit standard JPEG)
   COMPRESSION_NEF = 34713     // NIKON RAW
 } Compression;
@@ -306,17 +306,21 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 #pragma clang diagnostic ignored "-Weverything"
 #endif
 
-#define TINY_DNG_LOADER_DEBUG
+//#define TINY_DNG_LOADER_DEBUG
 #ifdef TINY_DNG_LOADER_DEBUG
 #define TINY_DNG_DPRINTF(...) printf(__VA_ARGS__)
 #else
 #define TINY_DNG_DPRINTF(...)
 #endif
 
+#if 0 // DBG
+
 #define TINY_DNG_DEBUG_SAVEIMAGE
 #if defined(TINY_DNG_DEBUG_SAVEIMAGE)
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "examples/common/stb_image_write.h"
+#endif
+
 #endif
 
 #if !defined(TINY_DNG_NO_EXCEPTION)
@@ -2828,8 +2832,7 @@ static bool DecompressZIPedTile(const StreamReader& sr, unsigned char* dst_data,
 // Decompress LosslesJPEG adta.
 static bool DecompressLosslessJPEG(const StreamReader& sr,
                                    unsigned short* dst_data, int dst_width,
-                                   const DNGImage& image_info,
-                                   int *ljbits_out,
+                                   const DNGImage& image_info, int* ljbits_out,
                                    std::string* err) {
   unsigned int tiff_h = 0, tiff_w = 0;
   int offset = 0;
@@ -2838,7 +2841,8 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
   auto start_t = std::chrono::system_clock::now();
 #endif
 
-  TINY_DNG_DPRINTF("tile_width %d, tile_length %d\n", image_info.tile_width, image_info.tile_length);
+  TINY_DNG_DPRINTF("tile_width %d, tile_length %d\n", image_info.tile_width,
+                   image_info.tile_length);
 
   if ((image_info.tile_width > 0) && (image_info.tile_length > 0)) {
     // Assume Lossless JPEG data is stored in tiled format.
@@ -2911,7 +2915,7 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
       TINY_DNG_ASSERT(ljp->components == image_info.samples_per_pixel,
                       "# of color channels does not match.");
 
-      //int write_length = image_info.tile_width;
+      // int write_length = image_info.tile_width;
       // int skip_length = dst_width - image_info.tile_width;
       // TINY_DNG_DPRINTF("write_len = %d, skip_len = %d\n", write_length,
       // skip_length);
@@ -2963,7 +2967,7 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
 
       const size_t spp = size_t(image_info.samples_per_pixel);
 
-      //const size_t tile_size =
+      // const size_t tile_size =
       //    size_t(image_info.tile_width) * size_t(image_info.tile_length);
       for (unsigned int y = 0;
            y < static_cast<unsigned int>(image_info.tile_length); y++) {
@@ -3057,7 +3061,6 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
     if (ljbits_out && (lj_bits > 0)) {
       (*ljbits_out) = lj_bits;
     }
-
   }
 
 #ifdef TINY_DNG_LOADER_PROFILING
@@ -3507,7 +3510,9 @@ static bool ParseTIFFIFD(const StreamReader& sr,
           image.cfa_pattern[1][1] = buf[3];
         } else {
           if (err) {
-            (*err) = "Length of CFA pattern other than 4(2x2) is not supported yet.\n";
+            (*err) =
+                "Length of CFA pattern other than 4(2x2) is not supported "
+                "yet.\n";
           }
           return false;
         }
@@ -4564,7 +4569,6 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
         image->bits_per_sample = image->bits_per_sample_original;
 
-
       } else {
         if (image->bits_per_sample_original <= 0) {
           if (err) {
@@ -4579,7 +4583,8 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         // std::cout << "height " << image->height << "\n";
         // std::cout << "bps " << image->bits_per_sample << "\n";
 
-        if (((image->width * image->height * image->bits_per_sample) % 8) == 0) {
+        if (((image->width * image->height * image->bits_per_sample) % 8) ==
+            0) {
           // OK
         } else {
           if (err) {
@@ -4587,7 +4592,6 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
           }
           return false;
         }
-
 
         const size_t len = size_t(image->samples_per_pixel) *
                            size_t(image->width) * size_t(image->height) *
@@ -4865,8 +4869,8 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         buf.resize(static_cast<size_t>(image->width * image->height *
                                        image->samples_per_pixel));
 
-        bool ok =
-            DecompressLosslessJPEG(sr, &buf.at(0), image->width, (*image), NULL, err);
+        bool ok = DecompressLosslessJPEG(sr, &buf.at(0), image->width, (*image),
+                                         NULL, err);
         if (!ok) {
           if (err) {
             std::stringstream ss;
@@ -4940,7 +4944,9 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         //
         // First check the header.
         int w_info = 0, h_info = 0, components_info = 0;
-        int is_jpeg = stbi_info_from_memory(sr.data() + data_offset, static_cast<int>(jpeg_len), &w_info, &h_info, &components_info);
+        int is_jpeg = stbi_info_from_memory(sr.data() + data_offset,
+                                            static_cast<int>(jpeg_len), &w_info,
+                                            &h_info, &components_info);
         if (is_jpeg != 1) {
           if (err) {
             (*err) += "Not a JPEG data.\n";
@@ -4948,7 +4954,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
           return false;
         }
 
-        if ((components_info == 1) || (components_info == 3)) {
+        if ((components_info != 1) && (components_info != 3)) {
           if (err) {
             (*err) += "Unsupported channels in JPEG data.\n";
           }
@@ -5005,11 +5011,13 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         }
 
         int w_info = 0, h_info = 0, components_info = 0;
-        int is_jpeg = stbi_info_from_memory(sr.data() + data_offset, static_cast<int>(jpeg_len), &w_info, &h_info, &components_info);
-        if (is_jpeg != 1) {
-            // Try to decode image as lossless JPEG.
-        } else {
+        int is_jpeg = stbi_info_from_memory(sr.data() + data_offset,
+                                            static_cast<int>(jpeg_len), &w_info,
+                                            &h_info, &components_info);
 
+        if (is_jpeg != 1) {
+          // Try to decode image as lossless JPEG.
+        } else {
           int w = 0, h = 0, components = 0;
           unsigned char* decoded_image = stbi_load_from_memory(
               sr.data() + data_offset, static_cast<int>(jpeg_len), &w, &h,
@@ -5038,7 +5046,6 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
       }
 
       if (!decoded) {
-
         // Try to decode as lossless JPEG.
 
         // lj92 decodes data into 16bits, so modify bps.
@@ -5151,48 +5158,92 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 #endif
     } else if (image->compression == COMPRESSION_LOSSY) {  // lossy JPEG
 
-        // TOOD: Check bps and photometric_interpretation.
+      // TOOD: Check bps and photometric_interpretation.
 
-        size_t jpeg_len = static_cast<size_t>(image->jpeg_byte_count);
-        if (image->jpeg_byte_count == -1) {
-          // No jpeg datalen. Set to the size of file - offset.
-          if (sr.size() < data_offset) {
-            if (err) {
-              (*err) += "Unexpected file size or data offset.\n";
-            }
-            return false;
+      size_t jpeg_len = static_cast<size_t>(image->jpeg_byte_count);
+      if (image->jpeg_byte_count == -1) {
+        // No jpeg datalen. Set to the size of file - offset.
+        if (sr.size() < data_offset) {
+          if (err) {
+            (*err) += "Unexpected file size or data offset.\n";
           }
-          jpeg_len = sr.size() - data_offset;
+          return false;
+        }
+        jpeg_len = sr.size() - data_offset;
+      }
+
+      int w_info = 0, h_info = 0, components_info = 0;
+      int is_jpeg = stbi_info_from_memory(sr.data() + data_offset,
+                                          static_cast<int>(jpeg_len), &w_info,
+                                          &h_info, &components_info);
+
+      if (is_jpeg != 1) {
+        if (err) {
+          (*err) +=
+              "Currently We only supports Standard JPEG data for Lossy "
+              "compression(34892).\n";
+        }
+        return false;
+      }
+
+      if ((components_info != 1) && (components_info != 3)) {
+        if (err) {
+          (*err) += "Unsupported channels in JPEG data.\n";
+        }
+        return false;
+      }
+
+      if ((w_info < 1) || (h_info < 1)) {
+        if (err) {
+          (*err) += "Invalid JPEG image resolution.\n";
+        }
+        return false;
+      }
+
+      int w = 0, h = 0, components = 0;
+      unsigned char* decoded_image = stbi_load_from_memory(
+          sr.data() + data_offset, static_cast<int>(jpeg_len), &w, &h,
+          &components, /* desired_channels */ components_info);
+
+
+      if (!decoded_image) {
+        // Probably 16bit JPEG?
+        image->bits_per_sample_original = 1;  // FIXME
+        image->bits_per_sample = 1;           // FIXME
+
+        if (err) {
+          std::stringstream ss;
+          ss << "Unsupported lossy JPEG compression(16bit JPEG?)." << std::endl;
+          (*err) = ss.str();
         }
 
-        int w = 0, h = 0, components = 0;
-        unsigned char* decoded_image = stbi_load_from_memory(
-            sr.data() + data_offset, static_cast<int>(jpeg_len), &w, &h,
-            &components, /* desired_channels */ components_info);
+      } else {
+        image->width = w;
+        image->height = h;
+        image->samples_per_pixel = components;
+        image->bits_per_sample = 8;
 
-        if (!decoded_image) {
-          // Probably 16bit JPEG?
-        } else {
+        const size_t len =
+            static_cast<size_t>((image->samples_per_pixel * image->width *
+                                 image->height * image->bits_per_sample) /
+                                8);
+        image->data.resize(len);
+
+        memcpy(image->data.data(), decoded_image, len);
 
 #if defined(TINY_DNG_DEBUG_SAVEIMAGE)
-          std::string output_filename = "layer-" + std::to_string(i) + ".png";
-          stbi_write_png(output_filename.c_str(), w, h, components, reinterpret_cast<const void *>(decoded_image), /* stride */0);
+        std::string output_filename = "layer-" + std::to_string(i) + ".png";
+        stbi_write_png(output_filename.c_str(), w, h, components,
+                       reinterpret_cast<const void*>(decoded_image),
+                       /* stride */ 0);
 #endif
-          free(decoded_image);
-        }
-
-      image->bits_per_sample_original = 1; // FIXME
-      image->bits_per_sample = 1; // FIXME
-
-      if (err) {
-        std::stringstream ss;
-        ss << "lossy JPEG compression is not supported." << std::endl;
-        (*err) = ss.str();
+        free(decoded_image);
       }
+
     } else if (image->compression == 34713) {  // NEF lossless?
 
-      image->bits_per_sample_original = 1; // FIXME
-      image->bits_per_sample = 1; // FIXME
+      image->bits_per_sample_original = 1;  // FIXME
+      image->bits_per_sample = 1;           // FIXME
 
       if (err) {
         std::stringstream ss;
@@ -5238,7 +5289,8 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
       // Shrink value when TIFF tag white level is larger than (2**bps)
       // e.g. Set to 4096 if TIFF white_balance tag has 65535 but bps == 12
       // FIXME: Is this ok according to DNG spec?
-      if ((image->bits_per_sample_original > 0) && (image->bits_per_sample_original < 30)) {
+      if ((image->bits_per_sample_original > 0) &&
+          (image->bits_per_sample_original < 30)) {
         if (image->white_level[s] >= (1 << image->bits_per_sample_original)) {
           image->white_level[s] = (1 << image->bits_per_sample_original) - 1;
         }
