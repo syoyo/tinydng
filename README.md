@@ -58,6 +58,8 @@ Here is the list of supported DNG files.
   * [x] LZW compressed 8-bit image.
 * [x] 16-bit uncompressed TIFF image
 * [x] 32-bit uncompressed TIFF image
+* OpCodeList
+  * [x] GainMap
 
 ## Usage
 

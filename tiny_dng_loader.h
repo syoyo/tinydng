@@ -137,6 +137,24 @@ struct FieldData {
   FieldData() : tag(0), type(TYPE_NOTYPE) {}
 };
 
+struct GainMap {
+  unsigned int idx; // 1, 2 or 3: OpCodeListN. 0 = invalid
+  unsigned int top, left, bottom, right;
+  unsigned int plane, planes;
+  unsigned int row_pitch, col_pitch;
+  unsigned int map_points_v, map_points_h;
+  int _pad0;
+  double map_spacing_v, map_spacing_h;
+  double map_origin_v, map_origin_h;
+  unsigned int map_planes;
+
+  int _pad1;
+  std::vector<float> pixels; // size = map_points_v * map_points_h * map_planes
+
+  GainMap() : idx(0) {
+  }
+};
+
 struct DNGImage {
   int black_level[4];  // for each spp(up to 4)
   int white_level[4];  // for each spp(up to 4)
@@ -212,6 +230,11 @@ struct DNGImage {
   // Apple ProRAW
   std::string semantic_name;
 
+  // GainMap
+  std::vector<GainMap> opcodelist1_gainmap;
+  std::vector<GainMap> opcodelist2_gainmap;
+  std::vector<GainMap> opcodelist3_gainmap;
+
   std::vector<unsigned char>
       data;  // Decoded pixel data(len = spp * width * height * bps / 8)
 
@@ -284,6 +307,7 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 #include <iterator>
 #include <map>
 #include <sstream>
+#include <fstream>
 
 // #include <iostream> // dbg
 
@@ -306,7 +330,7 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 #pragma clang diagnostic ignored "-Weverything"
 #endif
 
-//#define TINY_DNG_LOADER_DEBUG
+#define TINY_DNG_LOADER_DEBUG
 #ifdef TINY_DNG_LOADER_DEBUG
 #define TINY_DNG_DPRINTF(...) printf(__VA_ARGS__)
 #else
@@ -702,6 +726,8 @@ static int parseHuff(ljp* self) {
     maxbits--;
   }
   self->huffbits[self->num_huff_idx] = maxbits;
+  TINY_DNG_DPRINTF("huffbuts[%d] = %d\n", self->num_huff_idx, maxbits);
+
   /* Now fill the lut */
   u16* hufflut = (u16*)malloc((1 << maxbits) * sizeof(u16));
   // TINY_DNG_DPRINTF("maxbits = %d\n", maxbits);
@@ -738,7 +764,7 @@ static int parseHuff(ljp* self) {
     }
     hcode = huffvals[hv];
     hufflut[i] = hcode << 8 | bitsused;
-    // TINY_DNG_DPRINTF("%d %d %d\n",i,bitsused,hcode);
+    TINY_DNG_DPRINTF("idx[%d] hufflut[%d] = %d(bitsused = %d, hcode = %d\n",self->num_huff_idx, i, hufflut[i], bitsused,hcode);
     i++;
     rv++;
   }
@@ -1860,6 +1886,16 @@ typedef enum {
   TAG_CR2_SLICES = 50752,
   TAG_CR2_META2 = 50885,
 
+  //
+  // OpCodeList
+  //
+  TAG_OPCODE_LIST1 = 0xc740,
+  TAG_OPCODE_LIST2 = 0xc741,
+  TAG_OPCODE_LIST3 = 0xc742,
+
+  // TODO:
+  // TAG_NOISE_PROFILE = 0xc761
+
   // DNG 1.6(Apple ProRAW)
   // ahttps://helpx.adobe.com/photoshop/kb/dng-specification-tags.html
   TAG_SEMANTIC_NAME = 52526,  // Type: ASCII, Count: String length including
@@ -1867,6 +1903,24 @@ typedef enum {
 
   TAG_INVALID = 65535
 } TiffTag;
+
+typedef enum {
+  OPCODE_LIST_WARP_RECTILINEAR = 1,
+  OPCODE_LIST_WARP_FISHEYE = 2,
+  OPCODE_LIST_FIX_VIGNETTE_RADIAL = 3,
+  OPCODE_LIST_FIX_BAD_PIXELS_CONSTANT = 4,
+  OPCODE_LIST_FIX_BAD_PIXELS_LIST = 5,
+  OPCODE_LIST_TRIM_BOUNDS = 6,
+  OPCODE_LIST_MAP_TABLE = 7,
+  OPCODE_LIST_MAP_POLYNOMIAL = 8,
+  OPCODE_LIST_GAIN_MAP = 9,
+  OPCODE_LIST_DELTA_PER_ROW = 10,
+  OPCODE_LIST_DELTA_PER_COLUMN = 11,
+  OPCODE_LIST_SCALE_PER_ROW = 12,
+  OPCODE_LIST_SCALE_PER_COLUMN = 13
+} OpCodeListValue;
+
+static bool IsBigEndian();
 
 static void swap2(unsigned short* val) {
   unsigned short tmp = *val;
@@ -1993,6 +2047,42 @@ static void cpy8(int64_t* dst_val, const int64_t* src_val) {
   dst[5] = src[5];
   dst[6] = src[6];
   dst[7] = src[7];
+}
+
+///
+/// Simple PFM(grayscale) image saver.
+///
+static bool SaveAsPFM(
+  const std::string &filename, const std::vector<float> &image, size_t width, size_t height, size_t channels)
+{
+  std::string tag;
+  if (channels == 1) {
+    tag = "Pf";
+  } else if (channels == 3) {
+    tag = "PF";
+  } else {
+    // Unsupported.
+    return false;
+  }
+
+  std::ofstream ofs(filename.c_str(), std::ios::binary);
+  if (!ofs) {
+    return false;
+  }
+
+  ofs << tag << "\n";
+  ofs << width << " " << height << "\n";
+  if (IsBigEndian()) {
+    ofs << "1.0\n";
+  } else {
+    ofs << "-1.0\n";
+  }
+
+  size_t num = width * height * sizeof(float);
+
+  ofs.write(reinterpret_cast<const char *>(image.data()), ssize_t(num));
+
+  return true;
 }
 
 ///
@@ -3075,6 +3165,219 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
   return true;
 }
 
+// Currently we only support parsing GainMap
+static bool ParseOpcodeList(unsigned short tag, const uint8_t *data, size_t dataSize,
+  std::vector<GainMap> *gainmaps_out)
+{
+  // OpCode data is always store in big-endian byte order.
+  // First 32bit uint: The number of opcodes.
+  // For each opcode:
+  //   32bit uint for OpCodeID
+  //   32bit uint for DNG version
+  //   32bit uint for various flag bits.
+  //   32bit uint for the number of bytes of opcode data.
+  //
+  // Image data range
+  //   Opcode1 : 0 to 2^32 - 1
+  //   Opcode2 : 0 to 2^16 - 1
+  //   Opcode3 : 0.0 to 1.0
+
+  // TODO: Clip image data range according with `tag`
+  (void)tag;
+
+  if (dataSize <= (4 * 5)) {
+    // Too small
+    return false;
+  }
+
+  bool swap_endian = !IsBigEndian();
+  StreamReader sr(data, dataSize, swap_endian);
+
+  uint32_t num_opcodes = 0;
+
+  if (!sr.read4(&num_opcodes)) {
+    return false;
+  }
+
+  TINY_DNG_DPRINTF("# of opcodes = %d\n", num_opcodes);
+
+  for (size_t i = 0; i < num_opcodes; i++) {
+    uint32_t opcode_id = 0;
+    uint32_t dng_version = 0;
+    uint32_t flags = 0;
+    uint32_t num_bytes = 0;
+
+    if (!sr.read4(&opcode_id)) {
+      return false;
+    }
+    if (!sr.read4(&dng_version)) {
+      return false;
+    }
+    if (!sr.read4(&flags)) {
+      return false;
+    }
+    if (!sr.read4(&num_bytes)) {
+      return false;
+    }
+
+    TINY_DNG_DPRINTF("opcode %d, dng ver %d, flags %d, num_bytes %d\n", opcode_id, dng_version, flags, num_bytes);
+
+    if (num_bytes < 4) {
+      return false;
+    }
+
+    if (opcode_id == OPCODE_LIST_GAIN_MAP) {
+      uint32_t saved_loc = uint32_t(sr.tell());
+
+      // Top, Left, Bottom, Right, Plane, Planes, RowPitch, ColPitch, MapPointsV, MapPointsH (LONG)
+      // MapSpacingV, MapSpacingH, MapOriginV, MapOriginH (DOUBLE)
+      // MapPlanes (LONG)
+      // For each MapPointsV
+      //   For each MapPointsH
+      //     For each MapPlanes
+      //       MapGain (FLOAT)
+
+      uint32_t top, left, bottom, right, plane, planes, row_pitch, col_pitch, map_points_v, map_points_h;
+      double map_spacing_v, map_spacing_h, map_origin_v, map_origin_h;
+      uint32_t map_planes;
+
+      if (!sr.read4(&top)) {
+        return false;
+      }
+
+      if (!sr.read4(&left)) {
+        return false;
+      }
+
+      if (!sr.read4(&bottom)) {
+        return false;
+      }
+
+      if (!sr.read4(&right)) {
+        return false;
+      }
+
+      if (!sr.read4(&plane)) {
+        return false;
+      }
+
+      if (!sr.read4(&planes)) {
+        return false;
+      }
+
+      if (!sr.read4(&row_pitch)) {
+        return false;
+      }
+
+      if (!sr.read4(&col_pitch)) {
+        return false;
+      }
+
+      if (!sr.read4(&map_points_v)) {
+        return false;
+      }
+
+      if (!sr.read4(&map_points_h)) {
+        return false;
+      }
+
+      if (!sr.read_double(&map_spacing_v)) {
+        return false;
+      }
+
+      if (!sr.read_double(&map_spacing_h)) {
+        return false;
+      }
+
+      if (!sr.read_double(&map_origin_v)) {
+        return false;
+      }
+
+      if (!sr.read_double(&map_origin_h)) {
+        return false;
+      }
+
+      if (!sr.read4(&map_planes)) {
+        return false;
+      }
+
+      size_t num_items = map_points_v * map_points_h * map_planes;
+
+      TINY_DNG_DPRINTF("top %d, left %d, bottom %d, right %d\n", top, left, bottom, right);
+      TINY_DNG_DPRINTF("plane %d, planes %d\n", plane, planes);
+      TINY_DNG_DPRINTF("row_pitch %d, col_pitch %d\n", row_pitch, col_pitch);
+      TINY_DNG_DPRINTF("map_points_v %d, map_points_h %d\n", map_points_v, map_points_h);
+      TINY_DNG_DPRINTF("map_spacing_v %f, map_spacing_h %f\n", map_spacing_v, map_spacing_h);
+      TINY_DNG_DPRINTF("map_origin_v %f, map_origin_h %f\n", map_origin_v, map_origin_h);
+      TINY_DNG_DPRINTF("map_planes %d\n", map_planes);
+      TINY_DNG_DPRINTF("num_items %d\n", int(num_items));
+
+      // Read gain values.
+
+      std::vector<float> gainmap_pixels(num_items);
+      for (size_t k = 0; k < num_items; k++) {
+
+        if (!sr.read_float(&gainmap_pixels[k])) {
+          return false;
+        }
+
+        TINY_DNG_DPRINTF("values = %f\n", double(gainmap_pixels[k]));
+      }
+
+      GainMap gmap;
+      gmap.idx = (tag - TAG_OPCODE_LIST1) + 1;
+      TINY_DNG_DPRINTF("idx = %d\n", gmap.idx);
+      gmap.top = top;
+      gmap.left = left;
+      gmap.bottom = bottom;
+      gmap.right = right;
+      gmap.plane = plane;
+      gmap.planes = planes;
+      gmap.row_pitch = row_pitch;
+      gmap.col_pitch = col_pitch;
+      gmap.map_points_v = map_points_v;
+      gmap.map_points_h = map_points_h;
+      gmap.map_origin_v = map_origin_v;
+      gmap.map_origin_h = map_origin_h;
+      gmap.map_spacing_v = map_spacing_v;
+      gmap.map_spacing_h = map_spacing_h;
+      gmap.map_planes = map_planes;
+      gmap.pixels = gainmap_pixels;
+
+      // HACK
+      if ((map_planes == 1) || (map_planes == 3)) {
+        std::stringstream ss;
+        ss << "opcodelist" << gmap.idx;
+        ss << "-gainmap" << i << ".pfm";
+        std::string filename = ss.str();
+        if (!SaveAsPFM(filename, gainmap_pixels, map_points_h, map_points_v, map_planes)) {
+          // may ok
+        }
+      }
+
+      gainmaps_out->push_back(gmap);
+
+      // TODO: Ensure read bytes == num_bytes
+      if (!sr.seek_set(saved_loc + num_bytes)) {
+        return false;
+      }
+
+    } else {
+
+      // Unimplemented
+
+      std::vector<uint8_t> op_data(num_bytes);
+      if (!sr.read(num_bytes, num_bytes, reinterpret_cast<unsigned char *>(op_data.data()))) {
+        return false;
+      }
+
+    }
+
+  }
+
+  return true;
+}
+
 // Parse custom TIFF field
 // returns -1 when error.
 // returns 0 when not found.
@@ -3796,6 +4099,48 @@ static bool ParseTIFFIFD(const StreamReader& sr,
         image.semantic_name = std::string(buf.begin(), buf.end());
 
         TINY_DNG_DPRINTF("semantic_name = %s\n", image.semantic_name.c_str());
+      } break;
+
+      case TAG_OPCODE_LIST1:
+      case TAG_OPCODE_LIST2:
+      case TAG_OPCODE_LIST3: {
+        TINY_DNG_DPRINTF("opcodelist %d\n", tag);
+        size_t readLen = len;
+        if (readLen < 1) {
+          if (err) {
+            (*err) += "Empty data for OpCodeList Tag.\n";
+          }
+
+          return false;
+        }
+
+        std::vector<uint8_t> buf(readLen);
+        if (!sr.read(readLen, readLen,
+                     reinterpret_cast<unsigned char*>(buf.data()))) {
+          if (err) {
+            (*err) += "Failed to read OpCodeList data.\n";
+          }
+          return false;
+        }
+
+        std::vector<GainMap> *gainmaps = NULL;
+        if (tag == TAG_OPCODE_LIST1) {
+          gainmaps = &image.opcodelist1_gainmap;
+        } else if (tag == TAG_OPCODE_LIST2) {
+          gainmaps = &image.opcodelist2_gainmap;
+        } else if (tag == TAG_OPCODE_LIST3) {
+          gainmaps = &image.opcodelist3_gainmap;
+        }
+
+        if (!ParseOpcodeList(tag, buf.data(), buf.size(), gainmaps)) {
+          if (err) {
+            (*err) += "Failed to parse OpCodeList Tag.\n";
+          }
+          return false;
+        }
+
+        TINY_DNG_DPRINTF("opcodelist %d, dataLen = %d\n", tag, int(readLen));
+
       } break;
 
       default: {
