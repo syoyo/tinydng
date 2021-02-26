@@ -5,7 +5,7 @@
 /*
 The MIT License (MIT)
 
-Copyright (c) 2016 - 2020 Syoyo Fujita and many contributors.
+Copyright (c) 2016 - Present, Syoyo Fujita and many contributors.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -307,7 +307,6 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 #include <iterator>
 #include <map>
 #include <sstream>
-#include <fstream>
 
 // #include <iostream> // dbg
 
@@ -330,7 +329,7 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 #pragma clang diagnostic ignored "-Weverything"
 #endif
 
-#define TINY_DNG_LOADER_DEBUG
+//#define TINY_DNG_LOADER_DEBUG
 #ifdef TINY_DNG_LOADER_DEBUG
 #define TINY_DNG_DPRINTF(...) printf(__VA_ARGS__)
 #else
@@ -2049,41 +2048,6 @@ static void cpy8(int64_t* dst_val, const int64_t* src_val) {
   dst[7] = src[7];
 }
 
-///
-/// Simple PFM(grayscale) image saver.
-///
-static bool SaveAsPFM(
-  const std::string &filename, const std::vector<float> &image, size_t width, size_t height, size_t channels)
-{
-  std::string tag;
-  if (channels == 1) {
-    tag = "Pf";
-  } else if (channels == 3) {
-    tag = "PF";
-  } else {
-    // Unsupported.
-    return false;
-  }
-
-  std::ofstream ofs(filename.c_str(), std::ios::binary);
-  if (!ofs) {
-    return false;
-  }
-
-  ofs << tag << "\n";
-  ofs << width << " " << height << "\n";
-  if (IsBigEndian()) {
-    ofs << "1.0\n";
-  } else {
-    ofs << "-1.0\n";
-  }
-
-  size_t num = width * height * sizeof(float);
-
-  ofs.write(reinterpret_cast<const char *>(image.data()), ssize_t(num));
-
-  return true;
-}
 
 ///
 /// Simple stream reader
@@ -3177,7 +3141,7 @@ static bool ParseOpcodeList(unsigned short tag, const uint8_t *data, size_t data
   //   32bit uint for various flag bits.
   //   32bit uint for the number of bytes of opcode data.
   //
-  // Image data range
+  // Value range of processed Image data after OpCode processing(not implemented in TinyDNG)
   //   Opcode1 : 0 to 2^32 - 1
   //   Opcode2 : 0 to 2^16 - 1
   //   Opcode3 : 0.0 to 1.0
@@ -3199,7 +3163,7 @@ static bool ParseOpcodeList(unsigned short tag, const uint8_t *data, size_t data
     return false;
   }
 
-  TINY_DNG_DPRINTF("# of opcodes = %d\n", num_opcodes);
+  //TINY_DNG_DPRINTF("# of opcodes = %d\n", num_opcodes);
 
   for (size_t i = 0; i < num_opcodes; i++) {
     uint32_t opcode_id = 0;
@@ -3303,14 +3267,14 @@ static bool ParseOpcodeList(unsigned short tag, const uint8_t *data, size_t data
 
       size_t num_items = map_points_v * map_points_h * map_planes;
 
-      TINY_DNG_DPRINTF("top %d, left %d, bottom %d, right %d\n", top, left, bottom, right);
-      TINY_DNG_DPRINTF("plane %d, planes %d\n", plane, planes);
-      TINY_DNG_DPRINTF("row_pitch %d, col_pitch %d\n", row_pitch, col_pitch);
-      TINY_DNG_DPRINTF("map_points_v %d, map_points_h %d\n", map_points_v, map_points_h);
-      TINY_DNG_DPRINTF("map_spacing_v %f, map_spacing_h %f\n", map_spacing_v, map_spacing_h);
-      TINY_DNG_DPRINTF("map_origin_v %f, map_origin_h %f\n", map_origin_v, map_origin_h);
-      TINY_DNG_DPRINTF("map_planes %d\n", map_planes);
-      TINY_DNG_DPRINTF("num_items %d\n", int(num_items));
+      //TINY_DNG_DPRINTF("top %d, left %d, bottom %d, right %d\n", top, left, bottom, right);
+      //TINY_DNG_DPRINTF("plane %d, planes %d\n", plane, planes);
+      //TINY_DNG_DPRINTF("row_pitch %d, col_pitch %d\n", row_pitch, col_pitch);
+      //TINY_DNG_DPRINTF("map_points_v %d, map_points_h %d\n", map_points_v, map_points_h);
+      //TINY_DNG_DPRINTF("map_spacing_v %f, map_spacing_h %f\n", map_spacing_v, map_spacing_h);
+      //TINY_DNG_DPRINTF("map_origin_v %f, map_origin_h %f\n", map_origin_v, map_origin_h);
+      //TINY_DNG_DPRINTF("map_planes %d\n", map_planes);
+      //TINY_DNG_DPRINTF("num_items %d\n", int(num_items));
 
       // Read gain values.
 
@@ -3321,12 +3285,12 @@ static bool ParseOpcodeList(unsigned short tag, const uint8_t *data, size_t data
           return false;
         }
 
-        TINY_DNG_DPRINTF("values = %f\n", double(gainmap_pixels[k]));
+        //TINY_DNG_DPRINTF("values = %f\n", double(gainmap_pixels[k]));
       }
 
       GainMap gmap;
       gmap.idx = (tag - TAG_OPCODE_LIST1) + 1;
-      TINY_DNG_DPRINTF("idx = %d\n", gmap.idx);
+      //TINY_DNG_DPRINTF("idx = %d\n", gmap.idx);
       gmap.top = top;
       gmap.left = left;
       gmap.bottom = bottom;
@@ -3344,19 +3308,9 @@ static bool ParseOpcodeList(unsigned short tag, const uint8_t *data, size_t data
       gmap.map_planes = map_planes;
       gmap.pixels = gainmap_pixels;
 
-      // HACK
-      if ((map_planes == 1) || (map_planes == 3)) {
-        std::stringstream ss;
-        ss << "opcodelist" << gmap.idx;
-        ss << "-gainmap" << i << ".pfm";
-        std::string filename = ss.str();
-        if (!SaveAsPFM(filename, gainmap_pixels, map_points_h, map_points_v, map_planes)) {
-          // may ok
-        }
-      }
-
       gainmaps_out->push_back(gmap);
 
+      // Go to next OpCode data
       // TODO: Ensure read bytes == num_bytes
       if (!sr.seek_set(saved_loc + num_bytes)) {
         return false;
