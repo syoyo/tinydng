@@ -1,6 +1,7 @@
-DNG writer example is work in progress.
+DNG/TIFF writer example.
 
+Requires C++11 compiler.
 
 # TODO
 
-Sort TIFF tags in ascending order.
+* [ ] Write API document.

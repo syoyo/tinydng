@@ -1,4 +1,4 @@
-# Tiny DNG Loader
+# Tiny DNG Loader and Writer library
 
 [![Build Status](https://travis-ci.org/syoyo/tinydngloader.svg?branch=master)](https://travis-ci.org/syoyo/tinydngloader)
 
@@ -7,6 +7,8 @@ Header-only simple&limited DNG(Digital NeGative, TIFF format + extension) loader
 Currently TinyDNGLoader only supports lossless RAW DNG and limited lossless JPEG DNG.
 
 TinyDNGLoader can also be used as an TIFF RGB image loader(8bit, 16bit and 32bit are supported).
+
+Writer module is currently located in `examples/dngwriter/` and requires C++11 compiler.
 
 ![](images/tinydngloader_viewer.png)
 (NOTE: TinyDNGLoader just loads DNG data as is, thus you'll need your own RAW processing code(e.g. debayer) to get a developed image as shown the above)
