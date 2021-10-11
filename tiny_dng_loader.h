@@ -3415,6 +3415,7 @@ static int ParseCustomField(const StreamReader& sr,
         // Store rational value as is.
         memcpy(&data->data[0], &num, 4);
         memcpy(&data->data[4], &denom, 4);
+        found = true;
       } else {
         // TODO(syoyo): Support more data types.
       }
