@@ -63,6 +63,7 @@ typedef enum {
 
   TIFFTAG_DNG_VERSION = 50706,
   TIFFTAG_DNG_BACKWARD_VERSION = 50707,
+  TIFFTAG_UNIQUE_CAMERA_MODEL = 50708,
   TIFFTAG_CHRROMA_BLUR_RADIUS = 50703,
   TIFFTAG_BLACK_LEVEL = 50714,
   TIFFTAG_WHITE_LEVEL = 50717,
@@ -110,7 +111,7 @@ static const int RESUNIT_CENTIMETER = 2;
 static const int PHOTOMETRIC_WHITE_IS_ZERO = 0;  // For bilevel and grayscale
 static const int PHOTOMETRIC_BLACK_IS_ZERO = 1;  // For bilevel and grayscale
 static const int PHOTOMETRIC_RGB = 2;            // Default
-static const int PHOTOMETRIC_CFA = 32893;        // DNG ext
+static const int PHOTOMETRIC_CFA = 32803;        // DNG ext
 static const int PHOTOMETRIC_LINEARRAW = 34892;  // DNG ext
 
 // Sample format
@@ -167,6 +168,12 @@ class DNGImage {
   bool SetImageDescription(const std::string &ascii);
 
   ///
+  /// Set arbitrary string for unique camera model name (not localized!).
+  /// Currently we limit to 1024*1024 chars at max.
+  ///
+  bool SetUniqueCameraModel(const std::string &ascii);
+
+  ///
   /// Set software description(string).
   /// Currently we limit to 4095 chars at max.
   ///
@@ -181,6 +188,18 @@ class DNGImage {
 
   /// Specify white level per sample.
   bool SetWhiteLevelRational(unsigned int num_samples, const double *values);
+
+  /// Specify CFA repeating pattern dimensions.
+  bool SetCFARepeatPatternDim(const unsigned short width, const unsigned short height);
+
+  /// Specify DNG version.
+  bool SetDNGVersion(const unsigned char a, const unsigned char b, const unsigned char c, const unsigned char d);
+
+  /// Specify transformation matrix (XYZ to reference camera native color space values).
+  bool SetColorMatrix1(const unsigned int plane_count, const double *matrix_values);
+
+  /// Specify CFA geometric pattern (left-to-right, top-to-bottom).
+  bool SetCFAPattern(const unsigned int num_components, const unsigned char *values);
 
   /// Set image data
   bool SetImageData(const unsigned char *data, const size_t data_len);
@@ -696,7 +715,9 @@ bool DNGImage::SetBitsPerSample(const unsigned int num_samples,
 }
 
 bool DNGImage::SetPhotometric(const unsigned short value) {
-  if ((value == PHOTOMETRIC_LINEARRAW) || (value == PHOTOMETRIC_RGB) ||
+  if ((value == PHOTOMETRIC_LINEARRAW) ||
+      (value == PHOTOMETRIC_CFA) ||
+      (value == PHOTOMETRIC_RGB) ||
       (value == PHOTOMETRIC_WHITE_IS_ZERO) ||
       (value == PHOTOMETRIC_BLACK_IS_ZERO)) {
     // OK
@@ -1033,6 +1054,33 @@ bool DNGImage::SetImageDescription(const std::string &ascii) {
   return true;
 }
 
+bool DNGImage::SetUniqueCameraModel(const std::string &ascii) {
+  unsigned int count =
+      static_cast<unsigned int>(ascii.length() + 1);  // +1 for '\0'
+
+  if (count < 2) {
+    // empty string
+    return false;
+  }
+
+  if (count > (1024 * 1024)) {
+    // too large
+    return false;
+  }
+
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_UNIQUE_CAMERA_MODEL),
+                          TIFF_ASCII, count,
+                          reinterpret_cast<const unsigned char *>(ascii.data()),
+                          &ifd_tags_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
 bool DNGImage::SetSoftware(const std::string &ascii) {
   unsigned int count =
       static_cast<unsigned int>(ascii.length() + 1);  // +1 for '\0'
@@ -1068,6 +1116,93 @@ bool DNGImage::SetActiveArea(const unsigned int values[4]) {
   bool ret = WriteTIFFTag(
       static_cast<unsigned short>(TIFFTAG_ACTIVE_AREA), TIFF_LONG, count,
       reinterpret_cast<const unsigned char *>(data), &ifd_tags_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGImage::SetDNGVersion(const unsigned char a,
+                             const unsigned char b,
+                             const unsigned char c,
+                             const unsigned char d) {
+  unsigned char data[4] = {a, b, c, d};
+
+  bool ret = WriteTIFFTag(
+      static_cast<unsigned short>(TIFFTAG_DNG_VERSION), TIFF_BYTE, 4,
+      reinterpret_cast<const unsigned char *>(data),
+      &ifd_tags_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGImage::SetColorMatrix1(const unsigned int plane_count,
+                               const double *matrix_values) {
+  std::vector<unsigned int> vs(plane_count * 3 * 2);
+  for (size_t i = 0; i * 2 < vs.size(); i++) {
+    double numerator, denominator;
+    if (DoubleToRational(matrix_values[i], &numerator, &denominator) != 0) {
+      // Couldn't represent fp value as integer rational value.
+      return false;
+    }
+
+    vs[2 * i + 0] = static_cast<unsigned int>(numerator);
+    vs[2 * i + 1] = static_cast<unsigned int>(denominator);
+
+    // TODO(syoyo): Swap rational value(8 bytes) when writing IFD tag, not here.
+    if (swap_endian_) {
+      swap4(&vs[2 * i + 0]);
+      swap4(&vs[2 * i + 1]);
+    }
+  }
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_COLOR_MATRIX1),
+                          TIFF_SRATIONAL, vs.size() / 2,
+                          reinterpret_cast<const unsigned char *>(vs.data()),
+                          &ifd_tags_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGImage::SetCFARepeatPatternDim(const unsigned short width,
+                                      const unsigned short height) {
+  unsigned short data[2] = {width, height};
+
+  bool ret = WriteTIFFTag(
+      static_cast<unsigned short>(TIFFTAG_CFA_REPEAT_PATTERN_DIM), TIFF_SHORT, 2,
+      reinterpret_cast<const unsigned char *>(data),
+      &ifd_tags_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGImage::SetCFAPattern(const unsigned int num_components,
+                             const unsigned char *values) {
+  if ((values == NULL) || (num_components < 1)) {
+    return false;
+  }
+
+  bool ret = WriteTIFFTag(
+      static_cast<unsigned short>(TIFFTAG_CFA_PATTERN), TIFF_BYTE, num_components,
+      reinterpret_cast<const unsigned char *>(values),
+      &ifd_tags_, &data_os_);
 
   if (!ret) {
     return false;
