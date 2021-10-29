@@ -69,6 +69,9 @@ typedef enum {
   TIFFTAG_WHITE_LEVEL = 50717,
   TIFFTAG_COLOR_MATRIX1 = 50721,
   TIFFTAG_COLOR_MATRIX2 = 50722,
+  TIFFTAG_CAMERA_CALIBRATION1 = 50723,
+  TIFFTAG_CAMERA_CALIBRATION2 = 50724,
+  TIFFTAG_ANALOG_BALANCE = 50727,
   TIFFTAG_EXTRA_CAMERA_PROFILES = 50933,
   TIFFTAG_PROFILE_NAME = 50936,
   TIFFTAG_AS_SHOT_PROFILE_NAME = 50934,
@@ -184,10 +187,16 @@ class DNGImage {
   bool SetChromaBlurRadius(double value);
 
   /// Specify black level per sample.
+  bool SetBlackLevel(const unsigned int num_samples, const unsigned short *values);
+
+  /// Specify black level per sample (as rational values).
   bool SetBlackLevelRational(unsigned int num_samples, const double *values);
 
   /// Specify white level per sample.
   bool SetWhiteLevelRational(unsigned int num_samples, const double *values);
+
+  /// Specify analog white balance from camera for raw values.
+  bool SetAnalogBalance(const unsigned int plane_count, const double *matrix_values);
 
   /// Specify CFA repeating pattern dimensions.
   bool SetCFARepeatPatternDim(const unsigned short width, const unsigned short height);
@@ -195,8 +204,17 @@ class DNGImage {
   /// Specify DNG version.
   bool SetDNGVersion(const unsigned char a, const unsigned char b, const unsigned char c, const unsigned char d);
 
-  /// Specify transformation matrix (XYZ to reference camera native color space values).
+  /// Specify transformation matrix (XYZ to reference camera native color space values, under the first calibration illuminant).
   bool SetColorMatrix1(const unsigned int plane_count, const double *matrix_values);
+
+  /// Specify transformation matrix (XYZ to reference camera native color space values, under the second calibration illuminant).
+  bool SetColorMatrix2(const unsigned int plane_count, const double *matrix_values);
+
+  bool SetForwardMatrix1(const unsigned int plane_count, const double *matrix_values);
+  bool SetForwardMatrix2(const unsigned int plane_count, const double *matrix_values);
+
+  bool SetCameraCalibration1(const unsigned int plane_count, const double *matrix_values);
+  bool SetCameraCalibration2(const unsigned int plane_count, const double *matrix_values);
 
   /// Specify CFA geometric pattern (left-to-right, top-to-bottom).
   bool SetCFAPattern(const unsigned int num_components, const unsigned char *values);
@@ -860,6 +878,20 @@ bool DNGImage::SetOrientation(const unsigned short value) {
   return true;
 }
 
+bool DNGImage::SetBlackLevel(const unsigned int num_components,
+                             const unsigned short *values) {
+  bool ret = WriteTIFFTag(
+      static_cast<unsigned short>(TIFFTAG_BLACK_LEVEL), TIFF_SHORT, num_components,
+      reinterpret_cast<const unsigned char *>(values), &ifd_tags_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
 bool DNGImage::SetBlackLevelRational(unsigned int num_samples,
                                      const double *values) {
   // `SetSamplesPerPixel()` must be called in advance and SPP shoud be equal to
@@ -1165,6 +1197,198 @@ bool DNGImage::SetColorMatrix1(const unsigned int plane_count,
   }
   bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_COLOR_MATRIX1),
                           TIFF_SRATIONAL, vs.size() / 2,
+                          reinterpret_cast<const unsigned char *>(vs.data()),
+                          &ifd_tags_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGImage::SetColorMatrix2(const unsigned int plane_count,
+                               const double *matrix_values) {
+  std::vector<unsigned int> vs(plane_count * 3 * 2);
+  for (size_t i = 0; i * 2 < vs.size(); i++) {
+    double numerator, denominator;
+    if (DoubleToRational(matrix_values[i], &numerator, &denominator) != 0) {
+      // Couldn't represent fp value as integer rational value.
+      return false;
+    }
+
+    vs[2 * i + 0] = static_cast<unsigned int>(numerator);
+    vs[2 * i + 1] = static_cast<unsigned int>(denominator);
+
+    // TODO(syoyo): Swap rational value(8 bytes) when writing IFD tag, not here.
+    if (swap_endian_) {
+      swap4(&vs[2 * i + 0]);
+      swap4(&vs[2 * i + 1]);
+    }
+  }
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_COLOR_MATRIX2),
+                          TIFF_SRATIONAL, vs.size() / 2,
+                          reinterpret_cast<const unsigned char *>(vs.data()),
+                          &ifd_tags_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGImage::SetForwardMatrix1(const unsigned int plane_count,
+                                 const double *matrix_values) {
+  std::vector<unsigned int> vs(plane_count * 3 * 2);
+  for (size_t i = 0; i * 2 < vs.size(); i++) {
+    double numerator, denominator;
+    if (DoubleToRational(matrix_values[i], &numerator, &denominator) != 0) {
+      // Couldn't represent fp value as integer rational value.
+      return false;
+    }
+
+    vs[2 * i + 0] = static_cast<unsigned int>(numerator);
+    vs[2 * i + 1] = static_cast<unsigned int>(denominator);
+
+    // TODO(syoyo): Swap rational value(8 bytes) when writing IFD tag, not here.
+    if (swap_endian_) {
+      swap4(&vs[2 * i + 0]);
+      swap4(&vs[2 * i + 1]);
+    }
+  }
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_FORWARD_MATRIX1),
+                          TIFF_SRATIONAL, vs.size() / 2,
+                          reinterpret_cast<const unsigned char *>(vs.data()),
+                          &ifd_tags_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGImage::SetForwardMatrix2(const unsigned int plane_count,
+                                 const double *matrix_values) {
+  std::vector<unsigned int> vs(plane_count * 3 * 2);
+  for (size_t i = 0; i * 2 < vs.size(); i++) {
+    double numerator, denominator;
+    if (DoubleToRational(matrix_values[i], &numerator, &denominator) != 0) {
+      // Couldn't represent fp value as integer rational value.
+      return false;
+    }
+
+    vs[2 * i + 0] = static_cast<unsigned int>(numerator);
+    vs[2 * i + 1] = static_cast<unsigned int>(denominator);
+
+    // TODO(syoyo): Swap rational value(8 bytes) when writing IFD tag, not here.
+    if (swap_endian_) {
+      swap4(&vs[2 * i + 0]);
+      swap4(&vs[2 * i + 1]);
+    }
+  }
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_FORWARD_MATRIX2),
+                          TIFF_SRATIONAL, vs.size() / 2,
+                          reinterpret_cast<const unsigned char *>(vs.data()),
+                          &ifd_tags_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGImage::SetCameraCalibration1(const unsigned int plane_count,
+                                     const double *matrix_values) {
+  std::vector<unsigned int> vs(plane_count * plane_count * 2);
+  for (size_t i = 0; i * 2 < vs.size(); i++) {
+    double numerator, denominator;
+    if (DoubleToRational(matrix_values[i], &numerator, &denominator) != 0) {
+      // Couldn't represent fp value as integer rational value.
+      return false;
+    }
+
+    vs[2 * i + 0] = static_cast<unsigned int>(numerator);
+    vs[2 * i + 1] = static_cast<unsigned int>(denominator);
+
+    // TODO(syoyo): Swap rational value(8 bytes) when writing IFD tag, not here.
+    if (swap_endian_) {
+      swap4(&vs[2 * i + 0]);
+      swap4(&vs[2 * i + 1]);
+    }
+  }
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_CAMERA_CALIBRATION1),
+                          TIFF_SRATIONAL, vs.size() / 2,
+                          reinterpret_cast<const unsigned char *>(vs.data()),
+                          &ifd_tags_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGImage::SetCameraCalibration2(const unsigned int plane_count,
+                                     const double *matrix_values) {
+  std::vector<unsigned int> vs(plane_count * plane_count * 2);
+  for (size_t i = 0; i * 2 < vs.size(); i++) {
+    double numerator, denominator;
+    if (DoubleToRational(matrix_values[i], &numerator, &denominator) != 0) {
+      // Couldn't represent fp value as integer rational value.
+      return false;
+    }
+
+    vs[2 * i + 0] = static_cast<unsigned int>(numerator);
+    vs[2 * i + 1] = static_cast<unsigned int>(denominator);
+
+    // TODO(syoyo): Swap rational value(8 bytes) when writing IFD tag, not here.
+    if (swap_endian_) {
+      swap4(&vs[2 * i + 0]);
+      swap4(&vs[2 * i + 1]);
+    }
+  }
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_CAMERA_CALIBRATION2),
+                          TIFF_SRATIONAL, vs.size() / 2,
+                          reinterpret_cast<const unsigned char *>(vs.data()),
+                          &ifd_tags_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGImage::SetAnalogBalance(const unsigned int plane_count,
+                                const double *matrix_values) {
+  std::vector<unsigned int> vs(plane_count * 2);
+  for (size_t i = 0; i * 2 < vs.size(); i++) {
+    double numerator, denominator;
+    if (DoubleToRational(matrix_values[i], &numerator, &denominator) != 0) {
+      // Couldn't represent fp value as integer rational value.
+      return false;
+    }
+
+    vs[2 * i + 0] = static_cast<unsigned int>(numerator);
+    vs[2 * i + 1] = static_cast<unsigned int>(denominator);
+
+    // TODO(syoyo): Swap rational value(8 bytes) when writing IFD tag, not here.
+    if (swap_endian_) {
+      swap4(&vs[2 * i + 0]);
+      swap4(&vs[2 * i + 1]);
+    }
+  }
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_ANALOG_BALANCE),
+                          TIFF_RATIONAL, vs.size() / 2,
                           reinterpret_cast<const unsigned char *>(vs.data()),
                           &ifd_tags_, &data_os_);
 
