@@ -32,6 +32,14 @@ THE SOFTWARE.
 #include <sstream>
 #include <vector>
 
+#ifndef ROL32
+#define ROL32(v,a) ((v) << (a) | (v) >> (32-(a)))
+#endif
+
+#ifndef ROL16
+#define ROL16(v,a) ((v) << (a) | (v) >> (16-(a)))
+#endif
+
 namespace tinydngwriter {
 
 typedef enum {
@@ -219,10 +227,13 @@ class DNGImage {
   /// Specify CFA geometric pattern (left-to-right, top-to-bottom).
   bool SetCFAPattern(const unsigned int num_components, const unsigned char *values);
 
-  /// Set image data
+  /// Set image data with packing (take 16-bit values and pack them to input_bpp values).
+  bool SetImageDataPacked(const unsigned short *input_buffer, const int input_count, const unsigned int input_bpp, bool big_endian);
+
+  /// Set image data.
   bool SetImageData(const unsigned char *data, const size_t data_len);
 
-  /// Set custom field
+  /// Set custom field.
   bool SetCustomFieldLong(const unsigned short tag, const int value);
   bool SetCustomFieldULong(const unsigned short tag, const unsigned int value);
 
@@ -231,7 +242,7 @@ class DNGImage {
   size_t GetStripOffset() const { return data_strip_offset_; }
   size_t GetStripBytes() const { return data_strip_bytes_; }
 
-  /// Write aux IFD data and strip image data to stream
+  /// Write aux IFD data and strip image data to stream.
   bool WriteDataToStream(std::ostream *ofs) const;
 
   ///
@@ -1434,6 +1445,38 @@ bool DNGImage::SetCFAPattern(const unsigned int num_components,
 
   num_fields_++;
   return true;
+}
+
+bool DNGImage::SetImageDataPacked(const unsigned short *input_buffer, const int input_count, const unsigned int input_bpp, bool big_endian)
+{
+  if (input_bpp > 16)
+    return false;
+  
+  unsigned int bits_free = 16 - input_bpp;
+  const unsigned short *unpacked_bits = input_buffer;
+
+  std::vector<unsigned short> output(input_count);
+  unsigned short *packed_bits = output.data();
+
+  packed_bits[0] = unpacked_bits[0] << bits_free;
+  for (unsigned int pixel_index = 1; pixel_index < input_count; pixel_index++)
+  {
+    unsigned int bits_offset = (pixel_index * bits_free) % 16;
+    unsigned int bits_to_rol = bits_free + bits_offset + (bits_offset > 0) * 16;
+    
+    unsigned int data = ROL32((unsigned int)unpacked_bits[pixel_index], bits_to_rol);
+    *(unsigned int *)packed_bits = (*(unsigned int *)packed_bits & 0x0000FFFF) | data;
+
+    if(bits_offset > 0 && bits_offset <= input_bpp)
+    {
+      if(big_endian)
+        *(unsigned short *)packed_bits = ROL16(*(unsigned short *)packed_bits, 8);
+
+      ++packed_bits;
+    }
+  }
+
+  return SetImageData((unsigned char*)output.data(), output.size() * sizeof(unsigned short));
 }
 
 bool DNGImage::SetImageData(const unsigned char *data, const size_t data_len) {
