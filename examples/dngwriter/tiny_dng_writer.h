@@ -73,6 +73,7 @@ typedef enum {
   TIFFTAG_DNG_BACKWARD_VERSION = 50707,
   TIFFTAG_UNIQUE_CAMERA_MODEL = 50708,
   TIFFTAG_CHRROMA_BLUR_RADIUS = 50703,
+  TIFFTAG_BLACK_LEVEL_REPEAT_DIM = 50713,
   TIFFTAG_BLACK_LEVEL = 50714,
   TIFFTAG_WHITE_LEVEL = 50717,
   TIFFTAG_COLOR_MATRIX1 = 50721,
@@ -80,6 +81,10 @@ typedef enum {
   TIFFTAG_CAMERA_CALIBRATION1 = 50723,
   TIFFTAG_CAMERA_CALIBRATION2 = 50724,
   TIFFTAG_ANALOG_BALANCE = 50727,
+  TIFFTAG_AS_SHOT_NEUTRAL = 50728,
+  TIFFTAG_AS_SHOT_WHITE_XY = 50729,
+  TIFFTAG_CALIBRATION_ILLUMINANT1 = 50778,
+  TIFFTAG_CALIBRATION_ILLUMINANT2 = 50779,
   TIFFTAG_EXTRA_CAMERA_PROFILES = 50933,
   TIFFTAG_PROFILE_NAME = 50936,
   TIFFTAG_AS_SHOT_PROFILE_NAME = 50934,
@@ -209,6 +214,12 @@ class DNGImage {
   /// Specify CFA repeating pattern dimensions.
   bool SetCFARepeatPatternDim(const unsigned short width, const unsigned short height);
 
+  /// Specify black level repeating pattern dimensions.
+  bool SetBlackLevelRepeatDim(const unsigned short width, const unsigned short height);
+
+  bool SetCalibrationIlluminant1(const unsigned short value);
+  bool SetCalibrationIlluminant2(const unsigned short value);
+
   /// Specify DNG version.
   bool SetDNGVersion(const unsigned char a, const unsigned char b, const unsigned char c, const unsigned char d);
 
@@ -226,6 +237,12 @@ class DNGImage {
 
   /// Specify CFA geometric pattern (left-to-right, top-to-bottom).
   bool SetCFAPattern(const unsigned int num_components, const unsigned char *values);
+
+  /// Specify the selected white balance at time of capture, encoded as the coordinates of a perfectly neutral color in linear reference space values.
+  bool SetAsShotNeutral(const unsigned int plane_count, const double *matrix_values);
+
+  /// Specify the the selected white balance at time of capture, encoded as x-y chromaticity coordinates.
+  bool SetAsShotWhiteXY(const double x, const double y);
 
   /// Set image data with packing (take 16-bit values and pack them to input_bpp values).
   bool SetImageDataPacked(const unsigned short *input_buffer, const int input_count, const unsigned int input_bpp, bool big_endian);
@@ -1428,6 +1445,51 @@ bool DNGImage::SetCFARepeatPatternDim(const unsigned short width,
   return true;
 }
 
+bool DNGImage::SetBlackLevelRepeatDim(const unsigned short width,
+                                      const unsigned short height) {
+  unsigned short data[2] = {width, height};
+
+  bool ret = WriteTIFFTag(
+      static_cast<unsigned short>(TIFFTAG_BLACK_LEVEL_REPEAT_DIM), TIFF_SHORT, 2,
+      reinterpret_cast<const unsigned char *>(data),
+      &ifd_tags_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGImage::SetCalibrationIlluminant1(const unsigned short value) {
+  bool ret = WriteTIFFTag(
+      static_cast<unsigned short>(TIFFTAG_CALIBRATION_ILLUMINANT1), TIFF_SHORT, 1,
+      reinterpret_cast<const unsigned char *>(&value),
+      &ifd_tags_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGImage::SetCalibrationIlluminant2(const unsigned short value) {
+  bool ret = WriteTIFFTag(
+      static_cast<unsigned short>(TIFFTAG_CALIBRATION_ILLUMINANT2), TIFF_SHORT, 1,
+      reinterpret_cast<const unsigned char *>(&value),
+      &ifd_tags_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
 bool DNGImage::SetCFAPattern(const unsigned int num_components,
                              const unsigned char *values) {
   if ((values == NULL) || (num_components < 1)) {
@@ -1438,6 +1500,70 @@ bool DNGImage::SetCFAPattern(const unsigned int num_components,
       static_cast<unsigned short>(TIFFTAG_CFA_PATTERN), TIFF_BYTE, num_components,
       reinterpret_cast<const unsigned char *>(values),
       &ifd_tags_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGImage::SetAsShotNeutral(const unsigned int plane_count,
+                                const double *matrix_values) {
+  std::vector<unsigned int> vs(plane_count * 2);
+  for (size_t i = 0; i * 2 < vs.size(); i++) {
+    double numerator, denominator;
+    if (DoubleToRational(matrix_values[i], &numerator, &denominator) != 0) {
+      // Couldn't represent fp value as integer rational value.
+      return false;
+    }
+
+    vs[2 * i + 0] = static_cast<unsigned int>(numerator);
+    vs[2 * i + 1] = static_cast<unsigned int>(denominator);
+
+    // TODO(syoyo): Swap rational value(8 bytes) when writing IFD tag, not here.
+    if (swap_endian_) {
+      swap4(&vs[2 * i + 0]);
+      swap4(&vs[2 * i + 1]);
+    }
+  }
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_AS_SHOT_NEUTRAL),
+                          TIFF_RATIONAL, vs.size() / 2,
+                          reinterpret_cast<const unsigned char *>(vs.data()),
+                          &ifd_tags_, &data_os_);
+
+  if (!ret) {
+    return false;
+  }
+
+  num_fields_++;
+  return true;
+}
+
+bool DNGImage::SetAsShotWhiteXY(const double x, const double y) {
+  const double values[2] = {x, y};
+  std::vector<unsigned int> vs(2 * 2);
+  for (size_t i = 0; i * 2 < vs.size(); i++) {
+    double numerator, denominator;
+    if (DoubleToRational(values[i], &numerator, &denominator) != 0) {
+      // Couldn't represent fp value as integer rational value.
+      return false;
+    }
+
+    vs[2 * i + 0] = static_cast<unsigned int>(numerator);
+    vs[2 * i + 1] = static_cast<unsigned int>(denominator);
+
+    // TODO(syoyo): Swap rational value(8 bytes) when writing IFD tag, not here.
+    if (swap_endian_) {
+      swap4(&vs[2 * i + 0]);
+      swap4(&vs[2 * i + 1]);
+    }
+  }
+  bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_AS_SHOT_WHITE_XY),
+                          TIFF_RATIONAL, vs.size() / 2,
+                          reinterpret_cast<const unsigned char *>(vs.data()),
+                          &ifd_tags_, &data_os_);
 
   if (!ret) {
     return false;
