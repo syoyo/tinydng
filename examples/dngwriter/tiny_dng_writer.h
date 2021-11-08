@@ -931,7 +931,7 @@ bool DNGImage::SetBlackLevelRational(unsigned int num_samples,
   }
 
   std::vector<unsigned int> vs(num_samples * 2);
-  for (size_t i = 0; i < vs.size(); i++) {
+  for (size_t i = 0; i * 2 < vs.size(); i++) {
     double numerator, denominator;
     if (DoubleToRational(values[i], &numerator, &denominator) != 0) {
       // Couldn't represent fp value as integer rational value.
@@ -974,7 +974,7 @@ bool DNGImage::SetWhiteLevelRational(unsigned int num_samples,
   }
 
   std::vector<unsigned int> vs(num_samples * 2);
-  for (size_t i = 0; i < vs.size(); i++) {
+  for (size_t i = 0; i * 2 < vs.size(); i++) {
     double numerator, denominator;
     if (DoubleToRational(values[i], &numerator, &denominator) != 0) {
       // Couldn't represent fp value as integer rational value.
