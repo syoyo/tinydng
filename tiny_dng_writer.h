@@ -690,6 +690,11 @@ bool DNGImage::SetRowsPerStrip(const unsigned int rows) {
 
 bool DNGImage::SetSamplesPerPixel(const unsigned short value) {
   if (value > 4) {
+    {
+      std::stringstream ss;
+      ss << "Samples per pixel must be less than or equal to 4, but got " << value << ".\n";
+      err_ += ss.str();
+    }
     return false;
   }
 
@@ -701,6 +706,7 @@ bool DNGImage::SetSamplesPerPixel(const unsigned short value) {
       reinterpret_cast<const unsigned char *>(&data), &ifd_tags_, &data_os_);
 
   if (!ret) {
+    err_ += "Failed to write `TIFFTAG_SAMPLES_PER_PIXEL` tag.\n";
     return false;
   }
 
@@ -714,11 +720,24 @@ bool DNGImage::SetBitsPerSample(const unsigned int num_samples,
                                 const unsigned short *values) {
   // `SetSamplesPerPixel()` must be called in advance and SPP shoud be equal to
   // `num_samples`.
-  if ((num_samples > 0) && (num_samples == samples_per_pixels_)) {
-    // OK
-  } else {
+
+  if (samples_per_pixels_ == 0) {
     err_ += "SetSamplesPerPixel() must be called before SetBitsPerSample().\n";
     return false;
+  }
+
+  if ((num_samples == 0) || (num_samples > 4)) {
+    std::stringstream ss;
+    ss << "Invalid number of samples: " << num_samples << "\n";
+    err_ += ss.str();
+    return false;
+  } else if (num_samples != samples_per_pixels_) {
+    std::stringstream ss;
+    ss << "Samples per pixel mismatch. " << num_samples << " is given for SetBitsPerSample(), but SamplesPerPixel is set to " << samples_per_pixels_ << "\n";
+    err_ += ss.str();
+    return false;
+  } else {
+    // ok
   }
 
   unsigned short bps = values[0];
@@ -1852,6 +1871,9 @@ bool DNGWriter::WriteToFile(const char *filename, std::string *err) const {
   std::ostringstream header;
   bool ret = WriteTIFFVersionHeader(&header, dng_big_endian_);
   if (!ret) {
+    if (err) {
+      (*err) = "Failed to write TIFF version header.\n";
+    }
     return false;
   }
 
@@ -1896,6 +1918,11 @@ bool DNGWriter::WriteToFile(const char *filename, std::string *err) const {
   for (size_t i = 0; i < images_.size(); i++) {
     bool ok = images_[i]->WriteDataToStream(&ofs);
     if (!ok) {
+      if (err) {
+        std::stringstream ss;
+        ss << "Failed to write data at image[" << i << "]. err = " << images_[i]->Error() << "\n";
+        (*err) += ss.str();
+      }
       return false;
     }
   }
@@ -1906,6 +1933,11 @@ bool DNGWriter::WriteToFile(const char *filename, std::string *err) const {
         static_cast<unsigned int>(data_offset_table[i]),
         static_cast<unsigned int>(strip_offset_table[i]), &ofs);
     if (!ok) {
+      if (err) {
+        std::stringstream ss;
+        ss << "Failed to write IFD at image[" << i << "]. err = " << images_[i]->Error() << "\n";
+        (*err) += ss.str();
+      }
       return false;
     }
 

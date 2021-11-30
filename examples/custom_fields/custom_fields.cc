@@ -3,7 +3,7 @@
 #include <iostream>
 
 #define TINY_DNG_WRITER_IMPLEMENTATION
-#include "../dngwriter/tiny_dng_writer.h"
+#include "tiny_dng_writer.h"
 
 #define TINY_DNG_LOADER_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
@@ -40,11 +40,14 @@ static void CreateImage(tinydngwriter::DNGImage *dng_image, const unsigned short
     dng_image->SetImageWidth(image_width);
     dng_image->SetImageLength(image_height);
     dng_image->SetRowsPerStrip(image_height);
-    dng_image->SetBitsPerSample(16);
+
+    dng_image->SetSamplesPerPixel(3);
+    unsigned short bps[3] = {16, 16, 16};
+    dng_image->SetBitsPerSample(3, &bps[0]);
+
     dng_image->SetPlanarConfig(tinydngwriter::PLANARCONFIG_CONTIG);
     dng_image->SetCompression(tinydngwriter::COMPRESSION_NONE);
     dng_image->SetPhotometric(tinydngwriter::PHOTOMETRIC_RGB);
-    dng_image->SetSamplesPerPixel(3);
 
     dng_image->SetCustomFieldLong(MY_TAG, intvalue);
 
@@ -64,13 +67,17 @@ static void CreateImage(tinydngwriter::DNGImage *dng_image, const unsigned short
 
 static bool WriteDNG(const std::string &filename, const int custom_value)
 {
+  bool big_endian = true;
+
   tinydngwriter::DNGImage dng_image0;
+  dng_image0.SetBigEndian(big_endian);
   tinydngwriter::DNGImage dng_image1;
+  dng_image1.SetBigEndian(big_endian);
 
   CreateImage(&dng_image0, 12000, custom_value);
   CreateImage(&dng_image1, 42000, 456);
 
-  tinydngwriter::DNGWriter dng_writer;
+  tinydngwriter::DNGWriter dng_writer(big_endian);
   assert(dng_writer.AddImage(&dng_image0));
   assert(dng_writer.AddImage(&dng_image1));
 
@@ -100,6 +107,7 @@ int main(int argc, char **argv) {
   }
 
   if (!WriteDNG(filename, custom_value)) {
+    std::cerr << "Failed to write DNG\n";
     return EXIT_FAILURE;
   }
 
@@ -126,7 +134,7 @@ int main(int argc, char **argv) {
   if (ret) {
     for (size_t i = 0; i < images.size(); i++) {
       const tinydng::DNGImage &image = images[i];
-;
+
       std::cout << "width = " << image.width << std::endl;
       std::cout << "height = " << image.height << std::endl;
       std::cout << "bits per piexl = " << image.bits_per_sample << std::endl;
