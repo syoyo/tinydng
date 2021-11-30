@@ -1224,7 +1224,7 @@ bool DNGImage::SetColorMatrix1(const unsigned int plane_count,
     }
   }
   bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_COLOR_MATRIX1),
-                          TIFF_SRATIONAL, vs.size() / 2,
+                          TIFF_SRATIONAL, uint32_t(vs.size() / 2),
                           reinterpret_cast<const unsigned char *>(vs.data()),
                           &ifd_tags_, &data_os_);
 
@@ -1256,7 +1256,7 @@ bool DNGImage::SetColorMatrix2(const unsigned int plane_count,
     }
   }
   bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_COLOR_MATRIX2),
-                          TIFF_SRATIONAL, vs.size() / 2,
+                          TIFF_SRATIONAL, uint32_t(vs.size() / 2),
                           reinterpret_cast<const unsigned char *>(vs.data()),
                           &ifd_tags_, &data_os_);
 
@@ -1288,7 +1288,7 @@ bool DNGImage::SetForwardMatrix1(const unsigned int plane_count,
     }
   }
   bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_FORWARD_MATRIX1),
-                          TIFF_SRATIONAL, vs.size() / 2,
+                          TIFF_SRATIONAL, uint32_t(vs.size() / 2),
                           reinterpret_cast<const unsigned char *>(vs.data()),
                           &ifd_tags_, &data_os_);
 
@@ -1320,7 +1320,7 @@ bool DNGImage::SetForwardMatrix2(const unsigned int plane_count,
     }
   }
   bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_FORWARD_MATRIX2),
-                          TIFF_SRATIONAL, vs.size() / 2,
+                          TIFF_SRATIONAL, uint32_t(vs.size() / 2),
                           reinterpret_cast<const unsigned char *>(vs.data()),
                           &ifd_tags_, &data_os_);
 
@@ -1352,7 +1352,7 @@ bool DNGImage::SetCameraCalibration1(const unsigned int plane_count,
     }
   }
   bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_CAMERA_CALIBRATION1),
-                          TIFF_SRATIONAL, vs.size() / 2,
+                          TIFF_SRATIONAL, uint32_t(vs.size() / 2),
                           reinterpret_cast<const unsigned char *>(vs.data()),
                           &ifd_tags_, &data_os_);
 
@@ -1384,7 +1384,7 @@ bool DNGImage::SetCameraCalibration2(const unsigned int plane_count,
     }
   }
   bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_CAMERA_CALIBRATION2),
-                          TIFF_SRATIONAL, vs.size() / 2,
+                          TIFF_SRATIONAL, uint32_t(vs.size() / 2),
                           reinterpret_cast<const unsigned char *>(vs.data()),
                           &ifd_tags_, &data_os_);
 
@@ -1416,7 +1416,7 @@ bool DNGImage::SetAnalogBalance(const unsigned int plane_count,
     }
   }
   bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_ANALOG_BALANCE),
-                          TIFF_RATIONAL, vs.size() / 2,
+                          TIFF_RATIONAL, uint32_t(vs.size() / 2),
                           reinterpret_cast<const unsigned char *>(vs.data()),
                           &ifd_tags_, &data_os_);
 
@@ -1529,7 +1529,7 @@ bool DNGImage::SetAsShotNeutral(const unsigned int plane_count,
     }
   }
   bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_AS_SHOT_NEUTRAL),
-                          TIFF_RATIONAL, vs.size() / 2,
+                          TIFF_RATIONAL, uint32_t(vs.size() / 2),
                           reinterpret_cast<const unsigned char *>(vs.data()),
                           &ifd_tags_, &data_os_);
 
@@ -1561,7 +1561,7 @@ bool DNGImage::SetAsShotWhiteXY(const double x, const double y) {
     }
   }
   bool ret = WriteTIFFTag(static_cast<unsigned short>(TIFFTAG_AS_SHOT_WHITE_XY),
-                          TIFF_RATIONAL, vs.size() / 2,
+                          TIFF_RATIONAL, uint32_t(vs.size() / 2),
                           reinterpret_cast<const unsigned char *>(vs.data()),
                           &ifd_tags_, &data_os_);
 
@@ -1575,34 +1575,38 @@ bool DNGImage::SetAsShotWhiteXY(const double x, const double y) {
 
 bool DNGImage::SetImageDataPacked(const unsigned short *input_buffer, const int input_count, const unsigned int input_bpp, bool big_endian)
 {
+  if (input_count <= 0) {
+    return false;
+  }
+
   if (input_bpp > 16)
     return false;
   
   unsigned int bits_free = 16 - input_bpp;
   const unsigned short *unpacked_bits = input_buffer;
 
-  std::vector<unsigned short> output(input_count);
+  std::vector<unsigned short> output(static_cast<size_t>(input_count));
   unsigned short *packed_bits = output.data();
 
-  packed_bits[0] = unpacked_bits[0] << bits_free;
-  for (unsigned int pixel_index = 1; pixel_index < input_count; pixel_index++)
+  packed_bits[0] = static_cast<unsigned short>(unpacked_bits[0] << bits_free);
+  for (unsigned int pixel_index = 1; pixel_index < static_cast<unsigned int>(input_count); pixel_index++)
   {
     unsigned int bits_offset = (pixel_index * bits_free) % 16;
     unsigned int bits_to_rol = bits_free + bits_offset + (bits_offset > 0) * 16;
     
-    unsigned int data = ROL32((unsigned int)unpacked_bits[pixel_index], bits_to_rol);
-    *(unsigned int *)packed_bits = (*(unsigned int *)packed_bits & 0x0000FFFF) | data;
+    unsigned int data = ROL32(static_cast<unsigned int>(unpacked_bits[pixel_index]), bits_to_rol);
+    *(reinterpret_cast<unsigned int *>(packed_bits)) = (*(reinterpret_cast<unsigned int *>(packed_bits)) & 0x0000FFFF) | data;
 
     if(bits_offset > 0 && bits_offset <= input_bpp)
     {
       if(big_endian)
-        *(unsigned short *)packed_bits = ROL16(*(unsigned short *)packed_bits, 8);
+        *(reinterpret_cast<unsigned short *>(packed_bits)) = static_cast<unsigned short>(ROL16(*(reinterpret_cast<unsigned short *>(packed_bits)), 8));
 
       ++packed_bits;
     }
   }
 
-  return SetImageData((unsigned char*)output.data(), output.size() * sizeof(unsigned short));
+  return SetImageData(reinterpret_cast<unsigned char*>(output.data()), output.size() * sizeof(unsigned short));
 }
 
 bool DNGImage::SetImageData(const unsigned char *data, const size_t data_len) {
