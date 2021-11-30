@@ -1,14 +1,9 @@
-
-#define TINY_DNG_LOADER_IMPLEMENTATION
-#define STB_IMAGE_IMPLEMENTATION
-#include "../../tiny_dng_loader.h"
-
-#define TINY_DNG_WRITER_IMPLEMENTATION
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
 
+#define TINY_DNG_WRITER_IMPLEMENTATION
 #include "tiny_dng_writer.h"
 
 static void CreateRGBImage(tinydngwriter::DNGImage *dng_image,
@@ -90,7 +85,8 @@ int main(int argc, char **argv) {
     output_filename = std::string(argv[1]);
   }
 
-  // DNG write test
+  // TinyDNGWriter supports both BigEndian and LittleEndian TIFF.
+  // Default = BigEndian.
   bool big_endian = false;
 
   if (argc > 2) {
@@ -98,6 +94,8 @@ int main(int argc, char **argv) {
   }
 
   {
+    // DNGWriter supports multiple DNG images.
+    // First create DNG image data, then pass it to DNGWriter with AddImage API.
     tinydngwriter::DNGImage dng_image0;
     dng_image0.SetBigEndian(big_endian);
     tinydngwriter::DNGImage dng_image1;
