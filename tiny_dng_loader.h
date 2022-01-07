@@ -45,6 +45,9 @@ namespace tinydng {
 // e.g. limit maximum images in one DNG/TIFF file
 const size_t kMaxImages = 10240;
 
+// Avoid stack-overflow of recursive Sub IFD parsing.
+const uint32_t kMaxRecursiveIFDParse = 1024;
+
 typedef enum {
   LIGHTSOURCE_UNKNOWN = 0,
   LIGHTSOURCE_DAYLIGHT = 1,
@@ -3133,6 +3136,8 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
 static bool ParseOpcodeList(unsigned short tag, const uint8_t *data, size_t dataSize,
   std::vector<GainMap> *gainmaps_out)
 {
+  constexpr size_t kMaxSize = 1024*1024*512;
+
   // OpCode data is always store in big-endian byte order.
   // First 32bit uint: The number of opcodes.
   // For each opcode:
@@ -3318,8 +3323,12 @@ static bool ParseOpcodeList(unsigned short tag, const uint8_t *data, size_t data
 
     } else {
 
-      // Unimplemented
+      if (num_bytes > kMaxSize) {
+        // Too large bytes. Guess invalid OpCode data.
+        return false;
+      }
 
+      // Unimplemented
       std::vector<uint8_t> op_data(num_bytes);
       if (!sr.read(num_bytes, num_bytes, reinterpret_cast<unsigned char *>(op_data.data()))) {
         return false;
@@ -3430,7 +3439,7 @@ static int ParseCustomField(const StreamReader& sr,
 static bool ParseTIFFIFD(const StreamReader& sr,
                          const std::vector<FieldInfo>& custom_field_lists,
                          std::vector<tinydng::DNGImage>* images,
-                         std::string* warn, std::string* err) {
+                         std::string* warn, std::string* err, uint32_t call_depth = 0) {
   if (!images) {
     if (err) {
       (*err) += "`images` argument is null.\n";
@@ -3675,7 +3684,14 @@ static bool ParseTIFFIFD(const StreamReader& sr,
           }
 
           // recursive call
-          if (!ParseTIFFIFD(sr, custom_field_lists, images, warn, err)) {
+          if (call_depth > kMaxRecursiveIFDParse) {
+            if (err) {
+              (*err) += "Too many nested SUB_IFDS. Input DNG seems invalid or malcious.\n";
+            }
+            return false;
+          }
+
+          if (!ParseTIFFIFD(sr, custom_field_lists, images, warn, err, call_depth+1)) {
             if (err) {
               (*err) += "Failed to Parse SubIFD Tag.\n";
             }
