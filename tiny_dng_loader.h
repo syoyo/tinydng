@@ -3136,7 +3136,7 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
 static bool ParseOpcodeList(unsigned short tag, const uint8_t *data, size_t dataSize,
   std::vector<GainMap> *gainmaps_out)
 {
-  constexpr size_t kMaxSize = 1024*1024*512;
+  const size_t kMaxSize = 1024*1024*512;
 
   // OpCode data is always store in big-endian byte order.
   // First 32bit uint: The number of opcodes.
@@ -3196,6 +3196,8 @@ static bool ParseOpcodeList(unsigned short tag, const uint8_t *data, size_t data
     }
 
     if (opcode_id == OPCODE_LIST_GAIN_MAP) {
+      const size_t kMaxItems = 1024*1024;
+
       uint32_t saved_loc = uint32_t(sr.tell());
 
       // Top, Left, Bottom, Right, Plane, Planes, RowPitch, ColPitch, MapPointsV, MapPointsH (LONG)
@@ -3282,6 +3284,10 @@ static bool ParseOpcodeList(unsigned short tag, const uint8_t *data, size_t data
       //TINY_DNG_DPRINTF("num_items %d\n", int(num_items));
 
       // Read gain values.
+
+      if (num_items > kMaxItems) {
+        return false;
+      }
 
       std::vector<float> gainmap_pixels(num_items);
       for (size_t k = 0; k < num_items; k++) {
@@ -4075,6 +4081,8 @@ static bool ParseTIFFIFD(const StreamReader& sr,
       case TAG_OPCODE_LIST1:
       case TAG_OPCODE_LIST2:
       case TAG_OPCODE_LIST3: {
+        const size_t kMaxOpcodeDataSize = 1024*1024*1024;
+
         TINY_DNG_DPRINTF("opcodelist %d\n", tag);
         size_t readLen = len;
         if (readLen < 1) {
@@ -4085,6 +4093,13 @@ static bool ParseTIFFIFD(const StreamReader& sr,
           return false;
         }
 
+        if (readLen > kMaxOpcodeDataSize) {
+          if (err) {
+            (*err) += "OpCodeList data too large.\n";
+          }
+
+          return false;
+        }
         std::vector<uint8_t> buf(readLen);
         if (!sr.read(readLen, readLen,
                      reinterpret_cast<unsigned char*>(buf.data()))) {
