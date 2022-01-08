@@ -3168,6 +3168,12 @@ static bool ParseOpcodeList(unsigned short tag, const uint8_t *data, size_t data
     return false;
   }
 
+  const size_t kMaxNumOpcodes = 16;
+  if (num_opcodes > kMaxNumOpcodes) {
+    // too many opcodes.
+    return false;
+  }
+
   //TINY_DNG_DPRINTF("# of opcodes = %d\n", num_opcodes);
 
   for (size_t i = 0; i < num_opcodes; i++) {
