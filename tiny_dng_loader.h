@@ -4070,6 +4070,7 @@ static bool ParseTIFFIFD(const StreamReader& sr,
           if (err) {
             (*err) += "The length of SemanticName string too large.\n";
           }
+          return false;
         }
 
         std::vector<uint8_t> buf(readLen);  // readLen includes null char
