@@ -4916,6 +4916,9 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         image->bits_per_sample = image->bits_per_sample_original;
 
       } else {
+
+        const size_t kMaxImageSize = size_t(1024)*size_t(1024)*size_t(1024)*size_t(2); // 2GB
+
         if (image->bits_per_sample_original <= 0) {
           if (err) {
             (*err) += "bits_per_sample information not found in the tag.\n";
@@ -4946,6 +4949,15 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         if (len == 0) {
           if (err) {
             (*err) += "Unexpected length.";
+          }
+          return false;
+        }
+
+        if (len > kMaxImageSize) {
+          if (err) {
+            std::stringstream ss;
+            ss << "Image byte size too large. " << len << "bytes in file, but hard-limit is set to " << kMaxImageSize << " bytes.\n";
+            (*err) += ss.str();
           }
           return false;
         }
