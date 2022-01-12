@@ -785,8 +785,14 @@ static int parseSof3(ljp* self) {
   self->components = self->data[self->ix + 7];
   self->ix += BEH(self->data[self->ix]);
 
-  TINY_DNG_ASSERT(self->components >= 1 && self->components < 6,
-                  "Invalid number of components.");
+  if ((self->components >= 1) && (self->components < 6)) {
+    // ok
+  } else {
+    // Invalid number of components.
+    return LJ92_ERROR_CORRUPT;
+  }
+  //TINY_DNG_ASSERT(self->components >= 1 && self->components < 6,
+  //                "Invalid number of components.");
 
   return LJ92_ERROR_NONE;
 }
@@ -855,7 +861,7 @@ static int extend(ljp* self, int v, int t) {
 }
 #endif
 
-inline static int nextdiff(ljp* self, int component_idx, int Px) {
+inline static int nextdiff(ljp* self, int component_idx, int Px, int *errcode) {
   (void)Px;
 #ifdef SLOW_HUFF
   int t = decode(self);
@@ -863,7 +869,17 @@ inline static int nextdiff(ljp* self, int component_idx, int Px) {
   diff = extend(self, diff, t);
 // TINY_DNG_DPRINTF("%d %d %d %x\n",Px+diff,Px,diff,t);//,index,usedbits);
 #else
-  TINY_DNG_ASSERT(component_idx <= self->num_huff_idx, "Invalid huff index.");
+  if (component_idx <= self->num_huff_idx) {
+    // OK
+  } else {
+    // "Invalid huff index.");
+    if (errcode) {
+      (*errcode) = LJ92_ERROR_CORRUPT;
+    }
+    return 0;
+  }
+
+  //TINY_DNG_ASSERT(component_idx <= self->num_huff_idx, "Invalid huff index.");
   u32 b = self->b;
   int cnt = self->cnt;
   int huffbits = self->huffbits[component_idx];
@@ -951,11 +967,21 @@ static int parsePred6(ljp* self) {
   int row = 0;
   int left = 0;
   int linear;
-  TINY_DNG_ASSERT(self->num_huff_idx <= self->components,
-                  "Invalid number of huff indices.");
+  if (self->num_huff_idx <= self->components) {
+    // ok
+  } else {
+    //TINY_DNG_ASSERT(self->num_huff_idx <= self->components,
+    //                "Invalid number of huff indices.");
+    return LJ92_ERROR_CORRUPT;
+  }
+  int errcode = LJ92_ERROR_NONE;
   // First pixel
   diff = nextdiff(self, self->num_huff_idx - 1,
-                  0);  // FIXME(syoyo): Is using (self->num_huff_idx-1) correct?
+                  0, &errcode);  // FIXME(syoyo): Is using (self->num_huff_idx-1) correct?
+  if (errcode != LJ92_ERROR_NONE) {
+    return errcode;
+  }
+
   Px = 1 << (self->bits - 1);
   left = Px + diff;
   left = (u16)(left % 65536);
@@ -972,7 +998,11 @@ static int parsePred6(ljp* self) {
   --write;
   int rowcount = self->x - 1;
   while (rowcount--) {
-    diff = nextdiff(self, self->num_huff_idx - 1, 0);
+    int errcode = LJ92_ERROR_NONE;
+    diff = nextdiff(self, self->num_huff_idx - 1, 0, &errcode);
+    if (errcode != LJ92_ERROR_NONE) {
+      return errcode;
+    }
     Px = left;
     left = Px + diff;
     left = (u16)(left % 65536);
@@ -1001,7 +1031,11 @@ static int parsePred6(ljp* self) {
   // TINY_DNG_DPRINTF("%x %x\n",thisrow,lastrow);
   while (c < pixels) {
     col = 0;
-    diff = nextdiff(self, self->num_huff_idx - 1, 0);
+    int errcode = LJ92_ERROR_NONE;
+    diff = nextdiff(self, self->num_huff_idx - 1, 0, &errcode);
+    if (errcode != LJ92_ERROR_NONE) {
+      return errcode;
+    }
     Px = lastrow[col];  // Use value above for first pixel in row
     left = Px + diff;
     left = (u16)(left % 65536);
@@ -1020,7 +1054,12 @@ static int parsePred6(ljp* self) {
       write = self->writelen;
     }
     while (rowcount--) {
-      diff = nextdiff(self, self->num_huff_idx - 1, 0);
+      int errcode = LJ92_ERROR_NONE;
+      diff = nextdiff(self, self->num_huff_idx - 1, 0, &errcode);
+      if (errcode != LJ92_ERROR_NONE) {
+        return errcode;
+      }
+
       Px = lastrow[col] + ((left - lastrow[col - 1]) >> 1);
       left = Px + diff;
       left = (u16)(left % 65536);
@@ -1098,7 +1137,12 @@ static int parseScan(ljp* self) {
           Px = 1 << (self->bits - 1);
         } else if (row == 0) {
           // Px = left;
-          TINY_DNG_ASSERT(col > 0, "Unexpected col.");
+          if (col > 0) {
+            // ok
+          } else {
+            //TINY_DNG_ASSERT(col > 0, "Unexpected col.");
+            return LJ92_ERROR_CORRUPT;
+          }
           Px = thisrow[(col - 1) * self->components + c];
         } else if (col == 0) {
           Px = lastrow[c];  // Use value above for first pixel in row
@@ -1148,12 +1192,28 @@ static int parseScan(ljp* self) {
           huff_idx = 0;  // Look up the first huffman table.
         }
 
-        diff = nextdiff(self, huff_idx, Px);
+        int errcode = LJ92_ERROR_NONE;
+        diff = nextdiff(self, huff_idx, Px, &errcode);
+        if (errcode != LJ92_ERROR_NONE) {
+          return errcode;
+        }
+
         left = Px + diff;
 
-        TINY_DNG_ASSERT(left >= 0, "left value must be positive.");
-        TINY_DNG_ASSERT(left < 65536,
-                        "left value must be less than u16 max(65536).");
+        if (left >= 0) {
+          // ok
+        } else {
+          //TINY_DNG_ASSERT(left >= 0, "left value must be positive.");
+          return LJ92_ERROR_CORRUPT;
+        }
+
+        if (left < 65536) {
+          // ok
+        } else {
+          //TINY_DNG_ASSERT(left < 65536,
+          //                "left value must be less than u16 max(65536).");
+          return LJ92_ERROR_CORRUPT;
+        }
 
         left = (u16)(left % 65536);
         // TINY_DNG_DPRINTF("row[%d] col[%d] c[%d] Px = %d, diff = %d, left =
