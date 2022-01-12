@@ -2903,8 +2903,20 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
 
   if ((image_info.tile_width > 0) && (image_info.tile_length > 0)) {
     // Assume Lossless JPEG data is stored in tiled format.
-    TINY_DNG_ASSERT(image_info.tile_width > 0, "Invalid tile width.");
-    TINY_DNG_ASSERT(image_info.tile_length > 0, "Invalid tile length.");
+    if (image_info.tile_width <= 0) {
+      if (err) {
+        (*err) += "Invalid tile width.\n";
+      }
+      return false;
+    }
+    if (image_info.tile_length <= 0) {
+      if (err) {
+        (*err) += "Invalid tile length.\n";
+      }
+      return false;
+    }
+    //TINY_DNG_ASSERT(image_info.tile_width > 0, "Invalid tile width.");
+    //TINY_DNG_ASSERT(image_info.tile_length > 0, "Invalid tile length.");
 
     // <-       image width(skip len)           ->
     // +-----------------------------------------+
@@ -4096,7 +4108,7 @@ static bool ParseTIFFIFD(const StreamReader& sr,
       case TAG_OPCODE_LIST1:
       case TAG_OPCODE_LIST2:
       case TAG_OPCODE_LIST3: {
-        const size_t kMaxOpcodeDataSize = 1024*1024*1024;
+        const size_t kMaxOpcodeDataSize = 1024*1024*256;
 
         TINY_DNG_DPRINTF("opcodelist %d\n", tag);
         size_t readLen = len;
@@ -4756,7 +4768,12 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
   (void)warn;
   std::stringstream ss;
 
-  TINY_DNG_ASSERT(images, "Invalid images pointer.");
+  if (!images) {
+    if (err) {
+      (*err) += "Invalid `images` pointer.\n";
+    }
+    return false;
+  }
 
   FILE* fp;
 #if defined(_WIN32)
@@ -4801,7 +4818,12 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
     whole_data.resize(file_size);
     fseek(fp, 0, SEEK_SET);
     size_t read_len = fread(whole_data.data(), 1, file_size, fp);
-    TINY_DNG_ASSERT(read_len == file_size, "Unexpected file size.");
+    if (read_len != file_size) {
+      if (err) {
+        (*err) += "Unexpected file size.\n";
+      }
+      return false;
+    }
 
     fseek(fp, 0, SEEK_SET);
   }
@@ -5284,7 +5306,13 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
           }
           jpeg_len = sr.size() - data_offset;
         }
-        TINY_DNG_ASSERT(jpeg_len > 0, "Invalid length.");
+
+        if (jpeg_len == 0) {
+          if (err) {
+            (*err) += "Invalid jpeg data length.\n";
+          }
+          return false;
+        }
 
         // Assume RGB jpeg
         //
@@ -5407,7 +5435,13 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
             static_cast<size_t>((image->samples_per_pixel * image->width *
                                  image->height * image->bits_per_sample) /
                                 8);
-        TINY_DNG_ASSERT(len > 0, "Invalid length.");
+        if (len == 0) {
+          if (err) {
+            (*err) += "Invalid jpeg data length.\n";
+          }
+          return false;
+        }
+
         image->data.resize(len);
         TINY_DNG_DPRINTF("image.data.size = %d\n", int(len));
 
@@ -5614,20 +5648,34 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
   //
   for (size_t i = 0; i < images->size(); i++) {
     tinydng::DNGImage* image = &((*images)[i]);
-    TINY_DNG_ASSERT(image->samples_per_pixel <= 4,
-                    "Cannot handle > 4 samples per pixel.");
+
+    if (image->samples_per_pixel > 4) {
+      if (err) {
+        (*err) += "Cannot handle > 4 samples per pixel.\n";
+      }
+      return false;
+    }
     for (int s = 0; s < image->samples_per_pixel; s++) {
       if (image->white_level[s] == -1) {
         // Set white level with (2 ** BitsPerSample) according to the DNG spec.
-        TINY_DNG_ASSERT(image->bits_per_sample_original > 0,
-                        "Bits per sample of image has to be > 0.");
+        if (image->bits_per_sample_original == 0) {
+          if (err) {
+            (*err) += "Bits per sample of image has to be > 0.\n";
+          }
+          return false;
+        }
 
         if (image->bits_per_sample_original >=
             32) {  // workaround for 32bit floating point TIFF.
           image->white_level[s] = -1;
         } else {
-          TINY_DNG_ASSERT(image->bits_per_sample_original < 32,
-                          "Cannot handle >= 32 bits per sample.");
+          if (image->bits_per_sample_original >= 32) {
+            if (err) {
+              (*err) += "Cannot handle >= 32 bits per sample.\n";
+            }
+            return false;
+          }
+
           image->white_level[s] = (1 << image->bits_per_sample_original) - 1;
         }
       }
@@ -5716,7 +5764,12 @@ bool IsDNG(const char* filename, std::string* msg) {
     whole_data.resize(file_size);
     fseek(fp, 0, SEEK_SET);
     size_t read_len = fread(whole_data.data(), 1, file_size, fp);
-    TINY_DNG_ASSERT(read_len == file_size, "Unexpected file size.");
+    if (read_len != file_size) {
+      if (msg) {
+        (*msg) += "Unexpected file size.\n";
+      }
+      return false;
+    }
 
     fseek(fp, 0, SEEK_SET);
   }
