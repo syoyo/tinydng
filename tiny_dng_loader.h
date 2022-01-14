@@ -111,6 +111,41 @@ typedef enum {
   SAMPLEFORMAT_COMPLEXIEEEFP = 6
 } SampleFormat;
 
+class MemoryBudget
+{
+ public:
+   MemoryBudget(size_t max_bytes = 1024ull*1024ull*1024ull*4ull) :
+    _max_bytes(max_bytes) {
+   } 
+
+   size_t used_bytes() const {
+     return _used_bytes;
+   }
+
+   bool increase(size_t bytes) {
+      if (bytes + _used_bytes >= _max_bytes) {
+        _used_bytes = _max_bytes;
+        return false;
+      }
+
+      _used_bytes += bytes;
+
+      return true;
+   }
+
+   void decrease(size_t bytes) {
+     if (bytes > _used_bytes) {
+       _used_bytes = 0;
+     } else {
+       _used_bytes -= bytes;
+     }
+   }
+
+ private:
+   size_t _max_bytes{0};
+   size_t _used_bytes{0};
+};
+
 struct FieldInfo {
   int tag;
   short read_count;
