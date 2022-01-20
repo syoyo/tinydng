@@ -114,7 +114,7 @@ typedef enum {
 
 class MemoryCapacity {
  public:
-  MemoryCapacity(size_t max_bytes = 1024ull * 1024ull * 1024ull * 4ull)
+  MemoryCapacity(size_t max_bytes = size_t(1024) * size_t(1024) * size_t(1024) * size_t(4))
       : _max_bytes(max_bytes) {}
 
   size_t used_bytes() const { return _used_bytes; }
@@ -283,6 +283,14 @@ struct DNGImage {
   std::vector<FieldData> custom_fields;
 };
 
+constexpr size_t kDefaultMaxMemoryUsage = size_t(1024) * size_t(1024) * size_t(1024) * size_t(4); // 4 GB
+
+struct DNGLoaderOption
+{
+  std::vector<FieldInfo> custom_fields;
+  size_t max_memory{kDefaultMaxMemoryUsage};
+};
+
 ///
 /// Loads DNG image and store it to `images`
 ///
@@ -293,8 +301,7 @@ struct DNGImage {
 /// TINY_DNG_NO_EXCEPTION macro is defined.
 ///
 /// @param[in] filename DNG filename.
-/// @param[in] custom_fields List of custom fields to parse(optional. can pass
-/// empty array).
+/// @param[in] option DNG loader option.
 /// @param[out] images Loaded DNG images.
 /// @param[out] warn Warning message.
 /// @param[out] err Error message.
@@ -302,7 +309,7 @@ struct DNGImage {
 /// @return true upon success.
 /// @return false upon failure and store error message into `err`.
 ///
-bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
+bool LoadDNG(const char* filename, const DNGLoaderOption &option,
              std::vector<DNGImage>* images, std::string* warn,
              std::string* err);
 
@@ -317,7 +324,7 @@ bool IsDNG(const char* filename, std::string* msg);
 /// Up to 2GB DNG data.
 ///
 bool LoadDNGFromMemory(const char* mem, unsigned int size,
-                       std::vector<FieldInfo>& custom_fields,
+                       const DNGLoaderOption &option,
                        std::vector<DNGImage>* images, std::string* warn,
                        std::string* err);
 
@@ -4882,7 +4889,7 @@ static inline std::wstring UTF8ToWchar(const std::string& str) {
 }  // namespace
 #endif
 
-bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
+bool LoadDNG(const char* filename, const DNGLoaderOption &option,
              std::vector<DNGImage>* images, std::string* warn,
              std::string* err) {
   (void)warn;
@@ -4951,11 +4958,11 @@ bool LoadDNG(const char* filename, std::vector<FieldInfo>& custom_fields,
 
   return LoadDNGFromMemory(reinterpret_cast<const char*>(whole_data.data()),
                            static_cast<unsigned int>(whole_data.size()),
-                           custom_fields, images, warn, err);
+                           option, images, warn, err);
 }
 
 bool LoadDNGFromMemory(const char* mem, unsigned int size,
-                       std::vector<FieldInfo>& custom_fields,
+                       const DNGLoaderOption &option,
                        std::vector<DNGImage>* images, std::string* warn,
                        std::string* err) {
   (void)warn;
@@ -5007,9 +5014,9 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
     return false;
   }
 
-  MemoryCapacity memory_capacity; // TODO(syoyo): Set memory limit.
+  MemoryCapacity memory_capacity(option.max_memory);
 
-  bool ret = ParseDNGFromMemory(sr, custom_fields, memory_capacity, images, warn, err);
+  bool ret = ParseDNGFromMemory(sr, option.custom_fields, memory_capacity, images, warn, err);
 
   if (!ret) {
     if (err) {
