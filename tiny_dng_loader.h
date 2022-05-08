@@ -332,7 +332,7 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 #pragma clang diagnostic ignored "-Weverything"
 #endif
 
-//#define TINY_DNG_LOADER_DEBUG
+#define TINY_DNG_LOADER_DEBUG
 #ifdef TINY_DNG_LOADER_DEBUG
 #define TINY_DNG_DPRINTF(...) printf(__VA_ARGS__)
 #else
@@ -3029,20 +3029,24 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
       TINY_DNG_DPRINTF("ret = %d\n", ret);
       TINY_DNG_ASSERT(ret == LJ92_ERROR_NONE, "Error opening JPEG stream.");
 
-      // TINY_DNG_DPRINTF("lj %d, %d, %d\n", lj_width, lj_height, lj_bits);
-      // TINY_DNG_DPRINTF("ljp x %d, y %d, c %d\n", ljp->x, ljp->y,
-      // ljp->components);
-      // TINY_DNG_DPRINTF("tile width = %d\n", image_info.tile_width);
-      // TINY_DNG_DPRINTF("tile height = %d\n", image_info.tile_length);
-      // TINY_DNG_DPRINTF("col = %d, tiff_w = %d / %d\n", column_step, tiff_w,
-      // image_info.width);
+      TINY_DNG_DPRINTF("lj %d, %d, %d\n", lj_width, lj_height, lj_bits);
+      TINY_DNG_DPRINTF("ljp x %d, y %d, c %d\n", ljp->x, ljp->y,
+      ljp->components);
+      TINY_DNG_DPRINTF("tile width = %d\n", image_info.tile_width);
+      TINY_DNG_DPRINTF("tile height = %d\n", image_info.tile_length);
+      TINY_DNG_DPRINTF("col = %d, tiff_w = %d / %d\n", int(column_step), tiff_w,
+      image_info.width);
 
-      TINY_DNG_ASSERT((lj_width * lj_height) ==
-                          image_info.tile_width * image_info.tile_length,
-                      "Unexpected JPEG tile size.");
+      TINY_DNG_ASSERT(lj_width <= image_info.tile_width, "Unexpected JPEG tile width size.");
+      TINY_DNG_ASSERT(lj_height <= image_info.tile_length, "Unexpected JPEG tile length size.");
 
-      TINY_DNG_ASSERT(ljp->components == image_info.samples_per_pixel,
-                      "# of color channels does not match.");
+      //TINY_DNG_ASSERT((lj_width * lj_height) ==
+      //                    image_info.tile_width * image_info.tile_length,
+      //                "Unexpected JPEG tile size.");
+
+      TINY_DNG_DPRINTF("lj.components %d, samples_per_pixel %d\n", ljp->components, image_info.samples_per_pixel);
+      //TINY_DNG_ASSERT(ljp->components == image_info.samples_per_pixel,
+      //                "# of color channels does not match.");
 
       // int write_length = image_info.tile_width;
       // int skip_length = dst_width - image_info.tile_width;
@@ -3059,6 +3063,7 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
       tmpbuf.resize(
           static_cast<size_t>(lj_width * lj_height * ljp->components));
 
+      // TODO: ljp->components > image_info.samples_per_pixel
       ret = lj92_decode(ljp, tmpbuf.data(), image_info.tile_width, 0, NULL, 0);
       // ret = lj92_decode(ljp, tmpbuf.data(), write_length, skip_length, NULL,
       // 0);
