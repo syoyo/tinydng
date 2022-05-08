@@ -998,10 +998,10 @@ static int parsePred6(ljp* self) {
   --write;
   int rowcount = self->x - 1;
   while (rowcount--) {
-    int errcode = LJ92_ERROR_NONE;
-    diff = nextdiff(self, self->num_huff_idx - 1, 0, &errcode);
-    if (errcode != LJ92_ERROR_NONE) {
-      return errcode;
+    int _errcode = LJ92_ERROR_NONE;
+    diff = nextdiff(self, self->num_huff_idx - 1, 0, &_errcode);
+    if (_errcode != LJ92_ERROR_NONE) {
+      return _errcode;
     }
     Px = left;
     left = Px + diff;
@@ -1031,10 +1031,10 @@ static int parsePred6(ljp* self) {
   // TINY_DNG_DPRINTF("%x %x\n",thisrow,lastrow);
   while (c < pixels) {
     col = 0;
-    int errcode = LJ92_ERROR_NONE;
-    diff = nextdiff(self, self->num_huff_idx - 1, 0, &errcode);
-    if (errcode != LJ92_ERROR_NONE) {
-      return errcode;
+    int _errcode = LJ92_ERROR_NONE;
+    diff = nextdiff(self, self->num_huff_idx - 1, 0, &_errcode);
+    if (_errcode != LJ92_ERROR_NONE) {
+      return _errcode;
     }
     Px = lastrow[col];  // Use value above for first pixel in row
     left = Px + diff;
@@ -1054,10 +1054,10 @@ static int parsePred6(ljp* self) {
       write = self->writelen;
     }
     while (rowcount--) {
-      int errcode = LJ92_ERROR_NONE;
-      diff = nextdiff(self, self->num_huff_idx - 1, 0, &errcode);
-      if (errcode != LJ92_ERROR_NONE) {
-        return errcode;
+      int __errcode = LJ92_ERROR_NONE;
+      diff = nextdiff(self, self->num_huff_idx - 1, 0, &__errcode);
+      if (__errcode != LJ92_ERROR_NONE) {
+        return __errcode;
       }
 
       Px = lastrow[col] + ((left - lastrow[col - 1]) >> 1);
