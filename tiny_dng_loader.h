@@ -1054,10 +1054,10 @@ static int parsePred6(ljp* self) {
       write = self->writelen;
     }
     while (rowcount--) {
-      int __errcode = LJ92_ERROR_NONE;
-      diff = nextdiff(self, self->num_huff_idx - 1, 0, &__errcode);
-      if (__errcode != LJ92_ERROR_NONE) {
-        return __errcode;
+      int errcode_d2 = LJ92_ERROR_NONE;
+      diff = nextdiff(self, self->num_huff_idx - 1, 0, &errcode_d2);
+      if (errcode_d2 != LJ92_ERROR_NONE) {
+        return errcode_d2;
       }
 
       Px = lastrow[col] + ((left - lastrow[col - 1]) >> 1);
