@@ -69,7 +69,7 @@ Here is the list of supported DNG files.
 
 ## Usage
 
-### Loading DNG 
+### Loading DNG
 
 ```c++
 #include <cstdio>
@@ -244,6 +244,8 @@ int main(int argc, char **argv) {
   * `TINY_DNG_LOADER_USE_SYSTEM_ZLIB` : Use system's zlib library instead of miniz.
 * `TINY_DNG_NO_EXCEPTION` : disable C++ exception(abort the program when got an assertion)
 * `TINY_DNG_LOADER_DEBUG` : Enable debug printf(developer only!)
+* `TINY_DNG_LOADER_NO_STB_IMAGE_INCLUDE` : Do not include `stb_image.h` inside of `tiny_dng_loader.h`.
+* `TINY_DNG_LOADER_NO_STDIO` : Disable printf, cout/cerr.
 
 ## Examples
 

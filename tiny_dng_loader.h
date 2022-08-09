@@ -302,14 +302,19 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 
 #include <stdint.h>  // for lj92
 
-#include <cassert>
 #include <cmath>
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
 #include <map>
 #include <sstream>
+
+#if defined(TINY_DNG_LOADER_NO_STDIO)
+#else
+#include <cstdio>
+#include <cassert>
+#include <iostream>
+#endif
 
 // #include <iostream> // dbg
 
@@ -363,6 +368,23 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
   } while (false)
 
 #else
+
+#if defined(TINY_DNG_LOADER_NO_STDIO)
+// No output
+
+#define TINY_DNG_ASSERT(assertion, text)                                    \
+  do {                                                                      \
+    if ((assertion) == 0) {                                                 \
+      abort();                                                              \
+    }                                                                       \
+  } while (false)
+#define TINY_DNG_ABORT(text)                                              \
+  do {                                                                    \
+    abort();                                                              \
+  } while (false)
+
+#else // NO_STDIO
+
 #define TINY_DNG_ASSERT(assertion, text)                                    \
   do {                                                                      \
     if ((assertion) == 0) {                                                 \
@@ -375,6 +397,9 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
     std::cerr << __FILE__ << ":" << __LINE__ << " " << text << std::endl; \
     abort();                                                              \
   } while (false)
+
+#endif // NO_STDIO
+
 #endif
 
 #ifdef __clang__
@@ -399,9 +424,13 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 #endif
 #endif
 
+#if defined(TINY_DNG_LOADER_NO_STB_IMAGE_INCLUDE)
+#else
+
 // STB image to decode jpeg image.
 // Assume STB_IMAGE_IMPLEMENTATION is defined elsewhere
 #include "stb_image.h"
+#endif
 
 #ifdef __clang__
 #pragma clang diagnostic pop
