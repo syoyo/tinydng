@@ -337,7 +337,7 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 #pragma clang diagnostic ignored "-Weverything"
 #endif
 
-#define TINY_DNG_LOADER_DEBUG
+// #define TINY_DNG_LOADER_DEBUG
 #ifdef TINY_DNG_LOADER_DEBUG
 #define TINY_DNG_DPRINTF(...) printf(__VA_ARGS__)
 #else
