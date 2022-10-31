@@ -2216,7 +2216,7 @@ bool DNGImage::SetImageDataJpeg(const unsigned short *data, unsigned int width,
 
   // Encode image
   int ret = lj92_encode((unsigned short *)data, new_width, new_height, bpp,
-                        new_width * new_height * 2, 0, NULL, 0, &compressed,
+                        new_width * new_height, 0, NULL, 0, &compressed,
                         &output_buffer_size);
 
   if (ret != LJ92_ERROR_NONE)
