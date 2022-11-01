@@ -41,6 +41,7 @@ TinyDNG can also be used as an TIFF RGB image loader(8bit, 16bit and 32bit are s
 ### Writing
 
 * [x] DNG and TIFF
+  * [x] LosslessJPEG compression
 
 ## Supported DNG files
 
@@ -49,7 +50,7 @@ Here is the list of supported DNG files.
 * [x] Sigma sd Quattro H
   * Uncompressed RGB 12bit image.
 * [x] iPhone DNG
-* [ ] Apple ProRAW
+* [x] Apple ProRAW
   * [x] Lossless JPEG 12bit
   * [x] Semantic map
 * [x] Black magic DNG
@@ -273,13 +274,13 @@ Here is the list of great articles on how to decode RAW file and how to develop 
 ## TODO
 
 * [ ] Move to C++11.
-* [ ] Parse semantic map tags in Apple ProRAW.
+* [x] Parse semantic map tags in Apple ProRAW.
 * [ ] Add DNG header load only mode
 * [ ] Parse more DNG headers
 * [ ] Parse more custom DNG(TIFF) tags
 * [ ] lossy DNG
 * [ ] Improve DNG writer
-  * [ ] Support compression
+  * [x] Support compression(LJPEG)
 * [ ] Support Big TIFF(4GB+)
 * [ ] Decode Nikon RAW(NEF)
 * [ ] Improve Canon RAW decoding
