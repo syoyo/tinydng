@@ -31,6 +31,7 @@ THE SOFTWARE.
 
 #include <sstream>
 #include <vector>
+#include <cstring>
 
 #ifndef ROL32
 #define ROL32(v,a) ((v) << (a) | (v) >> (32-(a)))
@@ -43,6 +44,12 @@ THE SOFTWARE.
 namespace tinydngwriter {
 
 namespace {
+
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Weverything"
+#endif
+
 // Begin liblj92, Lossless JPEG decode/encoder ------------------------------
 //
 // With fixes: https://github.com/ilia3101/MLV-App/pull/151
@@ -593,6 +600,11 @@ int lj92_encode(uint16_t *image, int width, int height, int bitdepth,
 }
 
 // End liblj92 ---------------------------------------------------------
+
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
+
 }  // namespace
 
 typedef enum {
@@ -2151,7 +2163,7 @@ bool DNGImage::SetImageDataPacked(const unsigned short *input_buffer, const int 
 
   if (input_bpp > 16)
     return false;
-  
+
   unsigned int bits_free = 16 - input_bpp;
   const unsigned short *unpacked_bits = input_buffer;
 
@@ -2163,7 +2175,7 @@ bool DNGImage::SetImageDataPacked(const unsigned short *input_buffer, const int 
   {
     unsigned int bits_offset = (pixel_index * bits_free) % 16;
     unsigned int bits_to_rol = bits_free + bits_offset + (bits_offset > 0) * 16;
-    
+
     unsigned int data = ROL32(static_cast<unsigned int>(unpacked_bits[pixel_index]), bits_to_rol);
     *(reinterpret_cast<unsigned int *>(packed_bits)) = (*(reinterpret_cast<unsigned int *>(packed_bits)) & 0x0000FFFF) | data;
 
@@ -2213,7 +2225,7 @@ bool DNGImage::SetImageData(const unsigned char *data, const size_t data_len) {
 
 bool DNGImage::SetImageDataJpeg(const unsigned short *data, unsigned int width,
                                 unsigned int height, unsigned int bpp) {
-  if ((data == NULL) || (height % 2 == 1)) {
+  if ((data == NULL) || (height % 2 == 1) || (width % 2 == 1)) {
     return false;
   }
 
@@ -2234,18 +2246,18 @@ bool DNGImage::SetImageDataJpeg(const unsigned short *data, unsigned int width,
   // GRGRGR...BGBGBG...
   // GRGRGR...BGBGBG...
   // -----------
-  int new_width = width * 2;
-  int new_height = height / 2;
+  int new_width = int(width * 2);
+  int new_height = int(height / 2);
 
   // Encode image
-  int ret = lj92_encode((unsigned short *)data, new_width, new_height, bpp,
+  int ret = lj92_encode(const_cast<unsigned short *>(data), new_width, new_height, int(bpp),
                         new_width * new_height, 0, NULL, 0, &compressed,
                         &output_buffer_size);
 
   if (ret != LJ92_ERROR_NONE)
 	  return false;
 
-  bool sid_res = SetImageData(compressed, output_buffer_size);
+  bool sid_res = SetImageData(compressed, size_t(output_buffer_size));
 
   if (compressed)
 	  free(compressed);
