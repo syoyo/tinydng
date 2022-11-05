@@ -816,8 +816,10 @@ class DNGImage {
   /// Set image data.
   bool SetImageData(const unsigned char *data, const size_t data_len);
 
-  /// Set image data.
-  bool SetImageDataJpeg(const unsigned short *data, unsigned int width, unsigned int height, unsigned int bpp);
+  /// Compress image data with LosslessJPEG and set it to the image data.
+  /// width and height must be multiple of 2.
+  /// Must set COMPRESSION to COMPRESSION_NEW_JPEG by calling SetCompression() separetely
+  bool SetImageDataWithLosslessJpegCompression(const unsigned short *data, unsigned int width, unsigned int height, unsigned int bpp);
 
   /// Set custom field.
   bool SetCustomFieldLong(const unsigned short tag, const int value);
@@ -2223,7 +2225,7 @@ bool DNGImage::SetImageData(const unsigned char *data, const size_t data_len) {
   return true;
 }
 
-bool DNGImage::SetImageDataJpeg(const unsigned short *data, unsigned int width,
+bool DNGImage::SetImageDataWithLosslessJpegCompression(const unsigned short *data, unsigned int width,
                                 unsigned int height, unsigned int bpp) {
   if ((data == NULL) || (height % 2 == 1) || (width % 2 == 1)) {
     return false;
