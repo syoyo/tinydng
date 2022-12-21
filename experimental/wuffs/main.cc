@@ -1,5 +1,6 @@
 #include <vector>
 #include <cstdint>
+#include <iostream>
 
 #include "wuffs-v0.3.c"
 
@@ -418,7 +419,6 @@ SOFTWARE.
 constexpr size_t kMaxComponents = 16;
 
 struct LosslessJpeg {
-  std::vector<uint8_t> data;
   size_t datalen;
   int scanstart;
   int ix;
@@ -450,7 +450,7 @@ class LosslessJpegDecoder
 {
  public:
 
-  bool open(const uint8_t *data, const size_t data_length);
+  bool open(const uint8_t *data, const size_t data_length, bool swap_endian=true);
 
   // valid after 'open'
   int width();
@@ -475,7 +475,7 @@ class LosslessJpegDecoder
   int find_marker();
 
   LosslessJpeg _lj;
-  StreamReader _sr;
+  StreamReader *_sr{nullptr};
 };
 
 LJ92Error LosslessJpegDecoder::find_SoI()
@@ -485,7 +485,28 @@ LJ92Error LosslessJpegDecoder::find_SoI()
   return LJ92Error::Corrupt;
 }
 
+bool LosslessJpegDecoder::open(const uint8_t *data, const size_t data_length, bool swap_endian)
+{
+  if (_sr) {
+    delete _sr;
+  }
+
+  _sr = new StreamReader(data, data_length, swap_endian);
+
+  // Check header.
+
+
+  return true;
+}
+
 int main(int argc, char **argv)
 {
+  LosslessJpegDecoder decoder;
+  std::vector<uint8_t> data;
+
+  if (!decoder.open(data.data(), data.size())) {
+    std::cerr << "Failed to open LosslessJpeg data.\n";
+  }
+
   return 0;
 }
