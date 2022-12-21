@@ -259,9 +259,37 @@ int main(int argc, char **argv) {
 
 * https://github.com/storyboardcreativity/zraw-decoder
 
+## Python binding(Experimental)
+
+### Build native module.
+
+Install pybind11.
+
+```
+$ python -m pip install pybind11
+```
+
+Then,
+
+```
+$ python setup.py build
+```
+
+or
+
+```
+$ python -m pip install build
+$ python -m build .
+```
+
+Currently no PyPI package is available.
+
+See [experimental/python](experimental/python) for sample python code.
+
 ## Fuzzing test
 
 * [fuzzer](fuzzer/) Fuzzing test.
+
 
 ## Resource
 
