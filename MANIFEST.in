@@ -1,0 +1,6 @@
+include tiny_dng_loader.h
+include tiny_dng_writer.h
+include python-bindings.cc
+include setup.py
+include README.md
+include L
