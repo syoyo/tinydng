@@ -5107,7 +5107,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         std::vector<std::thread> workers;
         std::atomic<size_t> strip_count(0);
 
-        int num_threads = std::max(1, int(std::thread::hardware_concurrency()));
+        int num_threads = (std::max)(1, int(std::thread::hardware_concurrency()));
         if (num_threads > num_strips) {
           num_threads = num_strips;
         }
@@ -5505,7 +5505,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
             // For 32bit
             if (sizeof(void *) == 4) {
               // Use 2GB as a max
-              if (len > std::numeric_limits<int32_t>::max()) {
+              if (len > (std::numeric_limits<int32_t>::max)()) {
                 if (err) {
                   (*err) += "Decoded image size exceeds 2GB.\n";
                 }
@@ -5543,7 +5543,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         // For 32bit
         if (sizeof(void *) == 4) {
           // Use 2GB as a max
-          if (len > std::numeric_limits<int32_t>::max()) {
+          if (len > (std::numeric_limits<int32_t>::max)()) {
             if (err) {
               (*err) += "Decoded image size exceeds 2GB.\n";
             }
