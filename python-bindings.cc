@@ -36,7 +36,7 @@ static void decode12_to_16(
   // 40 = 10bit * 4 pixel, 8bit * 5 pixel
   //
   size_t n = size_t(y * wi)
-  
+
   size_t n4 = n % 4;
   size_t addr5 = (n / 4) * 5; // 8bit pixel pos
   size_t odd = (addt5 % 2);
@@ -45,7 +45,7 @@ static void decode12_to_16(
   offset[0] = offsets[n4][0];
   offset[1] = offsets[n4][1];
   offset[2] = offsets[n4][2];
- 
+
   if (do_swap) {
     // load with short byte swap
     if (odd) {
@@ -211,15 +211,17 @@ std::vector<tinydng::DNGImage> load_dng(const std::string &filename)
     throw "Failed to load DNG: " + err;
   }
 
-  // decode pixel to uint16 for easy RAW data manipulation. 
+  // decode pixel to uint16 for easy RAW data manipulation.
   for (auto &image : images) {
-    if (image.bits_per_sample == 12) {
+    if (image.bits_per_sample == 8) {
+      // ok
+    } else if (image.bits_per_sample == 12) {
       std::vector<uint16_t> img16;
       decode12_to_u16(img16, image.data.data(), image.width, image.height, /* byteswap */false);
       image.data.resize(img16.size() * sizeof(uint16_t));
       memcpy(image.data.data(), img16.data(), image.data.size());
       image.bits_per_sample = 16; // overwrite bps
-    } else if (image.bits_per_sample == 16) {
+    } else if (image.bits_per_sample == 14) {
       std::vector<uint16_t> img16;
       decode14_to_u16(img16, image.data.data(), image.width, image.height, /* byteswap */false);
       image.data.resize(img16.size() * sizeof(uint16_t));
@@ -230,6 +232,7 @@ std::vector<tinydng::DNGImage> load_dng(const std::string &filename)
     } else if (image.bits_per_sample == 64) {
       // ok. int64 or fp64 image
     } else {
+      py::print("TinyDNG: Unsupported bit depth: " + std::to_string(image.bits_per_sample));
       throw "Unsupported bit depth: " + std::to_string(image.bits_per_sample);
     }
   }
