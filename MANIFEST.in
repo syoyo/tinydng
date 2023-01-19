@@ -1,0 +1,11 @@
+include tiny_dng_loader.h
+include tiny_dng_writer.h
+include python-bindings.cc
+include pyproject.toml
+include setup.py
+include README.md
+include LICENSE
+include stb_image.h
+include miniz.c
+include miniz.h
+include miniz.LICENSE
