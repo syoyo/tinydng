@@ -45,6 +45,9 @@ namespace tinydng {
 // e.g. limit maximum images in one DNG/TIFF file
 const size_t kMaxImages = 10240;
 
+// TODO: Set max allowed size in loader option.
+const size_t kMaxImageSizeInMB = 64*1024; // 64 GB
+
 // Avoid stack-overflow of recursive Sub IFD parsing.
 const uint32_t kMaxRecursiveIFDParse = 1024;
 
@@ -3662,6 +3665,13 @@ static bool ParseTIFFIFD(const StreamReader& sr,
           return false;
         }
 
+        if (spp < 1) {
+          if (err) {
+            (*err) += "SamplesPerPixel must be 1 ~ 4, but got " + std::to_string(spp) + ".\n";
+          }
+          return false;
+        }
+
         if (spp > 4) {
           if (err) {
             (*err) += "SamplesPerPixel must be less than or equal to 4.\n";
@@ -5217,10 +5227,25 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
             return false;
           }
 
-          const size_t dst_len = static_cast<size_t>(
-              (image->samples_per_pixel * image->width * image->rows_per_strip *
-               image->bits_per_sample) /
-              8);
+          const size_t dst_len = size_t(image->samples_per_pixel) * size_t(image->width) * size_t(image->rows_per_strip) *
+               size_t(image->bits_per_sample) / 8ull;
+          if (dst_len == 0) {
+            if (err) {
+              (*err) += "Image data size is zero.\n";
+              (*err) += "  samples_per_pixel " + std::to_string(image->samples_per_pixel) + "\n";
+              (*err) += "  width " + std::to_string(image->width) + "\n";
+              (*err) += "  rows_per_strip " + std::to_string(image->rows_per_strip) + "\n";
+              (*err) += "  bits_per_sample " + std::to_string(image->bits_per_sample) + "\n";
+            }
+            return false;
+          }
+
+          if ((1024ull * 1024ull * dst_len) > kMaxImageSizeInMB) {
+            if (err) {
+              (*err) += "Image data size too large. Exceeds " + std::to_string(kMaxImageSizeInMB) + " MB.\n";
+            }
+            return false;
+          }
           std::vector<unsigned char> dst(dst_len);
 
           if (!sr.read(image->strip_byte_counts[k], image->strip_byte_counts[k],
