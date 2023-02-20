@@ -5475,8 +5475,17 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         }
 
         int w = 0, h = 0, components = 0;
+
+        // Check if data is in valid range.
+        if ((sr.tell() + data_offset + static_cast<uint32_t>(jpeg_len)) >= sr.size()) {
+          if (err) {
+            (*err) += "Invalid JPEG image data size.\n";
+          }
+          return false;
+        }
+
         unsigned char* decoded_image = stbi_load_from_memory(
-            sr.data() + data_offset, static_cast<int>(jpeg_len), &w, &h,
+            sr.data() + data_offset, static_cast<uint32_t>(jpeg_len), &w, &h,
             &components, /* desired_channels */ components_info);
         TINY_DNG_ASSERT(decoded_image, "Could not decode JPEG image.");
 
@@ -5546,7 +5555,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
                 if (err) {
                   (*err) += "Decoded image size exceeds 2GB.\n";
                 }
-                return false; 
+                return false;
               }
             }
 
@@ -5567,7 +5576,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
         // std::cout << "w = " << image->width << ", h = " << image->height <<
         // std::endl;
-        
+
         TINY_DNG_DPRINTF("image.width = %d\n", image->width);
         TINY_DNG_DPRINTF("image.height = %d\n", image->height);
         TINY_DNG_DPRINTF("image.bps = %d\n", image->bits_per_sample);
@@ -5584,7 +5593,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
             if (err) {
               (*err) += "Decoded image size exceeds 2GB.\n";
             }
-            return false; 
+            return false;
           }
         }
 
