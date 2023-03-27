@@ -25,6 +25,7 @@ TinyDNG can also be used as an TIFF RGB image loader(8bit, 16bit and 32bit are s
 * [x] TIFF
   * [x] 8bit uncompressed
   * [x] 8bit LZW compressed(no preditor, horizontal diff predictor)
+  * [ ] zstd compression
 * Experimental
   * Apple ProRAW(Lossless JPEG 12bit)
     * [x] Lossless JPEG 12bit
@@ -243,6 +244,9 @@ int main(int argc, char **argv) {
 * `TINY_DNG_LOADER_USE_THREAD` : Enable threaded loading(requires C++11)
 * `TINY_DNG_LOADER_ENABLE_ZIP` : Enable decoding AdobeDeflate image(Currently, tiled RGB image only).
   * `TINY_DNG_LOADER_USE_SYSTEM_ZLIB` : Use system's zlib library instead of miniz.
+* `TINY_DNG_LOADER_ENABLE_ZSTD` : Enable zstd compression(currently TIFF only).
+  * Please git submodule to checkout zstd dependency or you can use system installed zstd.
+  * `TINY_DNG_LOADER_NO_ZSTD_INCLUDE` : Assume zstd header include is done in outside of tiny_dng_loader.h
 * `TINY_DNG_NO_EXCEPTION` : disable C++ exception(abort the program when got an assertion)
 * `TINY_DNG_LOADER_DEBUG` : Enable debug printf(developer only!)
 * `TINY_DNG_LOADER_NO_STB_IMAGE_INCLUDE` : Do not include `stb_image.h` inside of `tiny_dng_loader.h`.

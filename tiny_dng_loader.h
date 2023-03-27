@@ -341,6 +341,14 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 #pragma clang diagnostic ignored "-Weverything"
 #endif
 
+#ifdef TINY_DNG_LOADER_ENABLE_ZSTD
+#if !defined(TINY_DNG_LOADER_NO_ZSTD_INCLUDE)
+#include "zstd.h"
+#else
+// Assume zstd.h is included outside of this header file.
+#endif
+#endif
+
 // #define TINY_DNG_LOADER_DEBUG
 #ifdef TINY_DNG_LOADER_DEBUG
 #define TINY_DNG_DPRINTF(...) printf(__VA_ARGS__)
