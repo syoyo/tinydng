@@ -5240,7 +5240,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
             return false;
           }
 
-          if ((1024ull * 1024ull * dst_len) > kMaxImageSizeInMB) {
+          if (dst_len > (kMaxImageSizeInMB * 1024ull * 1024ull ) {
             if (err) {
               (*err) += "Image data size too large. Exceeds " + std::to_string(kMaxImageSizeInMB) + " MB.\n";
             }
