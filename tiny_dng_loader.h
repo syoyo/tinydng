@@ -5227,7 +5227,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
             return false;
           }
 
-          const size_t dst_len = size_t(image->samples_per_pixel) * size_t(image->width) * size_t(image->rows_per_strip) *
+          const uint_64_ dst_len = size_t(image->samples_per_pixel) * size_t(image->width) * size_t(image->rows_per_strip) *
                size_t(image->bits_per_sample) / 8ull;
           if (dst_len == 0) {
             if (err) {
@@ -5240,7 +5240,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
             return false;
           }
 
-          if ((1024ull * 1024ull * dst_len) > kMaxImageSizeInMB) {
+          if (dst_len > (kMaxImageSizeInMB * 1024ull * 1024ull)) {
             if (err) {
               (*err) += "Image data size too large. Exceeds " + std::to_string(kMaxImageSizeInMB) + " MB.\n";
             }
