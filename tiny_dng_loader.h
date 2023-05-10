@@ -5227,11 +5227,11 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
             return false;
           }
 
-          const uint_64_ dst_len = size_t(image->samples_per_pixel) * size_t(image->width) * size_t(image->rows_per_strip) *
-               size_t(image->bits_per_sample) / 8ull;
+          const uint64_t dst_len = uint64_t(image->samples_per_pixel) * uint64_t(image->width) * uint64_t(image->rows_per_strip) *
+               uint64_t(image->bits_per_sample) / 8ull;
           if (dst_len == 0) {
             if (err) {
-              (*err) += "Image data size is zero.\n";
+              (*err) += "Image data size is zero. Something is wrong in Image parameter:\n";
               (*err) += "  samples_per_pixel " + std::to_string(image->samples_per_pixel) + "\n";
               (*err) += "  width " + std::to_string(image->width) + "\n";
               (*err) += "  rows_per_strip " + std::to_string(image->rows_per_strip) + "\n";
@@ -5546,6 +5546,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
             image->width = w;
             image->height = h;
             image->samples_per_pixel = components;
+            image->bits_per_sample = image->bits_per_sample_original;
 
             const uint64_t len = uint64_t(image->samples_per_pixel) * uint64_t(image->width) * uint64_t(image->height) * uint64_t(image->bits_per_sample / 8);
             // For 32bit
@@ -5557,6 +5558,27 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
                 }
                 return false;
               }
+            }
+
+            if (len > (kMaxImageSizeInMB * 1024ull * 1024ull)) {
+              if (err) {
+                (*err) += "Image data size too large. Exceeds " + std::to_string(kMaxImageSizeInMB) + " MB.\n";
+              }
+              return false;
+            }
+
+            if (len == 0) {
+                if (err) {
+                  std::stringstream ss;
+                  ss << "Image size is 0. Something is wrong in Image parameter:\n";
+                  ss << "  width = " << image->width << "\n";
+                  ss << "  height = " << image->height << "\n";
+                  ss << "  spp = " << image->samples_per_pixel << "\n";
+                  ss << "  bps = " << image->bits_per_sample << "\n";
+
+                  (*err) += ss.str();
+                }
+                return false;
             }
 
             image->data.resize(len);
@@ -5595,6 +5617,13 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
             }
             return false;
           }
+        }
+
+        if (len > (kMaxImageSizeInMB * 1024ull * 1024ull)) {
+          if (err) {
+            (*err) += "Image data size too large. Exceeds " + std::to_string(kMaxImageSizeInMB) + " MB.\n";
+          }
+          return false;
         }
 
         if (len == 0) {
