@@ -1,7 +1,5 @@
 # Tiny DNG Loader and Writer library
 
-[![Build Status](https://travis-ci.org/syoyo/tinydngloader.svg?branch=master)](https://travis-ci.org/syoyo/tinydngloader)
-
 Header-only simple&limited DNG(Digital NeGative, TIFF format + extension) loader and writer in C++11.
 
 Currently TinyDNG only supports lossless RAW DNG and limited lossless JPEG DNG(no lossy compression support).
