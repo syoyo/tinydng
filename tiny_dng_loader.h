@@ -449,7 +449,7 @@ namespace tinydng {
 
 #ifdef __clang__
 #pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wevec++11-extensions"
+#pragma clang diagnostic ignored "-Wc++11-extensions"
 #pragma clang diagnostic ignored "-Wold-style-cast"
 #pragma clang diagnostic ignored "-Wconversion"
 #pragma clang diagnostic ignored "-Wunused-parameter"
@@ -2834,7 +2834,9 @@ static bool DecompressZIPedTile(const StreamReader& sr, unsigned char* dst_data,
     // Currently we only support tile data for tile.length == tiff.height.
     // assert(image_info.tile_length == image_info.height);
 
-    size_t column_step = 0;
+    size_t column_step = 0; // debug
+    (void)column_step;
+
     while (tiff_h < static_cast<unsigned int>(image_info.height)) {
       TINY_DNG_DPRINTF("sr tell = %d\n", int(sr.tell()));
 
@@ -3034,7 +3036,9 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
     // Currently we only support tile data for tile.length == tiff.height.
     // assert(image_info.tile_length == image_info.height);
 
-    size_t column_step = 0;
+    size_t column_step = 0; // debug
+    (void)column_step;
+
     while (tiff_h < static_cast<unsigned int>(image_info.height)) {
       // Read offset to JPEG data location.
       if (!sr.read4(&offset)) {
