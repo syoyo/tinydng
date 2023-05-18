@@ -42,7 +42,7 @@ namespace tinydng {
 const size_t kMaxImages = 10240;
 
 // TODO: Set max allowed size in loader option.
-const size_t kMaxImageSizeInMB = 64*1024; // 64 GB
+const size_t kMaxImageSizeInMB = 64 * 1024;  // 64 GB
 
 // Avoid stack-overflow of recursive Sub IFD parsing.
 const uint32_t kMaxRecursiveIFDParse = 1024;
@@ -140,7 +140,7 @@ struct FieldData {
 };
 
 struct GainMap {
-  unsigned int idx; // 1, 2 or 3: OpCodeListN. 0 = invalid
+  unsigned int idx;  // 1, 2 or 3: OpCodeListN. 0 = invalid
   unsigned int top, left, bottom, right;
   unsigned int plane, planes;
   unsigned int row_pitch, col_pitch;
@@ -151,10 +151,9 @@ struct GainMap {
   unsigned int map_planes;
 
   int _pad1;
-  std::vector<float> pixels; // size = map_points_v * map_points_h * map_planes
+  std::vector<float> pixels;  // size = map_points_v * map_points_h * map_planes
 
-  GainMap() : idx(0) {
-  }
+  GainMap() : idx(0) {}
 };
 
 struct DNGImage {
@@ -302,14 +301,14 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <sstream>
-#include <limits>
 
 #if defined(TINY_DNG_LOADER_NO_STDIO)
 #else
-#include <cstdio>
 #include <cassert>
+#include <cstdio>
 #include <iostream>
 #endif
 
@@ -324,8 +323,8 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 
 #ifdef TINY_DNG_LOADER_USE_THREAD
 #include <atomic>
-#include <thread>
 #include <mutex>
+#include <thread>
 #endif
 
 #endif
@@ -342,7 +341,7 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 #define TINY_DNG_DPRINTF(...)
 #endif
 
-#if 0 // DBG
+#if 0  // DBG
 
 #define TINY_DNG_DEBUG_SAVEIMAGE
 #if defined(TINY_DNG_DEBUG_SAVEIMAGE)
@@ -354,38 +353,37 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 
 // msg: std::string
 // err: std::string*
-#define TINY_DNG_ERROR_AND_RETURN(msg, err) \
-  do { \
-    if (err) { \
-      std::ostringstream ss_e; \
-      ss_e << "[TinyDNG error]: " << __func__ << "():" << __LINE__ << " " ; \
-      ss_e << msg << "\n"; \
-      (*err) += ss_e.str(); \
-    } \
-    return false; \
+#define TINY_DNG_ERROR_AND_RETURN(msg, err)                                \
+  do {                                                                     \
+    if (err) {                                                             \
+      std::ostringstream ss_e;                                             \
+      ss_e << "[TinyDNG error]: " << __func__ << "():" << __LINE__ << " "; \
+      ss_e << msg << "\n";                                                 \
+      (*err) += ss_e.str();                                                \
+    }                                                                      \
+    return false;                                                          \
   } while (0)
 
 // check cond, set error message and return false when cond failed.
-#define TINY_DNG_CHECK_AND_RETURN(cond, msg, err) \
-  do { \
-    if (!(cond)) { \
-      if (err) { \
-        std::ostringstream ss_e; \
-        ss_e << "[TinyDNG error]: " << __func__ << "():" << __LINE__ << " " ; \
-        ss_e << msg << "\n"; \
-        (*err) += ss_e.str(); \
-      } \
-      return false; \
-    } \
+#define TINY_DNG_CHECK_AND_RETURN(cond, msg, err)                            \
+  do {                                                                       \
+    if (!(cond)) {                                                           \
+      if (err) {                                                             \
+        std::ostringstream ss_e;                                             \
+        ss_e << "[TinyDNG error]: " << __func__ << "():" << __LINE__ << " "; \
+        ss_e << msg << "\n";                                                 \
+        (*err) += ss_e.str();                                                \
+      }                                                                      \
+      return false;                                                          \
+    }                                                                        \
   } while (0)
 
 #define TINY_DNG_CHECK_AND_RETURN_C(cond, retcode) \
-  do { \
-    if (!(cond)) { \
-      return (retcode); \
-    } \
+  do {                                             \
+    if (!(cond)) {                                 \
+      return (retcode);                            \
+    }                                              \
   } while (0)
-
 
 #ifdef __clang__
 #pragma clang diagnostic pop
@@ -402,7 +400,6 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 #pragma GCC diagnostic ignored "-Wsign-compare"
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
 #endif
-
 
 #ifdef _MSC_VER
 #pragma warning(push)
@@ -463,7 +460,6 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 #ifdef __GNUC__
 #pragma GCC diagnostic pop
 #endif
-
 
 #ifdef _MSC_VER
 #pragma warning(pop)
@@ -824,7 +820,8 @@ static int parseHuff(ljp* self) {
     }
     hcode = huffvals[hv];
     hufflut[i] = hcode << 8 | bitsused;
-    TINY_DNG_DPRINTF("idx[%d] hufflut[%d] = %d(bitsused = %d, hcode = %d\n",self->num_huff_idx, i, hufflut[i], bitsused,hcode);
+    TINY_DNG_DPRINTF("idx[%d] hufflut[%d] = %d(bitsused = %d, hcode = %d\n",
+                     self->num_huff_idx, i, hufflut[i], bitsused, hcode);
     i++;
     rv++;
   }
@@ -849,8 +846,8 @@ static int parseSof3(ljp* self) {
     // Invalid number of components.
     return LJ92_ERROR_CORRUPT;
   }
-  //TINY_DNG_ASSERT(self->components >= 1 && self->components < 6,
-  //                "Invalid number of components.");
+  // TINY_DNG_ASSERT(self->components >= 1 && self->components < 6,
+  //                 "Invalid number of components.");
 
   return LJ92_ERROR_NONE;
 }
@@ -919,7 +916,7 @@ static int extend(ljp* self, int v, int t) {
 }
 #endif
 
-inline static int nextdiff(ljp* self, int component_idx, int Px, int *errcode) {
+inline static int nextdiff(ljp* self, int component_idx, int Px, int* errcode) {
   (void)Px;
 #ifdef SLOW_HUFF
   int t = decode(self);
@@ -937,7 +934,8 @@ inline static int nextdiff(ljp* self, int component_idx, int Px, int *errcode) {
     return 0;
   }
 
-  //TINY_DNG_ASSERT(component_idx <= self->num_huff_idx, "Invalid huff index.");
+  // TINY_DNG_ASSERT(component_idx <= self->num_huff_idx, "Invalid huff
+  // index.");
   u32 b = self->b;
   int cnt = self->cnt;
   int huffbits = self->huffbits[component_idx];
@@ -1000,7 +998,7 @@ inline static int nextdiff(ljp* self, int component_idx, int Px, int *errcode) {
   return diff;
 }
 
-#if 0 // not used
+#if 0  // not used
 static int parsePred6(ljp* self) {
   // TODO: Consider self->components
   TINY_DNG_DPRINTF("parsePred6\n");
@@ -1200,7 +1198,7 @@ static int parseScan(ljp* self) {
           if (col > 0) {
             // ok
           } else {
-            //TINY_DNG_ASSERT(col > 0, "Unexpected col.");
+            // TINY_DNG_ASSERT(col > 0, "Unexpected col.");
             return LJ92_ERROR_CORRUPT;
           }
           Px = thisrow[(col - 1) * self->components + c];
@@ -1247,7 +1245,8 @@ static int parseScan(ljp* self) {
         if (c >= self->num_huff_idx) {
           // Invalid huffman table index.
           // Currently we assume # of huffman tables is 1.
-          TINY_DNG_CHECK_AND_RETURN_C(self->num_huff_idx == 1, LJ92_ERROR_CORRUPT);
+          TINY_DNG_CHECK_AND_RETURN_C(self->num_huff_idx == 1,
+                                      LJ92_ERROR_CORRUPT);
           huff_idx = 0;  // Look up the first huffman table.
         }
 
@@ -1262,15 +1261,15 @@ static int parseScan(ljp* self) {
         if (left >= 0) {
           // ok
         } else {
-          //TINY_DNG_ASSERT(left >= 0, "left value must be positive.");
+          // TINY_DNG_ASSERT(left >= 0, "left value must be positive.");
           return LJ92_ERROR_CORRUPT;
         }
 
         if (left < 65536) {
           // ok
         } else {
-          //TINY_DNG_ASSERT(left < 65536,
-          //                "left value must be less than u16 max(65536).");
+          // TINY_DNG_ASSERT(left < 65536,
+          //                 "left value must be less than u16 max(65536).");
           return LJ92_ERROR_CORRUPT;
         }
 
@@ -1946,8 +1945,7 @@ int lj92_encode(uint16_t* image, int width, int height, int bitdepth,
 
 #if TINY_DNG_USE_WUFFS_IMAGE_LOADER
 
-static bool wuffs_is_jpeg(const uint8_t* pData, size_t data_len) 
-{
+static bool wuffs_is_jpeg(const uint8_t* pData, size_t data_len) {
   if (!pData) {
     return false;
   }
@@ -1956,23 +1954,25 @@ static bool wuffs_is_jpeg(const uint8_t* pData, size_t data_len)
   // Up to 64K x 64K image
   constexpr uint64_t kMaxPixels = 65536ull * 65536ull;
 
-	wuffs_jpeg__decoder* pDec = wuffs_jpeg__decoder__alloc();
-	if (!pDec) {
+  wuffs_jpeg__decoder* pDec = wuffs_jpeg__decoder__alloc();
+  if (!pDec) {
     return false;
   }
 
-	//wuffs_jpeg__decoder__set_quirk_enabled(pDec, WUFFS_BASE__QUIRK_IGNORE_CHECKSUM, true);
-	wuffs_jpeg__decoder__set_quirk(pDec, WUFFS_BASE__QUIRK_IGNORE_CHECKSUM, true);
+  // wuffs_jpeg__decoder__set_quirk_enabled(pDec,
+  // WUFFS_BASE__QUIRK_IGNORE_CHECKSUM, true);
+  wuffs_jpeg__decoder__set_quirk(pDec, WUFFS_BASE__QUIRK_IGNORE_CHECKSUM, true);
 
-	wuffs_base__image_config ic;
-	wuffs_base__io_buffer src = wuffs_base__ptr_u8__reader((uint8_t *)pData, data_len, true);
-	wuffs_base__status status = wuffs_jpeg__decoder__decode_image_config(pDec, &ic, &src);
-	
-	if (status.repr) 
-	{
-		free(pDec);
+  wuffs_base__image_config ic;
+  wuffs_base__io_buffer src =
+      wuffs_base__ptr_u8__reader((uint8_t*)pData, data_len, true);
+  wuffs_base__status status =
+      wuffs_jpeg__decoder__decode_image_config(pDec, &ic, &src);
+
+  if (status.repr) {
+    free(pDec);
     return false;
-	}
+  }
 
   return true;
 }
@@ -1983,121 +1983,123 @@ static bool wuffs_is_jpeg(const uint8_t* pData, size_t data_len)
 
 //
 // output buffer = RGB x width x height
-// 
-static uint8_t* wuffs_decode_jpeg(const uint8_t* pData, size_t data_len, uint32_t &width, uint32_t &height,
-  std::string *err) 
-{
+//
+static uint8_t* wuffs_decode_jpeg(const uint8_t* pData, size_t data_len,
+                                  uint32_t& width, uint32_t& height,
+                                  std::string* err) {
   constexpr uint64_t kMaxDataLen = 1024ull * 1024ull * 1024ull * 2;
   // Up to 64K x 64K image
   constexpr uint64_t kMaxPixels = 65536ull * 65536ull;
 
-	wuffs_jpeg__decoder* pDec = wuffs_jpeg__decoder__alloc();
-	if (!pDec) {
+  wuffs_jpeg__decoder* pDec = wuffs_jpeg__decoder__alloc();
+  if (!pDec) {
     if (err) {
       (*err) = "JPEG decoder allocation failed.\n";
     }
-    
-		return nullptr;
+
+    return nullptr;
   }
 
-	//wuffs_jpeg__decoder__set_quirk_enabled(pDec, WUFFS_BASE__QUIRK_IGNORE_CHECKSUM, true);
-	wuffs_jpeg__decoder__set_quirk(pDec, WUFFS_BASE__QUIRK_IGNORE_CHECKSUM, true);
+  // wuffs_jpeg__decoder__set_quirk_enabled(pDec,
+  // WUFFS_BASE__QUIRK_IGNORE_CHECKSUM, true);
+  wuffs_jpeg__decoder__set_quirk(pDec, WUFFS_BASE__QUIRK_IGNORE_CHECKSUM, true);
 
-	wuffs_base__image_config ic;
-	wuffs_base__io_buffer src = wuffs_base__ptr_u8__reader((uint8_t *)pData, data_len, true);
-	wuffs_base__status status = wuffs_jpeg__decoder__decode_image_config(pDec, &ic, &src);
-	
-	if (status.repr) 
-	{
-		free(pDec);
+  wuffs_base__image_config ic;
+  wuffs_base__io_buffer src =
+      wuffs_base__ptr_u8__reader((uint8_t*)pData, data_len, true);
+  wuffs_base__status status =
+      wuffs_jpeg__decoder__decode_image_config(pDec, &ic, &src);
+
+  if (status.repr) {
+    free(pDec);
     if (err) {
       (*err) = "JPEG header decode failed.\n";
     }
-		return nullptr;
-	}
+    return nullptr;
+  }
 
-	width = wuffs_base__pixel_config__width(&ic.pixcfg);
-	height = wuffs_base__pixel_config__height(&ic.pixcfg);
+  width = wuffs_base__pixel_config__width(&ic.pixcfg);
+  height = wuffs_base__pixel_config__height(&ic.pixcfg);
 
-	wuffs_base__pixel_config__set(&ic.pixcfg, WUFFS_BASE__PIXEL_FORMAT__RGBA_NONPREMUL, WUFFS_BASE__PIXEL_SUBSAMPLING__NONE, width, height);
+  wuffs_base__pixel_config__set(
+      &ic.pixcfg, WUFFS_BASE__PIXEL_FORMAT__RGBA_NONPREMUL,
+      WUFFS_BASE__PIXEL_SUBSAMPLING__NONE, width, height);
 
-	uint64_t workbuf_len = wuffs_jpeg__decoder__workbuf_len(pDec).max_incl;
-	if (workbuf_len > kMaxDataLen) 
-	{
-		free(pDec);
+  uint64_t workbuf_len = wuffs_jpeg__decoder__workbuf_len(pDec).max_incl;
+  if (workbuf_len > kMaxDataLen) {
+    free(pDec);
     if (err) {
       (*err) = "Seems JPEG image is too big(2GB+).\n";
     }
-    
-		return nullptr;
-	}
 
-	wuffs_base__slice_u8 workbuf_slice = wuffs_base__make_slice_u8( (uint8_t *)malloc((size_t)workbuf_len), (size_t)workbuf_len); 
-	if (!workbuf_slice.ptr) 
-	{
-		free(pDec);
+    return nullptr;
+  }
+
+  wuffs_base__slice_u8 workbuf_slice = wuffs_base__make_slice_u8(
+      (uint8_t*)malloc((size_t)workbuf_len), (size_t)workbuf_len);
+  if (!workbuf_slice.ptr) {
+    free(pDec);
     if (err) {
       (*err) = "Failed to allocate slice buffer to decode JPEG.\n";
     }
-		return nullptr;
-	}
+    return nullptr;
+  }
 
-	const uint64_t total_pixels = (uint64_t)width * (uint64_t)height;
-	if (total_pixels > kMaxPixels) 
-	{
-		free(workbuf_slice.ptr);
-		free(pDec);
+  const uint64_t total_pixels = (uint64_t)width * (uint64_t)height;
+  if (total_pixels > kMaxPixels) {
+    free(workbuf_slice.ptr);
+    free(pDec);
     if (err) {
       (*err) = "Image extent is too large.\n";
     }
-		return nullptr;
-	}
+    return nullptr;
+  }
 
-	void* pDecode_buf = malloc((size_t)(total_pixels * sizeof(uint32_t)));
-	if (!pDecode_buf)
-	{
-		free(workbuf_slice.ptr);
-		free(pDec);
+  void* pDecode_buf = malloc((size_t)(total_pixels * sizeof(uint32_t)));
+  if (!pDecode_buf) {
+    free(workbuf_slice.ptr);
+    free(pDec);
 
     if (err) {
       (*err) = "Failed to allocate decode buffer.\n";
     }
-		return nullptr;
-	}
+    return nullptr;
+  }
 
-	wuffs_base__slice_u8 pixbuf_slice = wuffs_base__make_slice_u8((uint8_t*)pDecode_buf, (size_t)(total_pixels * sizeof(uint32_t)));
+  wuffs_base__slice_u8 pixbuf_slice = wuffs_base__make_slice_u8(
+      (uint8_t*)pDecode_buf, (size_t)(total_pixels * sizeof(uint32_t)));
 
-	wuffs_base__pixel_buffer pb;
-	status = wuffs_base__pixel_buffer__set_from_slice(&pb, &ic.pixcfg, pixbuf_slice);
-	
-	if (status.repr) 
-	{
-		free(workbuf_slice.ptr);
-		free(pDecode_buf);
-		free(pDec);
+  wuffs_base__pixel_buffer pb;
+  status =
+      wuffs_base__pixel_buffer__set_from_slice(&pb, &ic.pixcfg, pixbuf_slice);
+
+  if (status.repr) {
+    free(workbuf_slice.ptr);
+    free(pDecode_buf);
+    free(pDec);
     if (err) {
       (*err) = "Failed to setup Pixbuf.\n";
     }
-		return nullptr;
-	}
+    return nullptr;
+  }
 
-	status = wuffs_jpeg__decoder__decode_frame(pDec, &pb, &src, WUFFS_BASE__PIXEL_BLEND__SRC, workbuf_slice, NULL);
-	
-	if (status.repr) 
-	{
-		free(workbuf_slice.ptr);
-		free(pDecode_buf);
-		free(pDec);
+  status = wuffs_jpeg__decoder__decode_frame(
+      pDec, &pb, &src, WUFFS_BASE__PIXEL_BLEND__SRC, workbuf_slice, NULL);
+
+  if (status.repr) {
+    free(workbuf_slice.ptr);
+    free(pDecode_buf);
+    free(pDec);
     if (err) {
       (*err) = "Failed to decode JPEG frame.\n";
     }
-		return nullptr;
-	}
-			
-	free(workbuf_slice.ptr);
-	free(pDec);
+    return nullptr;
+  }
 
-	return reinterpret_cast<uint8_t *>(pDecode_buf);
+  free(workbuf_slice.ptr);
+  free(pDec);
+
+  return reinterpret_cast<uint8_t*>(pDecode_buf);
 }
 #endif
 
@@ -2326,7 +2328,6 @@ static void cpy8(int64_t* dst_val, const int64_t* src_val) {
   dst[6] = src[6];
   dst[7] = src[7];
 }
-
 
 ///
 /// Simple stream reader
@@ -2990,8 +2991,8 @@ static bool DecompressZIPedTile(const StreamReader& sr, unsigned char* dst_data,
 
   if ((image_info.tile_width > 0) && (image_info.tile_length > 0)) {
     // Assume ZIP is stored in tiled format.
-    //TINY_DNG_ASSERT(image_info.tile_width > 0, "Invalid tile width.");
-    //TINY_DNG_ASSERT(image_info.tile_length > 0, "Invalid tile length.");
+    // TINY_DNG_ASSERT(image_info.tile_width > 0, "Invalid tile width.");
+    // TINY_DNG_ASSERT(image_info.tile_length > 0, "Invalid tile length.");
 
     // <-       image width(skip len)           ->
     // +-----------------------------------------+
@@ -3015,7 +3016,7 @@ static bool DecompressZIPedTile(const StreamReader& sr, unsigned char* dst_data,
     // Currently we only support tile data for tile.length == tiff.height.
     // assert(image_info.tile_length == image_info.height);
 
-    size_t column_step = 0; // debug
+    size_t column_step = 0;  // debug
     (void)column_step;
 
     while (tiff_h < static_cast<unsigned int>(image_info.height)) {
@@ -3118,7 +3119,8 @@ static bool DecompressZIPedTile(const StreamReader& sr, unsigned char* dst_data,
     TINY_DNG_DPRINTF("width = %d", int(image_info.width));
     TINY_DNG_DPRINTF("height = %d", int(image_info.height));
 
-    TINY_DNG_CHECK_AND_RETURN(image_info.offset > 0, "Invalid ZIPed data offset.", err);
+    TINY_DNG_CHECK_AND_RETURN(image_info.offset > 0,
+                              "Invalid ZIPed data offset.", err);
     offset = static_cast<int>(image_info.offset);
 
     size_t input_len = sr.size() - static_cast<size_t>(offset);
@@ -3193,8 +3195,8 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
       }
       return false;
     }
-    //TINY_DNG_ASSERT(image_info.tile_width > 0, "Invalid tile width.");
-    //TINY_DNG_ASSERT(image_info.tile_length > 0, "Invalid tile length.");
+    // TINY_DNG_ASSERT(image_info.tile_width > 0, "Invalid tile width.");
+    // TINY_DNG_ASSERT(image_info.tile_length > 0, "Invalid tile length.");
 
     // <-       image width(skip len)           ->
     // +-----------------------------------------+
@@ -3217,7 +3219,7 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
     // Currently we only support tile data for tile.length == tiff.height.
     // assert(image_info.tile_length == image_info.height);
 
-    size_t column_step = 0; // debug
+    size_t column_step = 0;  // debug
     (void)column_step;
 
     while (tiff_h < static_cast<unsigned int>(image_info.height)) {
@@ -3247,26 +3249,30 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
                     /* data_len */ static_cast<int>(input_len), &lj_width,
                     &lj_height, &lj_bits);
       TINY_DNG_DPRINTF("ret = %d\n", ret);
-      TINY_DNG_CHECK_AND_RETURN(ret == LJ92_ERROR_NONE, "Error opening JPEG stream.", err);
+      TINY_DNG_CHECK_AND_RETURN(ret == LJ92_ERROR_NONE,
+                                "Error opening JPEG stream.", err);
 
       TINY_DNG_DPRINTF("lj %d, %d, %d\n", lj_width, lj_height, lj_bits);
       TINY_DNG_DPRINTF("ljp x %d, y %d, c %d\n", ljp->x, ljp->y,
-      ljp->components);
+                       ljp->components);
       TINY_DNG_DPRINTF("tile width = %d\n", image_info.tile_width);
       TINY_DNG_DPRINTF("tile height = %d\n", image_info.tile_length);
       TINY_DNG_DPRINTF("col = %d, tiff_w = %d / %d\n", int(column_step), tiff_w,
-      image_info.width);
+                       image_info.width);
 
-      TINY_DNG_CHECK_AND_RETURN(lj_width <= image_info.tile_width, "Unexpected JPEG tile width size.", err);
-      TINY_DNG_CHECK_AND_RETURN(lj_height <= image_info.tile_length, "Unexpected JPEG tile length size.", err);
+      TINY_DNG_CHECK_AND_RETURN(lj_width <= image_info.tile_width,
+                                "Unexpected JPEG tile width size.", err);
+      TINY_DNG_CHECK_AND_RETURN(lj_height <= image_info.tile_length,
+                                "Unexpected JPEG tile length size.", err);
 
-      //TINY_DNG_ASSERT((lj_width * lj_height) ==
-      //                    image_info.tile_width * image_info.tile_length,
-      //                "Unexpected JPEG tile size.");
+      // TINY_DNG_ASSERT((lj_width * lj_height) ==
+      //                     image_info.tile_width * image_info.tile_length,
+      //                 "Unexpected JPEG tile size.");
 
-      TINY_DNG_DPRINTF("lj.components %d, samples_per_pixel %d\n", ljp->components, image_info.samples_per_pixel);
-      //TINY_DNG_ASSERT(ljp->components == image_info.samples_per_pixel,
-      //                "# of color channels does not match.");
+      TINY_DNG_DPRINTF("lj.components %d, samples_per_pixel %d\n",
+                       ljp->components, image_info.samples_per_pixel);
+      // TINY_DNG_ASSERT(ljp->components == image_info.samples_per_pixel,
+      //                 "# of color channels does not match.");
 
       // int write_length = image_info.tile_width;
       // int skip_length = dst_width - image_info.tile_width;
@@ -3287,7 +3293,8 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
       ret = lj92_decode(ljp, tmpbuf.data(), image_info.tile_width, 0, NULL, 0);
       // ret = lj92_decode(ljp, tmpbuf.data(), write_length, skip_length, NULL,
       // 0);
-      TINY_DNG_CHECK_AND_RETURN(ret == LJ92_ERROR_NONE, "Error decoding JPEG stream.", err);
+      TINY_DNG_CHECK_AND_RETURN(ret == LJ92_ERROR_NONE,
+                                "Error decoding JPEG stream.", err);
       // ret = lj92_decode(ljp, dst_data + dst_offset, write_length,
       // skip_length,
       //                  NULL, 0);
@@ -3351,7 +3358,8 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
       }
 
       TINY_DNG_CHECK_AND_RETURN(ret == LJ92_ERROR_NONE,
-                      "Error opening JPEG stream.", err);  // @fixme: redundant?
+                                "Error opening JPEG stream.",
+                                err);  // @fixme: redundant?
 
       if (ljbits_out && (lj_bits > 0)) {
         // Assume all tiles have same lj_bits value.
@@ -3437,10 +3445,10 @@ static bool DecompressLosslessJPEG(const StreamReader& sr,
 }
 
 // Currently we only support parsing GainMap
-static bool ParseOpcodeList(unsigned short tag, const uint8_t *data, size_t dataSize,
-  std::vector<GainMap> *gainmaps_out)
-{
-  const size_t kMaxSize = 1024*1024*512;
+static bool ParseOpcodeList(unsigned short tag, const uint8_t* data,
+                            size_t dataSize,
+                            std::vector<GainMap>* gainmaps_out) {
+  const size_t kMaxSize = 1024 * 1024 * 512;
 
   // OpCode data is always store in big-endian byte order.
   // First 32bit uint: The number of opcodes.
@@ -3450,7 +3458,8 @@ static bool ParseOpcodeList(unsigned short tag, const uint8_t *data, size_t data
   //   32bit uint for various flag bits.
   //   32bit uint for the number of bytes of opcode data.
   //
-  // Value range of processed Image data after OpCode processing(not implemented in TinyDNG)
+  // Value range of processed Image data after OpCode processing(not implemented
+  // in TinyDNG)
   //   Opcode1 : 0 to 2^32 - 1
   //   Opcode2 : 0 to 2^16 - 1
   //   Opcode3 : 0.0 to 1.0
@@ -3478,7 +3487,7 @@ static bool ParseOpcodeList(unsigned short tag, const uint8_t *data, size_t data
     return false;
   }
 
-  //TINY_DNG_DPRINTF("# of opcodes = %d\n", num_opcodes);
+  // TINY_DNG_DPRINTF("# of opcodes = %d\n", num_opcodes);
 
   for (size_t i = 0; i < num_opcodes; i++) {
     uint32_t opcode_id = 0;
@@ -3499,26 +3508,27 @@ static bool ParseOpcodeList(unsigned short tag, const uint8_t *data, size_t data
       return false;
     }
 
-    TINY_DNG_DPRINTF("opcode %d, dng ver %d, flags %d, num_bytes %d\n", opcode_id, dng_version, flags, num_bytes);
+    TINY_DNG_DPRINTF("opcode %d, dng ver %d, flags %d, num_bytes %d\n",
+                     opcode_id, dng_version, flags, num_bytes);
 
     if (num_bytes < 4) {
       return false;
     }
 
     if (opcode_id == OPCODE_LIST_GAIN_MAP) {
-      const size_t kMaxItems = 1024*1024;
+      const size_t kMaxItems = 1024 * 1024;
 
       uint32_t saved_loc = uint32_t(sr.tell());
 
-      // Top, Left, Bottom, Right, Plane, Planes, RowPitch, ColPitch, MapPointsV, MapPointsH (LONG)
-      // MapSpacingV, MapSpacingH, MapOriginV, MapOriginH (DOUBLE)
-      // MapPlanes (LONG)
-      // For each MapPointsV
+      // Top, Left, Bottom, Right, Plane, Planes, RowPitch, ColPitch,
+      // MapPointsV, MapPointsH (LONG) MapSpacingV, MapSpacingH, MapOriginV,
+      // MapOriginH (DOUBLE) MapPlanes (LONG) For each MapPointsV
       //   For each MapPointsH
       //     For each MapPlanes
       //       MapGain (FLOAT)
 
-      uint32_t top, left, bottom, right, plane, planes, row_pitch, col_pitch, map_points_v, map_points_h;
+      uint32_t top, left, bottom, right, plane, planes, row_pitch, col_pitch,
+          map_points_v, map_points_h;
       double map_spacing_v, map_spacing_h, map_origin_v, map_origin_h;
       uint32_t map_planes;
 
@@ -3584,14 +3594,15 @@ static bool ParseOpcodeList(unsigned short tag, const uint8_t *data, size_t data
 
       size_t num_items = map_points_v * map_points_h * map_planes;
 
-      //TINY_DNG_DPRINTF("top %d, left %d, bottom %d, right %d\n", top, left, bottom, right);
-      //TINY_DNG_DPRINTF("plane %d, planes %d\n", plane, planes);
-      //TINY_DNG_DPRINTF("row_pitch %d, col_pitch %d\n", row_pitch, col_pitch);
-      //TINY_DNG_DPRINTF("map_points_v %d, map_points_h %d\n", map_points_v, map_points_h);
-      //TINY_DNG_DPRINTF("map_spacing_v %f, map_spacing_h %f\n", map_spacing_v, map_spacing_h);
-      //TINY_DNG_DPRINTF("map_origin_v %f, map_origin_h %f\n", map_origin_v, map_origin_h);
-      //TINY_DNG_DPRINTF("map_planes %d\n", map_planes);
-      //TINY_DNG_DPRINTF("num_items %d\n", int(num_items));
+      // TINY_DNG_DPRINTF("top %d, left %d, bottom %d, right %d\n", top, left,
+      // bottom, right); TINY_DNG_DPRINTF("plane %d, planes %d\n", plane,
+      // planes); TINY_DNG_DPRINTF("row_pitch %d, col_pitch %d\n", row_pitch,
+      // col_pitch); TINY_DNG_DPRINTF("map_points_v %d, map_points_h %d\n",
+      // map_points_v, map_points_h); TINY_DNG_DPRINTF("map_spacing_v %f,
+      // map_spacing_h %f\n", map_spacing_v, map_spacing_h);
+      // TINY_DNG_DPRINTF("map_origin_v %f, map_origin_h %f\n", map_origin_v,
+      // map_origin_h); TINY_DNG_DPRINTF("map_planes %d\n", map_planes);
+      // TINY_DNG_DPRINTF("num_items %d\n", int(num_items));
 
       // Read gain values.
 
@@ -3601,17 +3612,16 @@ static bool ParseOpcodeList(unsigned short tag, const uint8_t *data, size_t data
 
       std::vector<float> gainmap_pixels(num_items);
       for (size_t k = 0; k < num_items; k++) {
-
         if (!sr.read_float(&gainmap_pixels[k])) {
           return false;
         }
 
-        //TINY_DNG_DPRINTF("values = %f\n", double(gainmap_pixels[k]));
+        // TINY_DNG_DPRINTF("values = %f\n", double(gainmap_pixels[k]));
       }
 
       GainMap gmap;
       gmap.idx = (tag - TAG_OPCODE_LIST1) + 1;
-      //TINY_DNG_DPRINTF("idx = %d\n", gmap.idx);
+      // TINY_DNG_DPRINTF("idx = %d\n", gmap.idx);
       gmap.top = top;
       gmap.left = left;
       gmap.bottom = bottom;
@@ -3638,7 +3648,6 @@ static bool ParseOpcodeList(unsigned short tag, const uint8_t *data, size_t data
       }
 
     } else {
-
       if (num_bytes > kMaxSize) {
         // Too large bytes. Guess invalid OpCode data.
         return false;
@@ -3646,12 +3655,11 @@ static bool ParseOpcodeList(unsigned short tag, const uint8_t *data, size_t data
 
       // Unimplemented
       std::vector<uint8_t> op_data(num_bytes);
-      if (!sr.read(num_bytes, num_bytes, reinterpret_cast<unsigned char *>(op_data.data()))) {
+      if (!sr.read(num_bytes, num_bytes,
+                   reinterpret_cast<unsigned char*>(op_data.data()))) {
         return false;
       }
-
     }
-
   }
 
   return true;
@@ -3755,7 +3763,8 @@ static int ParseCustomField(const StreamReader& sr,
 static bool ParseTIFFIFD(const StreamReader& sr,
                          const std::vector<FieldInfo>& custom_field_lists,
                          std::vector<tinydng::DNGImage>* images,
-                         std::string* warn, std::string* err, uint32_t call_depth = 0) {
+                         std::string* warn, std::string* err,
+                         uint32_t call_depth = 0) {
   if (!images) {
     if (err) {
       (*err) += "`images` argument is null.\n";
@@ -3861,7 +3870,8 @@ static bool ParseTIFFIFD(const StreamReader& sr,
 
         if (spp < 1) {
           if (err) {
-            (*err) += "SamplesPerPixel must be 1 ~ 4, but got " + std::to_string(spp) + ".\n";
+            (*err) += "SamplesPerPixel must be 1 ~ 4, but got " +
+                      std::to_string(spp) + ".\n";
           }
           return false;
         }
@@ -4009,12 +4019,15 @@ static bool ParseTIFFIFD(const StreamReader& sr,
           // recursive call
           if (call_depth > kMaxRecursiveIFDParse) {
             if (err) {
-              (*err) += "Too many nested SUB_IFDS. Input DNG seems invalid or malcious.\n";
+              (*err) +=
+                  "Too many nested SUB_IFDS. Input DNG seems invalid or "
+                  "malcious.\n";
             }
             return false;
           }
 
-          if (!ParseTIFFIFD(sr, custom_field_lists, images, warn, err, call_depth+1)) {
+          if (!ParseTIFFIFD(sr, custom_field_lists, images, warn, err,
+                            call_depth + 1)) {
             if (err) {
               (*err) += "Failed to Parse SubIFD Tag.\n";
             }
@@ -4407,7 +4420,7 @@ static bool ParseTIFFIFD(const StreamReader& sr,
       case TAG_OPCODE_LIST1:
       case TAG_OPCODE_LIST2:
       case TAG_OPCODE_LIST3: {
-        const size_t kMaxOpcodeDataSize = 1024*1024*256;
+        const size_t kMaxOpcodeDataSize = 1024 * 1024 * 256;
 
         TINY_DNG_DPRINTF("opcodelist %d\n", tag);
         size_t readLen = len;
@@ -4435,7 +4448,7 @@ static bool ParseTIFFIFD(const StreamReader& sr,
           return false;
         }
 
-        std::vector<GainMap> *gainmaps = NULL;
+        std::vector<GainMap>* gainmaps = NULL;
         if (tag == TAG_OPCODE_LIST1) {
           gainmaps = &image.opcodelist1_gainmap;
         } else if (tag == TAG_OPCODE_LIST2) {
@@ -4698,8 +4711,8 @@ int Dictionary::findIndex(const int code, const int value) const {
 }
 
 bool Dictionary::add(const int code, const int value) {
-  //TINY_DNG_ASSERT(code <= size_,
-  //                "`code' must be less than or equal to dictionary size.");
+  // TINY_DNG_ASSERT(code <= size_,
+  //                 "`code' must be less than or equal to dictionary size.");
   TINY_DNG_CHECK_AND_RETURN_C(code <= size_, false);
   if (size_ == 4096) {
     TINY_DNG_DPRINTF("Dictionary overflowed!");
@@ -4807,8 +4820,8 @@ bool BitStreamReader::readNextBitBE(int& bitOut) {
 }
 
 uint64_t BitStreamReader::readBitsU64LE(const int bitCount) {
-  //TINY_DNG_ASSERT(bitCount <= 64,
-  //                "`bitCount' must be less than or equal to 64.");
+  // TINY_DNG_ASSERT(bitCount <= 64,
+  //                 "`bitCount' must be less than or equal to 64.");
   TINY_DNG_CHECK_AND_RETURN_C(bitCount <= 64, 0);
 
   uint64_t num = 0;
@@ -4830,8 +4843,8 @@ uint64_t BitStreamReader::readBitsU64LE(const int bitCount) {
 }
 
 uint64_t BitStreamReader::readBitsU64BE(const int bitCount) {
-  //TINY_DNG_ASSERT(bitCount <= 64,
-  //                "`bitCount' must be less than or equal to 64.");
+  // TINY_DNG_ASSERT(bitCount <= 64,
+  //                 "`bitCount' must be less than or equal to 64.");
   TINY_DNG_CHECK_AND_RETURN_C(bitCount <= 64, 0);
 
   uint64_t num = 0;
@@ -4875,7 +4888,8 @@ static bool outputByte(int code, unsigned char*& output, int outputSizeBytes,
     return false;
   }
 
-  //TINY_DNG_ASSERT(code >= 0 && code < 256, "`code' must be within [0, 255].");
+  // TINY_DNG_ASSERT(code >= 0 && code < 256, "`code' must be within [0,
+  // 255].");
   TINY_DNG_CHECK_AND_RETURN_C(code >= 0 && code < 256, false);
   *output++ = static_cast<unsigned char>(code);
   ++bytesDecodedSoFar;
@@ -4893,8 +4907,8 @@ static bool outputSequence(const Dictionary& dict, int code,
   int i = 0;
   unsigned char sequence[4096];
   do {
-    //TINY_DNG_ASSERT(i < MaxDictEntries - 1 && code >= 0,
-    //                "Invalid value for `i' or `code'.");
+    // TINY_DNG_ASSERT(i < MaxDictEntries - 1 && code >= 0,
+    //                 "Invalid value for `i' or `code'.");
     TINY_DNG_CHECK_AND_RETURN_C(i < MaxDictEntries - 1 && code >= 0, false);
     TINY_DNG_DPRINTF("i = %d, ent[%d].value = %d\n", i, code,
                      dict.entries_[code].value);
@@ -4953,9 +4967,9 @@ static int easyDecode(const unsigned char* compressed,
   // terminate we break the loop and return the current
   // decompression count.
   while (!bitStream.isEndOfStream()) {
-    //TINY_DNG_ASSERT(
-    //    codeBitsWidth <= MaxDictBits,
-    //    "`codeBitsWidth must be less than or equal to `MaxDictBits'.");
+    // TINY_DNG_ASSERT(
+    //     codeBitsWidth <= MaxDictBits,
+    //     "`codeBitsWidth must be less than or equal to `MaxDictBits'.");
     TINY_DNG_CHECK_AND_RETURN_C(codeBitsWidth <= MaxDictBits, 0);
     (void)MaxDictBits;
 
@@ -5246,8 +5260,8 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         image->bits_per_sample = image->bits_per_sample_original;
 
       } else {
-
-        const size_t kMaxImageSize = size_t(1024)*size_t(1024)*size_t(1024)*size_t(2); // 2GB
+        const size_t kMaxImageSize =
+            size_t(1024) * size_t(1024) * size_t(1024) * size_t(2);  // 2GB
 
         if (image->bits_per_sample_original <= 0) {
           if (err) {
@@ -5286,7 +5300,9 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         if (len > kMaxImageSize) {
           if (err) {
             std::stringstream ss;
-            ss << "Image byte size too large. " << len << "bytes in file, but hard-limit is set to " << kMaxImageSize << " bytes.\n";
+            ss << "Image byte size too large. " << len
+               << "bytes in file, but hard-limit is set to " << kMaxImageSize
+               << " bytes.\n";
             (*err) += ss.str();
           }
           return false;
@@ -5333,7 +5349,8 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         std::atomic<size_t> strip_count(0);
         std::mutex err_mtx_;
 
-        int num_threads = (std::max)(1, int(std::thread::hardware_concurrency()));
+        int num_threads =
+            (std::max)(1, int(std::thread::hardware_concurrency()));
         if (num_threads > num_strips) {
           num_threads = num_strips;
         }
@@ -5387,8 +5404,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
                 {
                   std::lock_guard<std::mutex> lock(err_mtx_);
                   if (err) {
-                    (*err) +=
-                        "lzw decode failed.\n";
+                    (*err) += "lzw decode failed.\n";
                   }
                 }
 
@@ -5421,7 +5437,8 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
               } else if (image->predictor == 3) {
                 // fp horizontal diff.
-                //TINY_DNG_ABORT("[TODO] FP horizontal differencing predictor.");
+                // TINY_DNG_ABORT("[TODO] FP horizontal differencing
+                // predictor.");
                 {
                   std::lock_guard<std::mutex> lock(err_mtx_);
                   if (err) {
@@ -5432,12 +5449,11 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
                 failed = true;
                 break;
               } else {
-                //TINY_DNG_ABORT("Invalid predictor value.");
+                // TINY_DNG_ABORT("Invalid predictor value.");
                 {
                   std::lock_guard<std::mutex> lock(err_mtx_);
                   if (err) {
-                    (*err) +=
-                        "Invalid predictor value.\n";
+                    (*err) += "Invalid predictor value.\n";
                   }
                 }
                 failed = true;
@@ -5469,22 +5485,30 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
             return false;
           }
 
-          const uint64_t dst_len = uint64_t(image->samples_per_pixel) * uint64_t(image->width) * uint64_t(image->rows_per_strip) *
-               uint64_t(image->bits_per_sample) / 8ull;
+          const uint64_t dst_len = uint64_t(image->samples_per_pixel) *
+                                   uint64_t(image->width) *
+                                   uint64_t(image->rows_per_strip) *
+                                   uint64_t(image->bits_per_sample) / 8ull;
           if (dst_len == 0) {
             if (err) {
-              (*err) += "Image data size is zero. Something is wrong in Image parameter:\n";
-              (*err) += "  samples_per_pixel " + std::to_string(image->samples_per_pixel) + "\n";
+              (*err) +=
+                  "Image data size is zero. Something is wrong in Image "
+                  "parameter:\n";
+              (*err) += "  samples_per_pixel " +
+                        std::to_string(image->samples_per_pixel) + "\n";
               (*err) += "  width " + std::to_string(image->width) + "\n";
-              (*err) += "  rows_per_strip " + std::to_string(image->rows_per_strip) + "\n";
-              (*err) += "  bits_per_sample " + std::to_string(image->bits_per_sample) + "\n";
+              (*err) += "  rows_per_strip " +
+                        std::to_string(image->rows_per_strip) + "\n";
+              (*err) += "  bits_per_sample " +
+                        std::to_string(image->bits_per_sample) + "\n";
             }
             return false;
           }
 
           if (dst_len > (kMaxImageSizeInMB * 1024ull * 1024ull)) {
             if (err) {
-              (*err) += "Image data size too large. Exceeds " + std::to_string(kMaxImageSizeInMB) + " MB.\n";
+              (*err) += "Image data size too large. Exceeds " +
+                        std::to_string(kMaxImageSizeInMB) + " MB.\n";
             }
             return false;
           }
@@ -5505,7 +5529,8 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
               dst.data(), int(dst_len), swap_endian);
           TINY_DNG_DPRINTF("easyDecode done\n");
           if (decoded_bytes <= 0) {
-            TINY_DNG_ERROR_AND_RETURN("decoded_ bytes must be non-zero positive.", err);
+            TINY_DNG_ERROR_AND_RETURN(
+                "decoded_ bytes must be non-zero positive.", err);
           }
 
           if (image->predictor == 1) {
@@ -5530,7 +5555,8 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
           } else if (image->predictor == 3) {
             // fp horizontal diff.
-            TINY_DNG_ERROR_AND_RETURN("[TODO} FP horizontal differencing predictor(3).", err);
+            TINY_DNG_ERROR_AND_RETURN(
+                "[TODO} FP horizontal differencing predictor(3).", err);
           } else {
             TINY_DNG_ERROR_AND_RETURN("Invalid predictor value.", err);
           }
@@ -5540,7 +5566,8 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
 #endif
       } else {
-        TINY_DNG_ERROR_AND_RETURN("Unsupported image strip configuration.", err);
+        TINY_DNG_ERROR_AND_RETURN("Unsupported image strip configuration.",
+                                  err);
       }
     } else if (image->compression ==
                COMPRESSION_OLD_JPEG) {  // old jpeg compression
@@ -5567,8 +5594,9 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
             "Image dimensions must be > 0.", err);
 
         // Assume not in tiled format.
-        TINY_DNG_CHECK_AND_RETURN(image->tile_width == -1 && image->tile_length == -1,
-                        "Tiled format not supported tile size.", err);
+        TINY_DNG_CHECK_AND_RETURN(
+            image->tile_width == -1 && image->tile_length == -1,
+            "Tiled format not supported tile size.", err);
 
         image->height = lj_height;
 
@@ -5726,7 +5754,8 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         int w = 0, h = 0, components = 0;
 
         // Check if data is in valid range.
-        if ((sr.tell() + data_offset + static_cast<uint32_t>(jpeg_len)) >= sr.size()) {
+        if ((sr.tell() + data_offset + static_cast<uint32_t>(jpeg_len)) >=
+            sr.size()) {
           if (err) {
             (*err) += "Invalid JPEG image data size.\n";
           }
@@ -5734,9 +5763,9 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         }
 
 #if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
-        unsigned char *decoded_image{nullptr};
+        unsigned char* decoded_image{nullptr};
         {
-          const uint8_t *jpeg_addr = sr.data() + data_offset;
+          const uint8_t* jpeg_addr = sr.data() + data_offset;
           uint32_t _w{0}, _h{0};
           decoded_image = wuffs_decode_jpeg(jpeg_addr, jpeg_len, _w, _h, err);
           if (decoded_image) {
@@ -5751,7 +5780,8 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
             sr.data() + data_offset, static_cast<uint32_t>(jpeg_len), &w, &h,
             &components, /* desired_channels */ components_info);
 #endif
-        TINY_DNG_CHECK_AND_RETURN(decoded_image, "Could not decode JPEG image.", err);
+        TINY_DNG_CHECK_AND_RETURN(decoded_image, "Could not decode JPEG image.",
+                                  err);
 
         // Currently we just discard JPEG image(since JPEG image would be just a
         // thumbnail or LDR image of RAW).
@@ -5764,7 +5794,8 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         // std::cout << "h = " << w << std::endl;
         // std::cout << "c = " << components << std::endl;
 
-        TINY_DNG_CHECK_AND_RETURN(w > 0 && h > 0, "Image dimensions must be > 0.", err);
+        TINY_DNG_CHECK_AND_RETURN(w > 0 && h > 0,
+                                  "Image dimensions must be > 0.", err);
 
         image->width = w;
         image->height = h;
@@ -5806,9 +5837,9 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
           int w = 0, h = 0, components = 0;
 
 #if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
-          unsigned char *decoded_image{nullptr};
+          unsigned char* decoded_image{nullptr};
           {
-            const uint8_t *jpeg_addr = sr.data() + data_offset;
+            const uint8_t* jpeg_addr = sr.data() + data_offset;
             uint32_t _w{0}, _h{0};
             decoded_image = wuffs_decode_jpeg(jpeg_addr, jpeg_len, _w, _h, err);
             if (decoded_image) {
@@ -5834,9 +5865,11 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
             image->samples_per_pixel = components;
             image->bits_per_sample = image->bits_per_sample_original;
 
-            const uint64_t len = uint64_t(image->samples_per_pixel) * uint64_t(image->width) * uint64_t(image->height) * uint64_t(image->bits_per_sample / 8);
+            const uint64_t len =
+                uint64_t(image->samples_per_pixel) * uint64_t(image->width) *
+                uint64_t(image->height) * uint64_t(image->bits_per_sample / 8);
             // For 32bit
-            if (sizeof(void *) == 4) {
+            if (sizeof(void*) == 4) {
               // Use 2GB as a max
               if (len > uint64_t((std::numeric_limits<int32_t>::max)())) {
                 if (err) {
@@ -5848,23 +5881,25 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
             if (len > (kMaxImageSizeInMB * 1024ull * 1024ull)) {
               if (err) {
-                (*err) += "Image data size too large. Exceeds " + std::to_string(kMaxImageSizeInMB) + " MB.\n";
+                (*err) += "Image data size too large. Exceeds " +
+                          std::to_string(kMaxImageSizeInMB) + " MB.\n";
               }
               return false;
             }
 
             if (len == 0) {
-                if (err) {
-                  std::stringstream ss;
-                  ss << "Image size is 0. Something is wrong in Image parameter:\n";
-                  ss << "  width = " << image->width << "\n";
-                  ss << "  height = " << image->height << "\n";
-                  ss << "  spp = " << image->samples_per_pixel << "\n";
-                  ss << "  bps = " << image->bits_per_sample << "\n";
+              if (err) {
+                std::stringstream ss;
+                ss << "Image size is 0. Something is wrong in Image "
+                      "parameter:\n";
+                ss << "  width = " << image->width << "\n";
+                ss << "  height = " << image->height << "\n";
+                ss << "  spp = " << image->samples_per_pixel << "\n";
+                ss << "  bps = " << image->bits_per_sample << "\n";
 
-                  (*err) += ss.str();
-                }
-                return false;
+                (*err) += ss.str();
+              }
+              return false;
             }
 
             image->data.resize(len);
@@ -5893,9 +5928,11 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         TINY_DNG_CHECK_AND_RETURN(
             ((image->width * image->height * image->bits_per_sample) % 8) == 0,
             "Image must be multiple of 8.", err);
-        const uint64_t len = uint64_t(image->samples_per_pixel) * uint64_t(image->width) * uint64_t(image->height) * uint64_t(image->bits_per_sample / 8);
+        const uint64_t len = uint64_t(image->samples_per_pixel) *
+                             uint64_t(image->width) * uint64_t(image->height) *
+                             uint64_t(image->bits_per_sample / 8);
         // For 32bit
-        if (sizeof(void *) == 4) {
+        if (sizeof(void*) == 4) {
           // Use 2GB as a max
           if (len > uint64_t((std::numeric_limits<int32_t>::max)())) {
             if (err) {
@@ -5907,7 +5944,8 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
         if (len > (kMaxImageSizeInMB * 1024ull * 1024ull)) {
           if (err) {
-            (*err) += "Image data size too large. Exceeds " + std::to_string(kMaxImageSizeInMB) + " MB.\n";
+            (*err) += "Image data size too large. Exceeds " +
+                      std::to_string(kMaxImageSizeInMB) + " MB.\n";
           }
           return false;
         }
@@ -5958,8 +5996,9 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
     } else if (image->compression == COMPRESSION_ZIP) {  // ZIP
 #ifdef TINY_DNG_LOADER_ENABLE_ZIP
-      TINY_DNG_CHECK_AND_RETURN(image->bits_per_sample_original > 0,
-                      "bits_per_sample information not found in the tag.", err);
+      TINY_DNG_CHECK_AND_RETURN(
+          image->bits_per_sample_original > 0,
+          "bits_per_sample information not found in the tag.", err);
       image->bits_per_sample = image->bits_per_sample_original;
       TINY_DNG_DPRINTF("bps = %d\n", image->bits_per_sample);
       TINY_DNG_DPRINTF("data_offset = %d\n", int(data_offset));
@@ -6064,9 +6103,9 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
       int w = 0, h = 0, components = 0;
 #if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
-      unsigned char *decoded_image{nullptr};
+      unsigned char* decoded_image{nullptr};
       {
-        const uint8_t *jpeg_addr = sr.data() + data_offset;
+        const uint8_t* jpeg_addr = sr.data() + data_offset;
         uint32_t _w{0}, _h{0};
         decoded_image = wuffs_decode_jpeg(jpeg_addr, jpeg_len, _w, _h, err);
         if (decoded_image) {
@@ -6080,7 +6119,6 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
           sr.data() + data_offset, static_cast<int>(jpeg_len), &w, &h,
           &components, /* desired_channels */ components_info);
 #endif
-
 
       if (!decoded_image) {
         // Probably 16bit JPEG?
