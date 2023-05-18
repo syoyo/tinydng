@@ -35,10 +35,6 @@ THE SOFTWARE.
 #include <string>
 #include <vector>
 
-#if !defined(TINY_DNG_NO_EXCEPTION)
-#include <stdexcept>
-#endif
-
 namespace tinydng {
 
 // TODO: Deal with out-of-memory error
@@ -253,9 +249,6 @@ struct DNGImage {
 ///
 /// If DNG contains multiple images(e.g. full-res image + thumnail image),
 /// The function creates `DNGImage` data strucure for each images.
-///
-/// C++ exception would be trigerred inside the function unless
-/// TINY_DNG_NO_EXCEPTION macro is defined.
 ///
 /// @param[in] filename DNG filename.
 /// @param[in] custom_fields List of custom fields to parse(optional. can pass

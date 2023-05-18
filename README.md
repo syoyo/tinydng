@@ -6,7 +6,7 @@ Currently TinyDNG only supports lossless RAW DNG and limited lossless JPEG DNG(n
 
 TinyDNG can also be used as an TIFF RGB image loader(8bit, 16bit and 32bit are supported).
 
-TinyDNG loader module is being fuzz tested using LLVMFuzzer, and is enoughly secure(and no C++ exception and assert/abort code exists). 
+TinyDNG loader module is being fuzz tested using LLVMFuzzer, and is enoughly secure(and no C++ exception and assert/abort code exists).
 
 ![](images/tinydngloader_viewer.png)
 (NOTE: TinyDNG just loads DNG data as is, thus you'll need your own RAW processing code(e.g. debayer) to get a developed image as shown the above)
@@ -243,8 +243,6 @@ int main(int argc, char **argv) {
 * `TINY_DNG_LOADER_USE_THREAD` : Enable threaded loading(requires C++11)
 * `TINY_DNG_LOADER_ENABLE_ZIP` : Enable decoding AdobeDeflate image(Currently, tiled RGB image only).
   * `TINY_DNG_LOADER_USE_SYSTEM_ZLIB` : Use system's zlib library instead of miniz.
-* ~~`TINY_DNG_NO_EXCEPTION` : disable C++ exception(abort the program when got an assertion)~~
-  * Deprecated. To be removed in the next release. 
 * `TINY_DNG_LOADER_DEBUG` : Enable debug printf(developer only!)
 * `TINY_DNG_LOADER_NO_STB_IMAGE_INCLUDE` : Do not include `stb_image.h` inside of `tiny_dng_loader.h`.
 * `TINY_DNG_LOADER_NO_STDIO` : Disable printf, cout/cerr.
