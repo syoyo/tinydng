@@ -5,6 +5,9 @@
 #define TINY_DNG_LOADER_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
 #define TINY_DNG_NO_EXCEPTION
+#if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
+#define WUFFS_IMPLEMENTATION
+#endif
 #include "tiny_dng_loader.h"
 
 static char get_colorname(int c) {

@@ -439,9 +439,10 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 // modules we use makes that process explicit. Preprocessing means that such
 // code simply isn't compiled.
 #define WUFFS_CONFIG__MODULES
+#define WUFFS_CONFIG__MODULE__BASE
 #define WUFFS_CONFIG__MODULE__JPEG
 
-#include "wuffs-v0.3.c"
+#include "wuffs-unsupported-snapshot.c"
 
 #else
 
@@ -1942,6 +1943,163 @@ int lj92_encode(uint16_t* image, int width, int height, int bitdepth,
 
 // End liblj92 ---------------------------------------------------------
 }  // namespace
+
+#if TINY_DNG_USE_WUFFS_IMAGE_LOADER
+
+static bool wuffs_is_jpeg(const uint8_t* pData, size_t data_len) 
+{
+  if (!pData) {
+    return false;
+  }
+
+  constexpr uint64_t kMaxDataLen = 1024ull * 1024ull * 1024ull * 2;
+  // Up to 64K x 64K image
+  constexpr uint64_t kMaxPixels = 65536ull * 65536ull;
+
+	wuffs_jpeg__decoder* pDec = wuffs_jpeg__decoder__alloc();
+	if (!pDec) {
+    return false;
+  }
+
+	//wuffs_jpeg__decoder__set_quirk_enabled(pDec, WUFFS_BASE__QUIRK_IGNORE_CHECKSUM, true);
+	wuffs_jpeg__decoder__set_quirk(pDec, WUFFS_BASE__QUIRK_IGNORE_CHECKSUM, true);
+
+	wuffs_base__image_config ic;
+	wuffs_base__io_buffer src = wuffs_base__ptr_u8__reader((uint8_t *)pData, data_len, true);
+	wuffs_base__status status = wuffs_jpeg__decoder__decode_image_config(pDec, &ic, &src);
+	
+	if (status.repr) 
+	{
+		free(pDec);
+    return false;
+	}
+
+  return true;
+}
+
+// wuffs itself does not provide easy API to decode image.
+// this function is based on fpng's fpng_test.cpp
+// https://github.com/richgel999/fpng/blob/main/src/fpng_test.cpp#L684
+
+//
+// output buffer = RGB x width x height
+// 
+static uint8_t* wuffs_decode_jpeg(const uint8_t* pData, size_t data_len, uint32_t &width, uint32_t &height,
+  std::string *err) 
+{
+  constexpr uint64_t kMaxDataLen = 1024ull * 1024ull * 1024ull * 2;
+  // Up to 64K x 64K image
+  constexpr uint64_t kMaxPixels = 65536ull * 65536ull;
+
+	wuffs_jpeg__decoder* pDec = wuffs_jpeg__decoder__alloc();
+	if (!pDec) {
+    if (err) {
+      (*err) = "JPEG decoder allocation failed.\n";
+    }
+    
+		return nullptr;
+  }
+
+	//wuffs_jpeg__decoder__set_quirk_enabled(pDec, WUFFS_BASE__QUIRK_IGNORE_CHECKSUM, true);
+	wuffs_jpeg__decoder__set_quirk(pDec, WUFFS_BASE__QUIRK_IGNORE_CHECKSUM, true);
+
+	wuffs_base__image_config ic;
+	wuffs_base__io_buffer src = wuffs_base__ptr_u8__reader((uint8_t *)pData, data_len, true);
+	wuffs_base__status status = wuffs_jpeg__decoder__decode_image_config(pDec, &ic, &src);
+	
+	if (status.repr) 
+	{
+		free(pDec);
+    if (err) {
+      (*err) = "JPEG header decode failed.\n";
+    }
+		return nullptr;
+	}
+
+	width = wuffs_base__pixel_config__width(&ic.pixcfg);
+	height = wuffs_base__pixel_config__height(&ic.pixcfg);
+
+	wuffs_base__pixel_config__set(&ic.pixcfg, WUFFS_BASE__PIXEL_FORMAT__RGBA_NONPREMUL, WUFFS_BASE__PIXEL_SUBSAMPLING__NONE, width, height);
+
+	uint64_t workbuf_len = wuffs_jpeg__decoder__workbuf_len(pDec).max_incl;
+	if (workbuf_len > kMaxDataLen) 
+	{
+		free(pDec);
+    if (err) {
+      (*err) = "Seems JPEG image is too big(2GB+).\n";
+    }
+    
+		return nullptr;
+	}
+
+	wuffs_base__slice_u8 workbuf_slice = wuffs_base__make_slice_u8( (uint8_t *)malloc((size_t)workbuf_len), (size_t)workbuf_len); 
+	if (!workbuf_slice.ptr) 
+	{
+		free(pDec);
+    if (err) {
+      (*err) = "Failed to allocate slice buffer to decode JPEG.\n";
+    }
+		return nullptr;
+	}
+
+	const uint64_t total_pixels = (uint64_t)width * (uint64_t)height;
+	if (total_pixels > kMaxPixels) 
+	{
+		free(workbuf_slice.ptr);
+		free(pDec);
+    if (err) {
+      (*err) = "Image extent is too large.\n";
+    }
+		return nullptr;
+	}
+
+	void* pDecode_buf = malloc((size_t)(total_pixels * sizeof(uint32_t)));
+	if (!pDecode_buf)
+	{
+		free(workbuf_slice.ptr);
+		free(pDec);
+
+    if (err) {
+      (*err) = "Failed to allocate decode buffer.\n";
+    }
+		return nullptr;
+	}
+
+	wuffs_base__slice_u8 pixbuf_slice = wuffs_base__make_slice_u8((uint8_t*)pDecode_buf, (size_t)(total_pixels * sizeof(uint32_t)));
+
+	wuffs_base__pixel_buffer pb;
+	status = wuffs_base__pixel_buffer__set_from_slice(&pb, &ic.pixcfg, pixbuf_slice);
+	
+	if (status.repr) 
+	{
+		free(workbuf_slice.ptr);
+		free(pDecode_buf);
+		free(pDec);
+    if (err) {
+      (*err) = "Failed to setup Pixbuf.\n";
+    }
+		return nullptr;
+	}
+
+	status = wuffs_jpeg__decoder__decode_frame(pDec, &pb, &src, WUFFS_BASE__PIXEL_BLEND__SRC, workbuf_slice, NULL);
+	
+	if (status.repr) 
+	{
+		free(workbuf_slice.ptr);
+		free(pDecode_buf);
+		free(pDec);
+    if (err) {
+      (*err) = "Failed to decode JPEG frame.\n";
+    }
+		return nullptr;
+	}
+			
+	free(workbuf_slice.ptr);
+	free(pDec);
+
+	return reinterpret_cast<uint8_t *>(pDecode_buf);
+}
+#endif
 
 #ifdef __clang__
 #pragma clang diagnostic pop
@@ -5535,8 +5693,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         int w_info = 0, h_info = 0, components_info = 0;
 
 #if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
-        // TODO:Implement
-        int is_jpeg = 0;
+        int is_jpeg = wuffs_is_jpeg(sr.data() + data_offset, jpeg_len) ? 1 : 0;
 #else
         // Assume RGB jpeg
         //
@@ -5577,8 +5734,18 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         }
 
 #if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
-        // TODO: Implement
-        unsigned char *decoded_image = nullptr;
+        unsigned char *decoded_image{nullptr};
+        {
+          const uint8_t *jpeg_addr = sr.data() + data_offset;
+          uint32_t _w{0}, _h{0};
+          decoded_image = wuffs_decode_jpeg(jpeg_addr, jpeg_len, _w, _h, err);
+          if (decoded_image) {
+            w = int(_w);
+            h = int(_h);
+            components = 3;
+          }
+        }
+
 #else
         unsigned char* decoded_image = stbi_load_from_memory(
             sr.data() + data_offset, static_cast<uint32_t>(jpeg_len), &w, &h,
@@ -5626,7 +5793,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
         int w_info = 0, h_info = 0, components_info = 0;
 #if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
-        int is_jpeg = 0; // TODO
+        int is_jpeg = wuffs_is_jpeg(sr.data() + data_offset, jpeg_len) ? 1 : 0;
 #else
         int is_jpeg = stbi_info_from_memory(sr.data() + data_offset,
                                             static_cast<int>(jpeg_len), &w_info,
@@ -5639,7 +5806,17 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
           int w = 0, h = 0, components = 0;
 
 #if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
-          unsigned char* decoded_image = nullptr; // TODO
+          unsigned char *decoded_image{nullptr};
+          {
+            const uint8_t *jpeg_addr = sr.data() + data_offset;
+            uint32_t _w{0}, _h{0};
+            decoded_image = wuffs_decode_jpeg(jpeg_addr, jpeg_len, _w, _h, err);
+            if (decoded_image) {
+              w = int(_w);
+              h = int(_h);
+              components = 3;
+            }
+          }
 #else
 
           unsigned char* decoded_image = stbi_load_from_memory(
@@ -5855,7 +6032,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
       int w_info = 0, h_info = 0, components_info = 0;
 #if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
-      int is_jpeg = 0; // TODO
+      int is_jpeg = wuffs_is_jpeg(sr.data() + data_offset, jpeg_len) ? 1 : 0;
 #else
       int is_jpeg = stbi_info_from_memory(sr.data() + data_offset,
                                           static_cast<int>(jpeg_len), &w_info,
@@ -5887,7 +6064,17 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
       int w = 0, h = 0, components = 0;
 #if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
-      unsigned char* decoded_image = nullptr; // TODO
+      unsigned char *decoded_image{nullptr};
+      {
+        const uint8_t *jpeg_addr = sr.data() + data_offset;
+        uint32_t _w{0}, _h{0};
+        decoded_image = wuffs_decode_jpeg(jpeg_addr, jpeg_len, _w, _h, err);
+        if (decoded_image) {
+          w = int(_w);
+          h = int(_h);
+          components = 3;
+        }
+      }
 #else
       unsigned char* decoded_image = stbi_load_from_memory(
           sr.data() + data_offset, static_cast<int>(jpeg_len), &w, &h,
