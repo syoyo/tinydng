@@ -417,12 +417,42 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 #endif
 #endif
 
+#if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
+
+// define WIFFS_IMPLEMENTATION in your app
+
+// Defining the WUFFS_CONFIG__STATIC_FUNCTIONS macro is optional, but when
+// combined with WUFFS_IMPLEMENTATION, it demonstrates making all of Wuffs'
+// functions have static storage.
+//
+// This can help the compiler ignore or discard unused code, which can produce
+// faster compiles and smaller binaries. Other motivations are discussed in the
+// "ALLOW STATIC IMPLEMENTATION" section of
+// https://raw.githubusercontent.com/nothings/stb/master/docs/stb_howto.txt
+#define WUFFS_CONFIG__STATIC_FUNCTIONS
+
+// Defining the WUFFS_CONFIG__MODULE* macros are optional, but it lets users of
+// release/c/etc.c choose which parts of Wuffs to build. That file contains the
+// entire Wuffs standard library, implementing a variety of codecs and file
+// formats. Without this macro definition, an optimizing compiler or linker may
+// very well discard Wuffs code for unused codecs, but listing the Wuffs
+// modules we use makes that process explicit. Preprocessing means that such
+// code simply isn't compiled.
+#define WUFFS_CONFIG__MODULES
+#define WUFFS_CONFIG__MODULE__JPEG
+
+#include "wuffs-v0.3.c"
+
+#else
+
 #if defined(TINY_DNG_LOADER_NO_STB_IMAGE_INCLUDE)
 #else
 
 // STB image to decode jpeg image.
 // Assume STB_IMAGE_IMPLEMENTATION is defined elsewhere
 #include "stb_image.h"
+#endif
+
 #endif
 
 #ifdef __clang__
@@ -5501,13 +5531,20 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
           return false;
         }
 
-        // Assume RGB jpeg
-        //
         // First check the header.
         int w_info = 0, h_info = 0, components_info = 0;
+
+#if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
+        // TODO:Implement
+        int is_jpeg = 0;
+#else
+        // Assume RGB jpeg
+        //
         int is_jpeg = stbi_info_from_memory(sr.data() + data_offset,
                                             static_cast<int>(jpeg_len), &w_info,
                                             &h_info, &components_info);
+#endif
+
         if (is_jpeg != 1) {
           if (err) {
             (*err) += "Not a JPEG data.\n";
@@ -5539,15 +5576,22 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
           return false;
         }
 
+#if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
+        // TODO: Implement
+        unsigned char *decoded_image = nullptr;
+#else
         unsigned char* decoded_image = stbi_load_from_memory(
             sr.data() + data_offset, static_cast<uint32_t>(jpeg_len), &w, &h,
             &components, /* desired_channels */ components_info);
+#endif
         TINY_DNG_CHECK_AND_RETURN(decoded_image, "Could not decode JPEG image.", err);
 
         // Currently we just discard JPEG image(since JPEG image would be just a
         // thumbnail or LDR image of RAW).
         // TODO(syoyo): Do not discard JPEG image.
-        free(decoded_image);
+        if (decoded_image) {
+          free(decoded_image);
+        }
 
         // std::cout << "w = " << w << std::endl;
         // std::cout << "h = " << w << std::endl;
@@ -5581,17 +5625,27 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         }
 
         int w_info = 0, h_info = 0, components_info = 0;
+#if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
+        int is_jpeg = 0; // TODO
+#else
         int is_jpeg = stbi_info_from_memory(sr.data() + data_offset,
                                             static_cast<int>(jpeg_len), &w_info,
                                             &h_info, &components_info);
+#endif
 
         if (is_jpeg != 1) {
           // Try to decode image as lossless JPEG.
         } else {
           int w = 0, h = 0, components = 0;
+
+#if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
+          unsigned char* decoded_image = nullptr; // TODO
+#else
+
           unsigned char* decoded_image = stbi_load_from_memory(
               sr.data() + data_offset, static_cast<int>(jpeg_len), &w, &h,
               &components, /* desired_channels */ components_info);
+#endif
 
           if (!decoded_image) {
             // Try to decode image as lossless JPEG.
@@ -5800,9 +5854,13 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
       }
 
       int w_info = 0, h_info = 0, components_info = 0;
+#if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
+      int is_jpeg = 0; // TODO
+#else
       int is_jpeg = stbi_info_from_memory(sr.data() + data_offset,
                                           static_cast<int>(jpeg_len), &w_info,
                                           &h_info, &components_info);
+#endif
 
       if (is_jpeg != 1) {
         if (err) {
@@ -5828,9 +5886,13 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
       }
 
       int w = 0, h = 0, components = 0;
+#if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
+      unsigned char* decoded_image = nullptr; // TODO
+#else
       unsigned char* decoded_image = stbi_load_from_memory(
           sr.data() + data_offset, static_cast<int>(jpeg_len), &w, &h,
           &components, /* desired_channels */ components_info);
+#endif
 
 
       if (!decoded_image) {

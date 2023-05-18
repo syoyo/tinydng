@@ -21,7 +21,7 @@ TinyDNG loader module is being fuzz tested using LLVMFuzzer, and is enoughly sec
 * [x] ZIP-compressed DNG
   * Use miniz or zlib
 * [x] JPEG
-  * Support JPEG image(e.g. thumbnail) through `stb_image.h`.
+  * Support JPEG image(e.g. thumbnail) through `stb_image.h` or `wuffs-v0.3.c`.
 * [x] TIFF
   * [x] 8bit uncompressed
   * [x] 8bit LZW compressed(no preditor, horizontal diff predictor)
@@ -245,6 +245,7 @@ int main(int argc, char **argv) {
   * `TINY_DNG_LOADER_USE_SYSTEM_ZLIB` : Use system's zlib library instead of miniz.
 * `TINY_DNG_LOADER_DEBUG` : Enable debug printf(developer only!)
 * `TINY_DNG_LOADER_NO_STB_IMAGE_INCLUDE` : Do not include `stb_image.h` inside of `tiny_dng_loader.h`.
+* `TINY_DNG_LOADER_USE_WUFFS_IMAGE_LOADER` : Use wuffs image loader for jpeg decoding instead of `stb_image.h`
 * `TINY_DNG_LOADER_NO_STDIO` : Disable printf, cout/cerr.
 
 ## Examples
