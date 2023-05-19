@@ -5,7 +5,6 @@
 
 #define TINY_DNG_LOADER_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
-#define TINY_DNG_NO_EXCEPTION
 #include "tiny_dng_loader.h"
 
 static bool IsBigEndian() {

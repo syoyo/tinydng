@@ -341,10 +341,13 @@ bool IsDNGFromMemory(const char* mem, unsigned int size, std::string* msg);
 #define TINY_DNG_DPRINTF(...)
 #endif
 
-#if 0  // DBG
+#if 1  // DBG
 
 #define TINY_DNG_DEBUG_SAVEIMAGE
 #if defined(TINY_DNG_DEBUG_SAVEIMAGE)
+
+#include <fstream>
+
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "examples/common/stb_image_write.h"
 #endif
@@ -470,6 +473,7 @@ namespace tinydng {
 #ifdef __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wc++11-extensions"
+#pragma clang diagnostic ignored "-Wc++98-compat-pedantic"
 #pragma clang diagnostic ignored "-Wold-style-cast"
 #pragma clang diagnostic ignored "-Wconversion"
 #pragma clang diagnostic ignored "-Wunused-parameter"
@@ -1943,16 +1947,12 @@ int lj92_encode(uint16_t* image, int width, int height, int bitdepth,
 // End liblj92 ---------------------------------------------------------
 }  // namespace
 
-#if TINY_DNG_USE_WUFFS_IMAGE_LOADER
+#if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
 
-static bool wuffs_is_jpeg(const uint8_t* pData, size_t data_len) {
+static bool wuffs_is_jpeg(const uint8_t* pData, size_t data_len, uint32_t &w, uint32_t &h) {
   if (!pData) {
     return false;
   }
-
-  constexpr uint64_t kMaxDataLen = 1024ull * 1024ull * 1024ull * 2;
-  // Up to 64K x 64K image
-  constexpr uint64_t kMaxPixels = 65536ull * 65536ull;
 
   wuffs_jpeg__decoder* pDec = wuffs_jpeg__decoder__alloc();
   if (!pDec) {
@@ -1973,6 +1973,11 @@ static bool wuffs_is_jpeg(const uint8_t* pData, size_t data_len) {
     free(pDec);
     return false;
   }
+
+  w = wuffs_base__pixel_config__width(&ic.pixcfg);
+  h = wuffs_base__pixel_config__height(&ic.pixcfg);
+
+  free(pDec);
 
   return true;
 }
@@ -2000,8 +2005,6 @@ static uint8_t* wuffs_decode_jpeg(const uint8_t* pData, size_t data_len,
     return nullptr;
   }
 
-  // wuffs_jpeg__decoder__set_quirk_enabled(pDec,
-  // WUFFS_BASE__QUIRK_IGNORE_CHECKSUM, true);
   wuffs_jpeg__decoder__set_quirk(pDec, WUFFS_BASE__QUIRK_IGNORE_CHECKSUM, true);
 
   wuffs_base__image_config ic;
@@ -2091,7 +2094,7 @@ static uint8_t* wuffs_decode_jpeg(const uint8_t* pData, size_t data_len,
     free(pDecode_buf);
     free(pDec);
     if (err) {
-      (*err) = "Failed to decode JPEG frame.\n";
+      (*err) = "Failed to decode JPEG frame: " + std::string(wuffs_base__status__message(&status)) + "\n";
     }
     return nullptr;
   }
@@ -2113,6 +2116,7 @@ static uint8_t* wuffs_decode_jpeg(const uint8_t* pData, size_t data_len,
 
 #ifdef __clang__
 #pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wc++98-compat-pedantic"
 #if __has_warning("-Wzero-as-null-pointer-constant")
 #pragma clang diagnostic ignored "-Wzero-as-null-pointer-constant"
 #endif
@@ -5721,7 +5725,10 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         int w_info = 0, h_info = 0, components_info = 0;
 
 #if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
-        int is_jpeg = wuffs_is_jpeg(sr.data() + data_offset, jpeg_len) ? 1 : 0;
+        uint32_t _w, _h;
+        int is_jpeg = wuffs_is_jpeg(sr.data() + data_offset, jpeg_len, _w, _h) ? 1 : 0;
+        w_info = int(_w);
+        h_info = int(_h);
 #else
         // Assume RGB jpeg
         //
@@ -5777,7 +5784,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
 #else
         unsigned char* decoded_image = stbi_load_from_memory(
-            sr.data() + data_offset, static_cast<uint32_t>(jpeg_len), &w, &h,
+            sr.data() + data_offset, static_cast<int32_t>(jpeg_len), &w, &h,
             &components, /* desired_channels */ components_info);
 #endif
         TINY_DNG_CHECK_AND_RETURN(decoded_image, "Could not decode JPEG image.",
@@ -5797,8 +5804,11 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         TINY_DNG_CHECK_AND_RETURN(w > 0 && h > 0,
                                   "Image dimensions must be > 0.", err);
 
+        TINY_DNG_CHECK_AND_RETURN(components == 3, "Samples per pixel must be 3.", err);
+
         image->width = w;
         image->height = h;
+        image->samples_per_pixel = components;
       }
 
     } else if (image->compression ==
@@ -5822,10 +5832,11 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
           jpeg_len = sr.size() - data_offset;
         }
 
-        int w_info = 0, h_info = 0, components_info = 0;
 #if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
-        int is_jpeg = wuffs_is_jpeg(sr.data() + data_offset, jpeg_len) ? 1 : 0;
+        uint32_t _w, _h;
+        int is_jpeg = wuffs_is_jpeg(sr.data() + data_offset, jpeg_len, _w, _h) ? 1 : 0;
 #else
+        int w_info = 0, h_info = 0, components_info = 0;
         int is_jpeg = stbi_info_from_memory(sr.data() + data_offset,
                                             static_cast<int>(jpeg_len), &w_info,
                                             &h_info, &components_info);
@@ -6071,7 +6082,14 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
       int w_info = 0, h_info = 0, components_info = 0;
 #if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
-      int is_jpeg = wuffs_is_jpeg(sr.data() + data_offset, jpeg_len) ? 1 : 0;
+      uint32_t _w, _h;
+      int is_jpeg = wuffs_is_jpeg(sr.data() + data_offset, jpeg_len, _w, _h) ? 1 : 0;
+
+      w_info = int(_w);
+      h_info = int(_h);
+
+      // dummy
+      components_info = 3;
 #else
       int is_jpeg = stbi_info_from_memory(sr.data() + data_offset,
                                           static_cast<int>(jpeg_len), &w_info,
@@ -6103,6 +6121,18 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
       int w = 0, h = 0, components = 0;
 #if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
+
+#if defined(TINY_DNG_DEBUG_SAVEIMAGE)
+      {
+        std::string output_filename = "layer-" + std::to_string(i) + ".jpg";
+        std::ofstream ofs(output_filename);
+        const uint8_t* jpeg_addr = sr.data() + data_offset;
+        if (ofs) {
+          ofs.write(reinterpret_cast<const char *>(jpeg_addr), std::streamsize(jpeg_len));
+        }
+        ofs.close();
+      }
+#endif
       unsigned char* decoded_image{nullptr};
       {
         const uint8_t* jpeg_addr = sr.data() + data_offset;
@@ -6127,8 +6157,8 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
         if (err) {
           std::stringstream ss;
-          ss << "Unsupported lossy JPEG compression(16bit JPEG?)." << std::endl;
-          (*err) = ss.str();
+          ss << "Unsupported lossy JPEG compression(16bit JPEG?)" << std::endl;
+          (*err) += ss.str();
         }
 
       } else {
