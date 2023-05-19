@@ -1987,7 +1987,7 @@ static bool wuffs_is_jpeg(const uint8_t* pData, size_t data_len, uint32_t &w, ui
 // https://github.com/richgel999/fpng/blob/main/src/fpng_test.cpp#L684
 
 //
-// output buffer = RGB x width x height
+// output buffer = RGBA x width x height
 //
 static uint8_t* wuffs_decode_jpeg(const uint8_t* pData, size_t data_len,
                                   uint32_t& width, uint32_t& height,
@@ -5778,7 +5778,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
           if (decoded_image) {
             w = int(_w);
             h = int(_h);
-            components = 3;
+            components = 4; // monochrome and RGB image are decoded as RGBA
           }
         }
 
@@ -5856,7 +5856,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
             if (decoded_image) {
               w = int(_w);
               h = int(_h);
-              components = 3;
+              components = 4; // monochrome and RGB image are decoded as RGBA
             }
           }
 #else
@@ -6141,7 +6141,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         if (decoded_image) {
           w = int(_w);
           h = int(_h);
-          components = 3;
+          components = 4; // monochrome and RGB image are decoded as RGBA
         }
       }
 #else
