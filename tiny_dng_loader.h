@@ -1949,7 +1949,7 @@ int lj92_encode(uint16_t* image, int width, int height, int bitdepth,
 
 #if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
 
-static bool wuffs_is_jpeg(const uint8_t* pData, size_t data_len, uint32_t &w, uint32_t &h) {
+static bool wuffs_is_jpeg(const uint8_t* pData, size_t data_len, uint32_t &w, uint32_t &h, uint32_t &channels) {
   if (!pData) {
     return false;
   }
@@ -1976,6 +1976,8 @@ static bool wuffs_is_jpeg(const uint8_t* pData, size_t data_len, uint32_t &w, ui
 
   w = wuffs_base__pixel_config__width(&ic.pixcfg);
   h = wuffs_base__pixel_config__height(&ic.pixcfg);
+  wuffs_base__pixel_format pixfmt = wuffs_base__pixel_config__pixel_format(&ic.pixcfg);
+  channels = wuffs_base__pixel_format__num_planes(&pixfmt);
 
   free(pDec);
 
@@ -1991,6 +1993,7 @@ static bool wuffs_is_jpeg(const uint8_t* pData, size_t data_len, uint32_t &w, ui
 //
 static uint8_t* wuffs_decode_jpeg(const uint8_t* pData, size_t data_len,
                                   uint32_t& width, uint32_t& height,
+                                  uint32_t& input_num_planes,
                                   std::string* err) {
   constexpr uint64_t kMaxDataLen = 1024ull * 1024ull * 1024ull * 2;
   // Up to 64K x 64K image
@@ -2023,7 +2026,10 @@ static uint8_t* wuffs_decode_jpeg(const uint8_t* pData, size_t data_len,
 
   width = wuffs_base__pixel_config__width(&ic.pixcfg);
   height = wuffs_base__pixel_config__height(&ic.pixcfg);
+  wuffs_base__pixel_format pixfmt = wuffs_base__pixel_config__pixel_format(&ic.pixcfg);
+  input_num_planes = wuffs_base__pixel_format__num_planes(&pixfmt);
 
+  // decde as RGBA
   wuffs_base__pixel_config__set(
       &ic.pixcfg, WUFFS_BASE__PIXEL_FORMAT__RGBA_NONPREMUL,
       WUFFS_BASE__PIXEL_SUBSAMPLING__NONE, width, height);
@@ -5725,10 +5731,11 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         int w_info = 0, h_info = 0, components_info = 0;
 
 #if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
-        uint32_t _w, _h;
-        int is_jpeg = wuffs_is_jpeg(sr.data() + data_offset, jpeg_len, _w, _h) ? 1 : 0;
+        uint32_t _w, _h, _c;
+        int is_jpeg = wuffs_is_jpeg(sr.data() + data_offset, jpeg_len, _w, _h, _c) ? 1 : 0;
         w_info = int(_w);
         h_info = int(_h);
+        components_info = int(_c);
 #else
         // Assume RGB jpeg
         //
@@ -5773,8 +5780,8 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         unsigned char* decoded_image{nullptr};
         {
           const uint8_t* jpeg_addr = sr.data() + data_offset;
-          uint32_t _w{0}, _h{0};
-          decoded_image = wuffs_decode_jpeg(jpeg_addr, jpeg_len, _w, _h, err);
+          uint32_t _w{0}, _h{0}, in_components{0};
+          decoded_image = wuffs_decode_jpeg(jpeg_addr, jpeg_len, _w, _h, in_components, err);
           if (decoded_image) {
             w = int(_w);
             h = int(_h);
@@ -5833,8 +5840,8 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         }
 
 #if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
-        uint32_t _w, _h;
-        int is_jpeg = wuffs_is_jpeg(sr.data() + data_offset, jpeg_len, _w, _h) ? 1 : 0;
+        uint32_t _w, _h, _c;
+        int is_jpeg = wuffs_is_jpeg(sr.data() + data_offset, jpeg_len, _w, _h, _c) ? 1 : 0;
 #else
         int w_info = 0, h_info = 0, components_info = 0;
         int is_jpeg = stbi_info_from_memory(sr.data() + data_offset,
@@ -5851,8 +5858,8 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
           unsigned char* decoded_image{nullptr};
           {
             const uint8_t* jpeg_addr = sr.data() + data_offset;
-            uint32_t _w{0}, _h{0};
-            decoded_image = wuffs_decode_jpeg(jpeg_addr, jpeg_len, _w, _h, err);
+            uint32_t _w{0}, _h{0}, _in_c{0};
+            decoded_image = wuffs_decode_jpeg(jpeg_addr, jpeg_len, _w, _h, _in_c, err);
             if (decoded_image) {
               w = int(_w);
               h = int(_h);
@@ -6082,14 +6089,13 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
       int w_info = 0, h_info = 0, components_info = 0;
 #if defined(TINY_DNG_USE_WUFFS_IMAGE_LOADER)
-      uint32_t _w, _h;
-      int is_jpeg = wuffs_is_jpeg(sr.data() + data_offset, jpeg_len, _w, _h) ? 1 : 0;
+      uint32_t _w, _h, _c;
+      int is_jpeg = wuffs_is_jpeg(sr.data() + data_offset, jpeg_len, _w, _h, _c) ? 1 : 0;
 
       w_info = int(_w);
       h_info = int(_h);
 
-      // dummy
-      components_info = 3;
+      components_info = int(_c);
 #else
       int is_jpeg = stbi_info_from_memory(sr.data() + data_offset,
                                           static_cast<int>(jpeg_len), &w_info,
@@ -6136,12 +6142,15 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
       unsigned char* decoded_image{nullptr};
       {
         const uint8_t* jpeg_addr = sr.data() + data_offset;
-        uint32_t _w{0}, _h{0};
-        decoded_image = wuffs_decode_jpeg(jpeg_addr, jpeg_len, _w, _h, err);
+        uint32_t _w{0}, _h{0}, _in_c{0};
+        decoded_image = wuffs_decode_jpeg(jpeg_addr, jpeg_len, _w, _h, _in_c, err);
         if (decoded_image) {
           w = int(_w);
           h = int(_h);
-          components = 4; // monochrome and RGB image are decoded as RGBA
+
+          // monochrome and RGB image are decoded as RGBA
+          // TODO: create monochrome or RGB image by looking `_in_c`(num planes in input jpeg)
+          components = 4;
         }
       }
 #else
