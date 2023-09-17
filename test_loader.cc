@@ -4,7 +4,6 @@
 
 #define TINY_DNG_LOADER_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
-#define TINY_DNG_NO_EXCEPTION
 #include "tiny_dng_loader.h"
 
 static char get_colorname(int c) {
@@ -38,8 +37,9 @@ int main(int argc, char **argv) {
   std::string warn, err;
   std::vector<tinydng::DNGImage> images;
   std::vector<tinydng::FieldInfo> custom_fields;
+  tinydng::DNGLoaderOption option;
 
-  bool ret = tinydng::LoadDNG(input_filename.c_str(), custom_fields, &images, &warn, &err);
+  bool ret = tinydng::LoadDNG(input_filename.c_str(), option, &images, &warn, &err);
 
   if (!warn.empty()) {
     std::cout << "WARN: " << warn << std::endl;
@@ -52,7 +52,6 @@ int main(int argc, char **argv) {
   if (ret) {
     for (size_t i = 0; i < images.size(); i++) {
       const tinydng::DNGImage &image = images[i];
-;
       std::cout << "width = " << image.width << std::endl;
       std::cout << "height = " << image.height << std::endl;
       std::cout << "bits per pixel = " << image.bits_per_sample << std::endl;

@@ -1,12 +1,12 @@
 # Tiny DNG Loader and Writer library
 
-[![Build Status](https://travis-ci.org/syoyo/tinydngloader.svg?branch=master)](https://travis-ci.org/syoyo/tinydngloader)
-
 Header-only simple&limited DNG(Digital NeGative, TIFF format + extension) loader and writer in C++11.
 
 Currently TinyDNG only supports lossless RAW DNG and limited lossless JPEG DNG(no lossy compression support).
 
 TinyDNG can also be used as an TIFF RGB image loader(8bit, 16bit and 32bit are supported).
+
+TinyDNG loader module is being fuzz tested using LLVMFuzzer, and is enoughly secure(and no C++ exception and assert/abort code exists).
 
 ![](images/tinydngloader_viewer.png)
 (NOTE: TinyDNG just loads DNG data as is, thus you'll need your own RAW processing code(e.g. debayer) to get a developed image as shown the above)
@@ -41,6 +41,7 @@ TinyDNG can also be used as an TIFF RGB image loader(8bit, 16bit and 32bit are s
 ### Writing
 
 * [x] DNG and TIFF
+  * [x] LosslessJPEG compression
 
 ## Supported DNG files
 
@@ -49,7 +50,7 @@ Here is the list of supported DNG files.
 * [x] Sigma sd Quattro H
   * Uncompressed RGB 12bit image.
 * [x] iPhone DNG
-* [ ] Apple ProRAW
+* [x] Apple ProRAW
   * [x] Lossless JPEG 12bit
   * [x] Semantic map
 * [x] Black magic DNG
@@ -242,8 +243,9 @@ int main(int argc, char **argv) {
 * `TINY_DNG_LOADER_USE_THREAD` : Enable threaded loading(requires C++11)
 * `TINY_DNG_LOADER_ENABLE_ZIP` : Enable decoding AdobeDeflate image(Currently, tiled RGB image only).
   * `TINY_DNG_LOADER_USE_SYSTEM_ZLIB` : Use system's zlib library instead of miniz.
-* `TINY_DNG_NO_EXCEPTION` : disable C++ exception(abort the program when got an assertion)
 * `TINY_DNG_LOADER_DEBUG` : Enable debug printf(developer only!)
+* `TINY_DNG_LOADER_NO_STB_IMAGE_INCLUDE` : Do not include `stb_image.h` inside of `tiny_dng_loader.h`.
+* `TINY_DNG_LOADER_NO_STDIO` : Disable printf, cout/cerr.
 
 ## Examples
 
@@ -256,9 +258,37 @@ int main(int argc, char **argv) {
 
 * https://github.com/storyboardcreativity/zraw-decoder
 
+## Python binding(Experimental)
+
+### Build native module.
+
+Install pybind11.
+
+```
+$ python -m pip install pybind11
+```
+
+Then,
+
+```
+$ python setup.py build
+```
+
+or
+
+```
+$ python -m pip install build
+$ python -m build .
+```
+
+Currently no PyPI package is available.
+
+See [experimental/python](experimental/python) for sample python code.
+
 ## Fuzzing test
 
 * [fuzzer](fuzzer/) Fuzzing test.
+
 
 ## Resource
 
@@ -271,13 +301,14 @@ Here is the list of great articles on how to decode RAW file and how to develop 
 ## TODO
 
 * [ ] Move to C++11.
-* [ ] Parse semantic map tags in Apple ProRAW.
+  * [x] Drop C++03 support.
+* [x] Parse semantic map tags in Apple ProRAW.
 * [ ] Add DNG header load only mode
 * [ ] Parse more DNG headers
 * [ ] Parse more custom DNG(TIFF) tags
 * [ ] lossy DNG
 * [ ] Improve DNG writer
-  * [ ] Support compression
+  * [x] Support compression(LJPEG)
 * [ ] Support Big TIFF(4GB+)
 * [ ] Decode Nikon RAW(NEF)
 * [ ] Improve Canon RAW decoding
