@@ -1228,22 +1228,11 @@ static int parseScan(ljp* self) {
 
         left = Px + diff;
 
-        if (left >= 0) {
-          // ok
-        } else {
-          //TINY_DNG_ASSERT(left >= 0, "left value must be positive.");
-          return LJ92_ERROR_CORRUPT;
-        }
-
-        if (left < 65536) {
-          // ok
-        } else {
-          //TINY_DNG_ASSERT(left < 65536,
-          //                "left value must be less than u16 max(65536).");
-          return LJ92_ERROR_CORRUPT;
-        }
-
+        // issue https://github.com/syoyo/tinydng/issues/37
+        // The spec says the prediction(left) is calculated by adding the difference, then take a modulo(2^16)
+        // (`left` could be negative or 65536+ before taking a modulo)
         left = (u16)(left % 65536);
+
         // TINY_DNG_DPRINTF("row[%d] col[%d] c[%d] Px = %d, diff = %d, left =
         // %d\n", row, col, c, Px, diff, left);
         // Apple ProRAW gives -1 for `left`(=65535?), so uncommented negative
