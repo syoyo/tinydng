@@ -13,6 +13,8 @@ static void CreateRGBImage(tinydngwriter::DNGImage *dng_image,
   dng_image->SetSubfileType(false, false, false);
   dng_image->SetImageWidth(image_width);
   dng_image->SetImageLength(image_height);
+  // We do not yet support multiple strips per image, so must set RowsPerStrip to image.height.
+  // TODO: https://github.com/syoyo/tinydng/issues/40
   dng_image->SetRowsPerStrip(image_height);
   dng_image->SetSamplesPerPixel(3);
   uint16_t bps[3] = {16, 16, 16};
@@ -46,6 +48,7 @@ static void CreateGrayscale32bitFpTiff(tinydngwriter::DNGImage *dng_image) {
   dng_image->SetSubfileType(false, false, false);
   dng_image->SetImageWidth(image_width);
   dng_image->SetImageLength(image_height);
+  // We do not yet support multiple strips per image, so must set RowsPerStrip to image.height.
   dng_image->SetRowsPerStrip(image_height);
   dng_image->SetSamplesPerPixel(1);
   uint16_t bps =32;
