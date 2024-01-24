@@ -1,11 +1,12 @@
+[build-system]
 requires = [
     # NOTE: setuptools_scm>=8 is not supported in py3.6 cibuildwheel env.
     # so use older setuptools_scm for a while
     #"setuptools>=64",
     #"setuptools_scm>=8",
     "setuptools>=45",
-    "pybind11>=2.10.0",
     "setuptools_scm[toml]<8",
+    "pybind11>2.11.0",
     "wheel",
 ]
 build-backend = "setuptools.build_meta"

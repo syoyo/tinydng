@@ -1,10 +1,7 @@
-# Adapted from https://github.com/pybind/python_example/blob/master/setup.py
 import sys
 
-#from pybind11 import get_cmake_dir
-# Available at setup time due to pyproject.toml
-from pybind11.setup_helpers import Pybind11Extension#, build_ext
 from setuptools import setup
+from pybind11.setup_helpers import Pybind11Extension
 
 dev_mode = False
 
