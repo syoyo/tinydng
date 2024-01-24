@@ -244,7 +244,7 @@ std::vector<tinydng::DNGImage> load_dng(const std::string &filename)
 
 PYBIND11_MODULE(tinydng, tdng_module)
 {
-  tdng_module.doc() = "Python bindings for TinyObjLoader.";
+  tdng_module.doc() = "Python bindings for TinyDNG.";
 
   // register struct
   py::class_<DNGImage>(tdng_module, "DNGImage")

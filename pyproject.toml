@@ -1,3 +1,47 @@
-[build-system]
-requires = ["setuptools>=42", "wheel", "pip>=19.2", "pybind11>=2.8.0"]
+requires = [
+    # NOTE: setuptools_scm>=8 is not supported in py3.6 cibuildwheel env.
+    # so use older setuptools_scm for a while
+    #"setuptools>=64",
+    #"setuptools_scm>=8",
+    "setuptools>=45",
+    "pybind11>=2.10.0",
+    "setuptools_scm[toml]<8",
+    "wheel",
+]
 build-backend = "setuptools.build_meta"
+
+[tool.black]
+line-length = 140
+
+[project]
+name = "tinydng"
+#version = "0.1.0"
+
+authors = [
+    {name = "Syoyo Fujita", email = "syoyo@lighttransport.com"},
+]
+description = "Python binding for TinyDNG"
+
+
+
+# Use setuptools_scm
+dynamic = ["version"]
+
+readme = {file = "README.md", content-type = "text/markdown"}
+
+# Project URLs in pyproject.toml is not mature.
+# so write it to setup.py
+# https://github.com/pypa/packaging-problems/issues/606
+#
+# [project.urils]
+
+
+[project.scripts]
+tinydng = "tinydng:main"
+
+[tool.setuptools_scm]
+# setuptools_scm>=8
+#version_file = "python/tinydng/_version.py"
+
+# setuptools_scm<8
+write_to = "python/tinydng/_version.py"

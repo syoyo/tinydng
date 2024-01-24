@@ -1,6 +1,7 @@
 include tiny_dng_loader.h
 include tiny_dng_writer.h
-include python-bindings.cc
+include python/python-bindings.cc
+include python/tinydng/__init__.py
 include pyproject.toml
 include setup.py
 include README.md
