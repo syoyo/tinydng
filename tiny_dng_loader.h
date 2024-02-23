@@ -4480,7 +4480,7 @@ static bool ParseTIFFIFD(const StreamReader& sr,
         unsigned int strip_byte_count;
         if (!sr.read4(&strip_byte_count)) {
           if (err) {
-            (*err) += "Failed to read StripByteCount value.";
+            (*err) += "Failed to read StripByteCount value.\n";
           }
           return false;
         }
@@ -4501,7 +4501,7 @@ static bool ParseTIFFIFD(const StreamReader& sr,
         unsigned int strip_offset;
         if (!sr.read4(&strip_offset)) {
           if (err) {
-            (*err) += "Failed to read StripOffset value.";
+            (*err) += "Failed to read StripOffset value.\n";
           }
           return false;
         }
