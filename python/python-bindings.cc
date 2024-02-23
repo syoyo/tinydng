@@ -242,9 +242,9 @@ std::vector<tinydng::DNGImage> load_dng(const std::string &filename)
 
 }
 
-PYBIND11_MODULE(tinydng, tdng_module)
+PYBIND11_MODULE(tinydng_ext, tdng_module)
 {
-  tdng_module.doc() = "Python bindings for TinyObjLoader.";
+  tdng_module.doc() = "Python bindings for TinyDNG.";
 
   // register struct
   py::class_<DNGImage>(tdng_module, "DNGImage")
@@ -252,6 +252,11 @@ PYBIND11_MODULE(tinydng, tdng_module)
     .def_readwrite("width", &DNGImage::width)
     .def_readwrite("height", &DNGImage::height)
     .def_readwrite("bits_per_sample", &DNGImage::bits_per_sample)
+    .def_readwrite("bits_per_sample_in_file", &DNGImage::bits_per_sample_original)
+    .def_readwrite("profile_name", &DNGImage::profile_name)
+    .def_readwrite("profile_tone_curve", &DNGImage::profile_tone_curve)
+    .def_readwrite("profile_embed_policy", &DNGImage::profile_embed_policy)
+    .def_readwrite("noise_profile", &DNGImage::noise_profile)
     ;
 
   tdng_module.def("loaddng", &load_dng);

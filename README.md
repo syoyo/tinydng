@@ -260,30 +260,21 @@ int main(int argc, char **argv) {
 
 ## Python binding(Experimental)
 
-### Build native module.
-
-Install pybind11.
-
 ```
-$ python -m pip install pybind11
+$ python -m pip install tinydng
 ```
 
-Then,
+Windows(including ARM), Linux(including aarch64) and macOS are supported.
+
+See [experimental/python](experimental/python) for exsample python code.
+
+### Command line tools(Experimental)
+
+When TinyDNG is installed from pip, CLI command `tinydng` is available.
 
 ```
-$ python setup.py build
+$ tinydng input.dng
 ```
-
-or
-
-```
-$ python -m pip install build
-$ python -m build .
-```
-
-Currently no PyPI package is available.
-
-See [experimental/python](experimental/python) for sample python code.
 
 ## Fuzzing test
 
