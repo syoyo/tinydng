@@ -2843,6 +2843,48 @@ static bool IsLosslessJPEG(const uint8_t* header_addr, int data_len, int* width,
   return (ret == LJ92_ERROR_NONE) ? true : false;
 }
 
+template<typename T>
+static void UnpredictImageHorizDiff(T* dst,  // inout
+                                    const size_t width, const size_t rows,
+                                    const size_t spp) {
+  const size_t stride = size_t(width * spp);
+  for (size_t row = 0; row < rows; row++) {
+    for (size_t c = 0; c < spp; c++) {
+      unsigned int b = dst[row * stride + c];
+      for (size_t col = 1; col < width; col++) {
+        // value may overflow(wrap over), but its expected behavior.
+        b += dst[stride * row + spp * col + c];
+        dst[stride * row + spp * col + c] =
+            static_cast<T>(b);
+      }
+    }
+  }
+}
+
+// Assume T = uint8 or uint16
+static bool UnpredictImage(std::vector<uint8_t>& dst,  // inout
+                           int predictor, const size_t width,
+                           const size_t rows, const size_t spp, const size_t bps) {
+  if (predictor == 1) {
+    // no prediction shceme
+    return true;
+  } else if (predictor == 2) {
+    // horizontal diff
+    if (bps == 8) {
+      UnpredictImageHorizDiff(dst.data(), width, rows, spp);
+      return true;
+    } else if (bps == 16) {
+      UnpredictImageHorizDiff(reinterpret_cast<uint16_t*>(dst.data()), width, rows, spp);
+      return true;
+    } else {
+      return false;
+    }
+  } else {
+    // TODO
+    return false;
+  }
+}
+
 #ifdef TINY_DNG_LOADER_ENABLE_ZIP
 
 static bool DecompressZIP(unsigned char* dst,
@@ -2876,34 +2918,6 @@ static bool DecompressZIP(unsigned char* dst,
   memcpy(dst, tmpBuf.data(), (*uncompressed_size));
 
   return true;
-}
-
-// Assume T = uint8 or uint16
-static bool UnpredictImageU8(std::vector<uint8_t>& dst,  // inout
-                             int predictor, const size_t width,
-                             const size_t rows, const size_t spp) {
-  if (predictor == 1) {
-    // no prediction shceme
-    return true;
-  } else if (predictor == 2) {
-    // horizontal diff
-    const size_t stride = size_t(width * spp);
-    for (size_t row = 0; row < rows; row++) {
-      for (size_t c = 0; c < spp; c++) {
-        unsigned int b = dst[row * stride + c];
-        for (size_t col = 1; col < width; col++) {
-          // value may overflow(wrap over), but its expected behavior.
-          b += dst[stride * row + spp * col + c];
-          dst[stride * row + spp * col + c] =
-              static_cast<unsigned char>(b & 0xFF);
-        }
-      }
-    }
-    return true;
-  } else {
-    // TODO
-    return false;
-  }
 }
 
 static bool DecompressZIPedTile(const StreamReader& sr, unsigned char* dst_data,
@@ -2992,10 +3006,11 @@ static bool DecompressZIPedTile(const StreamReader& sr, unsigned char* dst_data,
         return false;
       }
 
-      if (!UnpredictImageU8(tmp_buf, image_info.predictor,
-                            size_t(image_info.tile_width),
-                            size_t(image_info.tile_length),
-                            size_t(image_info.samples_per_pixel))) {
+      if (!UnpredictImage(tmp_buf, image_info.predictor,
+                          size_t(image_info.tile_width),
+                          size_t(image_info.tile_length),
+                          size_t(image_info.samples_per_pixel),
+                          size_t(image_info.bits_per_sample))) {
         if (err) {
           (*err) += "Failed to unpredict ZIP-ed tile image.\n";
         }
@@ -3072,10 +3087,11 @@ static bool DecompressZIPedTile(const StreamReader& sr, unsigned char* dst_data,
       return false;
     }
 
-    if (!UnpredictImageU8(tmp_buf, image_info.predictor,
-                          size_t(image_info.tile_width),
-                          size_t(image_info.tile_length),
-                          size_t(image_info.samples_per_pixel))) {
+    if (!UnpredictImage(tmp_buf, image_info.predictor,
+                        size_t(image_info.tile_width),
+                        size_t(image_info.tile_length),
+                        size_t(image_info.samples_per_pixel),
+                        size_t(image_info.bits_per_sample))) {
       if (err) {
         (*err) += "Failed to unpredict ZIP-ed tile image.\n";
       }
@@ -5485,48 +5501,15 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
                 break;
               }
 
-              if (image->predictor == 1) {
-                // no prediction shceme
-              } else if (image->predictor == 2) {
-                // horizontal diff
-
-                const size_t stride =
-                    size_t(image->width * image->samples_per_pixel);
-                const size_t spp = size_t(image->samples_per_pixel);
-                for (size_t row = 0; row < size_t(image->rows_per_strip);
-                     row++) {
-                  for (size_t c = 0; c < size_t(image->samples_per_pixel);
-                       c++) {
-                    unsigned int b = dst[row * stride + c];
-                    for (size_t col = 1; col < size_t(image->width); col++) {
-                      // value may overflow(wrap over), but its expected
-                      // behavior.
-                      b += dst[stride * row + spp * col + c];
-                      dst[stride * row + spp * col + c] =
-                          static_cast<unsigned char>(b & 0xFF);
-                    }
-                  }
-                }
-
-              } else if (image->predictor == 3) {
-                // fp horizontal diff.
-                //TINY_DNG_ABORT("[TODO] FP horizontal differencing predictor.");
+              if (!UnpredictImage(dst, image->predictor,
+                                  size_t(image->width),
+                                  size_t(image->rows_per_strip),
+                                  size_t(image->samples_per_pixel),
+                                  size_t(image->bits_per_sample))) {
                 {
                   std::lock_guard<std::mutex> lock(err_mtx_);
                   if (err) {
-                    (*err) +=
-                        "[TODO] FP horizontal differencing predictor(3)\n";
-                  }
-                }
-                failed = true;
-                break;
-              } else {
-                //TINY_DNG_ABORT("Invalid predictor value.");
-                {
-                  std::lock_guard<std::mutex> lock(err_mtx_);
-                  if (err) {
-                    (*err) +=
-                        "Invalid predictor value.\n";
+                    (*err) += "Failed to unpredict ZIP-ed tile image.\n";
                   }
                 }
                 failed = true;
@@ -5597,31 +5580,15 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
             TINY_DNG_ERROR_AND_RETURN("decoded_ bytes must be non-zero positive.", err);
           }
 
-          if (image->predictor == 1) {
-            // no prediction shceme
-          } else if (image->predictor == 2) {
-            // horizontal diff
-
-            const size_t stride =
-                size_t(image->width * image->samples_per_pixel);
-            const size_t spp = size_t(image->samples_per_pixel);
-            for (size_t row = 0; row < size_t(image->rows_per_strip); row++) {
-              for (size_t c = 0; c < size_t(image->samples_per_pixel); c++) {
-                unsigned int b = dst[row * stride + c];
-                for (size_t col = 1; col < size_t(image->width); col++) {
-                  // value may overflow(wrap over), but its expected behavior.
-                  b += dst[stride * row + spp * col + c];
-                  dst[stride * row + spp * col + c] =
-                      static_cast<unsigned char>(b & 0xFF);
-                }
-              }
+          if (!UnpredictImage(dst, image->predictor,
+                              size_t(image->width),
+                              size_t(image->rows_per_strip),
+                              size_t(image->samples_per_pixel),
+                              size_t(image->bits_per_sample))) {
+            if (err) {
+              (*err) += "Failed to unpredict ZIP-ed tile image.\n";
             }
-
-          } else if (image->predictor == 3) {
-            // fp horizontal diff.
-            TINY_DNG_ERROR_AND_RETURN("[TODO} FP horizontal differencing predictor(3).", err);
-          } else {
-            TINY_DNG_ERROR_AND_RETURN("Invalid predictor value.", err);
+            return false;
           }
 
           std::copy(dst.begin(), dst.end(), std::back_inserter(image->data));
