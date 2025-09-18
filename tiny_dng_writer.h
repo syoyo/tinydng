@@ -137,6 +137,75 @@ struct IFDTag {
 };
 // 12 bytes.
 
+class vectorbuf : public std::streambuf {
+    std::vector<char>& buffer;
+
+  public:
+    explicit vectorbuf(std::vector<char>& buf)
+      : buffer(buf)
+    {
+      // create an initial zero-length buffer
+      setp(nullptr, nullptr);
+    }
+
+  protected:
+    // write single character
+    int overflow(int c) override {
+      if (c != EOF) {
+        buffer.push_back(char(c));
+        // reset the put pointers to cover the new end
+        setp(buffer.data(), buffer.data() + buffer.size());
+        pbump(int(buffer.size()));  // position at end
+      }
+      return c;
+    }
+
+    // write block
+    std::streamsize xsputn(const char* s, std::streamsize n) override {
+      auto oldsz = buffer.size();
+      buffer.insert(buffer.end(), s, s + n);
+      // reset the put pointers
+      setp(buffer.data(), buffer.data() + buffer.size());
+      pbump(int(oldsz + n));
+      return n;
+    }
+
+    // allow seeks so we can patch offsets
+    pos_type seekoff(off_type off,
+                     std::ios_base::seekdir dir,
+                     std::ios_base::openmode which) override
+    {
+      if (!(which & std::ios_base::out))
+        return pos_type(off_type(-1));
+
+      size_t newpos;
+      if (dir == std::ios_base::beg)
+        newpos = off;
+      else if (dir == std::ios_base::cur)
+        newpos = (pptr() - pbase()) + off;
+      else if (dir == std::ios_base::end)
+        newpos = buffer.size() + off;
+      else
+        return pos_type(off_type(-1));
+
+      if (newpos > buffer.size())
+        buffer.resize(newpos);
+
+      char* base = buffer.data();
+      setp(base, base + buffer.size());
+      pbump(int(newpos));
+      return pos_type(off_type(newpos));
+    }
+
+    pos_type seekpos(pos_type sp,
+                     std::ios_base::openmode which) override
+    {
+      return seekoff(sp - pos_type(off_type(0)),
+                     std::ios_base::beg,
+                     which);
+    }
+};
+
 class DNGImage {
  public:
   DNGImage();
@@ -251,13 +320,22 @@ class DNGImage {
   bool SetCustomFieldLong(const unsigned short tag, const int value);
   bool SetCustomFieldULong(const unsigned short tag, const unsigned int value);
 
-  size_t GetDataSize() const { return data_os_.str().length(); }
+  size_t GetDataSize() const { return data_buf_.size(); }
 
   size_t GetStripOffset() const { return data_strip_offset_; }
   size_t GetStripBytes() const { return data_strip_bytes_; }
 
   /// Write aux IFD data and strip image data to stream.
   bool WriteDataToStream(std::ostream *ofs) const;
+
+  /// Write DNG to a file. You should not call SetImageData() before if you plan to use this method.
+  /// Return error string to `err` when Write() returns false.
+  /// Returns true upon success.
+  ///
+  /// @param[in] data : same as in SetImageData 
+  /// @param[in] data_len : same as in SetImageData
+  ///
+  bool WriteDNGToStream(std::ostream *ofs, std::string *err, const unsigned char *data, const size_t data_len);
 
   ///
   /// Write IFD to stream.
@@ -273,7 +351,9 @@ class DNGImage {
   std::string Error() const { return err_; }
 
  private:
-  std::ostringstream data_os_;
+  std::vector<char> data_buf_;
+  vectorbuf data_vbuf_;
+  std::ostream data_os_;
   bool swap_endian_;
   bool dng_big_endian_;
   unsigned short num_fields_;
@@ -1066,12 +1146,12 @@ static void swap8(uint64_t *val) {
   dst[7] = src[0];
 }
 
-static void Write1(const unsigned char c, std::ostringstream *out) {
+static void Write1(const unsigned char c, std::ostream *out) {
   unsigned char value = c;
   out->write(reinterpret_cast<const char *>(&value), 1);
 }
 
-static void Write2(const unsigned short c, std::ostringstream *out,
+static void Write2(const unsigned short c, std::ostream *out,
                    const bool swap_endian) {
   unsigned short value = c;
   if (swap_endian) {
@@ -1081,7 +1161,7 @@ static void Write2(const unsigned short c, std::ostringstream *out,
   out->write(reinterpret_cast<const char *>(&value), 2);
 }
 
-static void Write4(const unsigned int c, std::ostringstream *out,
+static void Write4(const unsigned int c, std::ostream *out,
                    const bool swap_endian) {
   unsigned int value = c;
   if (swap_endian) {
@@ -1094,7 +1174,7 @@ static void Write4(const unsigned int c, std::ostringstream *out,
 static bool WriteTIFFTag(const unsigned short tag, const unsigned short type,
                          const unsigned int count, const unsigned char *data,
                          std::vector<IFDTag> *tags_out,
-                         std::ostringstream *data_out) {
+                         std::ostream *data_out) {
   assert(sizeof(IFDTag) ==
          12);  // FIXME(syoyo): Use static_assert for C++11 compiler
 
@@ -1144,7 +1224,7 @@ static bool WriteTIFFTag(const unsigned short tag, const unsigned short type,
   return true;
 }
 
-static bool WriteTIFFVersionHeader(std::ostringstream *out, bool big_endian) {
+static bool WriteTIFFVersionHeader(std::ostream *out, bool big_endian) {
   // TODO(syoyo): Support BigTIFF?
 
   // 4d 4d = Big endian. 49 49 = Little endian.
@@ -1164,7 +1244,10 @@ static bool WriteTIFFVersionHeader(std::ostringstream *out, bool big_endian) {
 }
 
 DNGImage::DNGImage()
-    : dng_big_endian_(true),
+    : data_buf_(),
+      data_vbuf_(data_buf_),
+      data_os_(&data_vbuf_),
+      dng_big_endian_(true),
       num_fields_(0),
       samples_per_pixels_(0),
       data_strip_offset_{0},
@@ -2317,7 +2400,7 @@ static bool IFDComparator(const IFDTag &a, const IFDTag &b) {
 }
 
 bool DNGImage::WriteDataToStream(std::ostream *ofs) const {
-  if ((data_os_.str().length() == 0)) {
+  if ((data_buf_.size() == 0)) {
     err_ += "Empty IFD data and image data.\n";
     return false;
   }
@@ -2339,8 +2422,8 @@ bool DNGImage::WriteDataToStream(std::ostream *ofs) const {
     return false;
   }
 
-  std::vector<uint8_t> data(data_os_.str().length());
-  memcpy(data.data(), data_os_.str().data(), data.size());
+  std::vector<uint8_t> data(data_buf_.size());
+  memcpy(data.data(), data_buf_.data(), data.size());
 
   if (data_strip_bytes_ == 0) {
     // May ok?.
@@ -2462,6 +2545,57 @@ bool DNGImage::WriteIFDToStream(const unsigned int data_base_offset,
     ofs->write(ifd_os.str().c_str(),
                static_cast<std::streamsize>(ifd_os.str().length()));
   }
+
+  return true;
+}
+
+bool DNGImage::WriteDNGToStream(std::ostream *ofs, std::string *err, const unsigned char *data, const size_t data_length) {
+  data_strip_offset_ = size_t(data_os_.tellp());
+
+  // NOTE: STRIP_OFFSET tag will be written at `WriteIFDToStream()`.
+  {
+    unsigned int count = 1;
+    unsigned int bytes = static_cast<unsigned int>(data_length);
+
+    WriteTIFFTag(
+        static_cast<unsigned short>(TIFFTAG_STRIP_BYTE_COUNTS), TIFF_LONG,
+        count, reinterpret_cast<const unsigned char *>(&bytes), &ifd_tags_,
+        NULL);
+
+    num_fields_++;
+  }
+
+  WriteTIFFVersionHeader(ofs, dng_big_endian_);
+
+  // 1. Compute offset and data size(exclude TIFF header bytes)
+  size_t data_len = data_buf_.size() + data_length;
+  size_t data_offset_table = 0;
+  size_t strip_offset_table = data_strip_offset_;
+
+  // 2. Write offset to ifd table.
+  const unsigned int ifd_offset =
+      kHeaderSize + static_cast<unsigned int>(data_len);
+  Write4(ifd_offset, ofs, swap_endian_);
+
+  // 4. Write image and meta data
+  // TODO(syoyo): Write IFD first, then image/meta data
+  if (bits_per_samples_.empty())
+    { err_ += "BitsPerSample is not set\n"; return false; }
+
+  // One single write, no extra copy
+  ofs->write(data_buf_.data(), static_cast<std::streamsize>(data_buf_.size()));
+
+  ofs->write(reinterpret_cast<const char *>(data), static_cast<std::streamsize>(data_length));
+
+  // 5. Write IFD entries;
+  this->WriteIFDToStream(
+      static_cast<unsigned int>(data_offset_table),
+      static_cast<unsigned int>(strip_offset_table), ofs);
+
+  // Write zero as IFD offset(= end of data)
+  unsigned int next_ifd_offset = 0;
+
+  ofs->write(reinterpret_cast<const char *>(&next_ifd_offset), 4);
 
   return true;
 }
