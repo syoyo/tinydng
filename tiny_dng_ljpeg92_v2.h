@@ -24,10 +24,29 @@ void tdng_lj92_close(tdng_lj92 lj);
 int tdng_lj92_decode(tdng_lj92 lj, uint16_t* target, int writeLength,
                      int skipLength, uint16_t* linearize,
                      int linearizeLength);
+/* Encode a single-component (mono) 16-bit tile with predictor 1.
+ * Thin wrapper around tdng_lj92_encode_ex. */
 int tdng_lj92_encode(uint16_t* image, int width, int height, int bitdepth,
                      int readLength, int skipLength, uint16_t* delinearize,
                      int delinearizeLength, uint8_t** encoded,
                      int* encodedLength);
+
+/* Extended encode entry point.
+ *   image        : interleaved samples (R0 G0 B0 R1 G1 B1 ...) in 16-bit
+ *   width, height: tile dimensions
+ *   bitdepth     : 2..16
+ *   components   : 1..4 (each gets its own Huffman table)
+ *   predictor    : 1 (left), 2 (above) or 7 (average); 1 is the safest default
+ *   readLength   : samples (components counted separately) read per row before
+ *                  skipping skipLength samples. Typical: width*components.
+ *   skipLength   : samples skipped after each row (for tiled images).
+ *   delinearize  : optional sample mapping table applied before encoding.
+ * On success, *encoded receives a malloc'd buffer the caller must free. */
+int tdng_lj92_encode_ex(uint16_t* image, int width, int height, int bitdepth,
+                        int components, int predictor, int readLength,
+                        int skipLength, uint16_t* delinearize,
+                        int delinearizeLength, uint8_t** encoded,
+                        int* encodedLength);
 
 #ifdef __cplusplus
 }
