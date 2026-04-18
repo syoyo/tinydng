@@ -1011,11 +1011,13 @@ static int DoubleToRational(double x, double *numerator, double *denominator) {
     }
   }
 
-  while ((std::fabs(*numerator) > 0.0) &&
-         (std::fabs(std::fmod(*numerator, 2)) <
-          std::numeric_limits<double>::epsilon()) &&
-         (std::fabs(std::fmod(*denominator, 2)) <
-          std::numeric_limits<double>::epsilon())) {
+  while (((std::fabs(*numerator) > 0.0) &&
+          (std::fabs(std::fmod(*numerator, 2)) <
+           std::numeric_limits<double>::epsilon()) &&
+          (std::fabs(std::fmod(*denominator, 2)) <
+           std::numeric_limits<double>::epsilon())) ||
+         (std::max(std::fabs(*numerator), std::fabs(*denominator)) >
+          std::numeric_limits<unsigned int>::max())) {
     *numerator /= 2.0;
     *denominator /= 2.0;
   }

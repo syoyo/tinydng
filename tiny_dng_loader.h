@@ -213,7 +213,6 @@ struct DNGImage {
   unsigned int offset;
   short orientation;
   short _pad0;
-  int strip_byte_count;
   int jpeg_byte_count;
   short planar_configuration;  // 1: chunky, 2: planar
   short predictor;  // tag 317. 1 = no prediction, 2 = horizontal differencing,
@@ -231,7 +230,7 @@ struct DNGImage {
   // An array of flattened the pair of input/output value.
   // [(0.0, 0.0), (0.1, 0.1), ... (1.0, 1.0)]
   // First two item must be 0.0, Last two item must be 1.0
-  std::vector<float> profile_tone_curve;  
+  std::vector<float> profile_tone_curve;
   int profile_embed_policy{-1}; // 0 = "allow copying", 1 = "embed if used", 2 = "embed never"
 
   // Noise profile
@@ -763,11 +762,23 @@ static int parseHuff(ljp* self) {
 #else
   /* Calculate huffman direct lut */
   // How many bits in the table - find highest entry
+  // Check bounds before accessing huffvals
+  if ((self->ix + 19) >= self->datalen) return LJ92_ERROR_CORRUPT;
   u8* huffvals = &self->data[self->ix + 19];
   int maxbits = 16;
   while (maxbits > 0) {
     if (bits[maxbits]) break;
     maxbits--;
+  }
+  
+  // Prevent excessive allocation (limit to reasonable size)
+  if (maxbits > 14) {
+    maxbits = 14;  // Limit to 2^14 entries to prevent memory exhaustion
+  }
+  
+  // Check array bounds before storing huffbits
+  if (self->num_huff_idx >= LJ92_MAX_COMPONENTS) {
+    return LJ92_ERROR_CORRUPT;
   }
   self->huffbits[self->num_huff_idx] = maxbits;
   TINY_DNG_DPRINTF("huffbuts[%d] = %d\n", self->num_huff_idx, maxbits);
@@ -776,6 +787,12 @@ static int parseHuff(ljp* self) {
   u16* hufflut = (u16*)malloc((1 << maxbits) * sizeof(u16));
   // TINY_DNG_DPRINTF("maxbits = %d\n", maxbits);
   if (hufflut == NULL) return LJ92_ERROR_NO_MEMORY;
+  
+  // Check array bounds before storing hufflut
+  if (self->num_huff_idx >= LJ92_MAX_COMPONENTS) {
+    free(hufflut);
+    return LJ92_ERROR_CORRUPT;
+  }
   self->hufflut[self->num_huff_idx] = hufflut;
   int i = 0;
   int hv = 0;
@@ -820,7 +837,7 @@ static int parseHuff(ljp* self) {
 }
 
 static int parseSof3(ljp* self) {
-  if (self->ix + 6 >= self->datalen) return LJ92_ERROR_CORRUPT;
+  if (self->ix + 7 >= self->datalen) return LJ92_ERROR_CORRUPT;
   self->y = BEH(self->data[self->ix + 3]);
   self->x = BEH(self->data[self->ix + 5]);
   self->bits = self->data[self->ix + 2];
@@ -841,6 +858,10 @@ static int parseSof3(ljp* self) {
 
 static int parseBlock(ljp* self, int marker) {
   (void)marker;
+  // Check bounds before using BEH
+  if (self->ix + 1 >= self->datalen) {
+    return LJ92_ERROR_CORRUPT;
+  }
   self->ix += BEH(self->data[self->ix]);
   if (self->ix >= self->datalen) {
     TINY_DNG_DPRINTF("parseBlock: ix %d, datalen %d\n", self->ix,
@@ -911,8 +932,8 @@ inline static int nextdiff(ljp* self, int component_idx, int Px, int *errcode) {
   diff = extend(self, diff, t);
 // TINY_DNG_DPRINTF("%d %d %d %x\n",Px+diff,Px,diff,t);//,index,usedbits);
 #else
-  if (component_idx <= self->num_huff_idx) {
-    // OK
+  if (component_idx < self->num_huff_idx) {
+    // OK - fixed off-by-one error
   } else {
     // "Invalid huff index.");
     if (errcode) {
@@ -944,6 +965,14 @@ inline static int nextdiff(ljp* self, int component_idx, int Px, int *errcode) {
   int index = b >> (cnt - huffbits);
   // TINY_DNG_DPRINTF("component_idx = %d / %d, index = %d\n", component_idx,
   // self->components, index);
+  
+  // Check index bounds before access
+  if (index < 0 || index >= (1 << huffbits)) {
+    if (errcode) {
+      (*errcode) = LJ92_ERROR_CORRUPT;
+    }
+    return 0;
+  }
 
   u16 ssssused = self->hufflut[component_idx][index];
   int usedbits = ssssused & 0xFF;
@@ -1028,10 +1057,15 @@ static int parsePred6(ljp* self) {
   Px = 1 << (self->bits - 1);
   left = Px + diff;
   left = (u16)(left % 65536);
-  if (self->linearize)
+  if (self->linearize) {
+    // Ensure we're not accessing beyond the linearize table
+    if (left > self->linlen) {
+      return LJ92_ERROR_CORRUPT;
+    }
     linear = self->linearize[left];
-  else
+  } else {
     linear = left;
+  }
   thisrow[col++] = left;
   out[c++] = linear;
   if (self->ix >= self->datalen) {
@@ -2006,7 +2040,7 @@ typedef enum {
   TAG_LIGHT_SOURCE = 0x9208, // int16u
   TAG_FLASH = 0x9209, // int16u
   TAG_FOCAL_LENGTH = 0x920a, // rational64u
-  
+
   TAG_LENS_INFO = 0xa432, // rational64u[4]
   TAG_LENS_MAKE = 0xa433, // string
   TAG_LENS_MODEL = 0xa434, // string
@@ -2483,7 +2517,7 @@ class StreamReader {
 
   bool read_rational(int type, uint32_t* ret0, uint32_t *ret1) const {
     // @todo { Support more types. }
-    
+
     if (!ret0 || !ret1) {
       return false;
     }
@@ -2508,7 +2542,7 @@ class StreamReader {
 
   bool read_srational(int type, int32_t* ret0, int32_t *ret1) const {
     // @todo { Support more types. }
-    
+
     if (!ret0 || !ret1) {
       return false;
     }
@@ -2755,7 +2789,6 @@ static void InitializeDNGImage(tinydng::DNGImage* image) {
   image->has_as_shot_neutral = false;
 
   image->jpeg_byte_count = -1;
-  image->strip_byte_count = -1;
 
   image->samples_per_pixel = 1;
   image->rows_per_strip = -1;  // 2^32 - 1
@@ -3688,6 +3721,9 @@ static bool ParseTIFFIFD(const StreamReader& sr,
   // For delayed reading of strip offsets and strip byte counts.
   long offt_strip_offset = 0;
   long offt_strip_byte_counts = 0;
+  int type_strip_offset = 0;
+  int type_strip_byte_counts = 0;
+
 
   while (num_entries--) {
     unsigned short tag, type;
@@ -3806,6 +3842,8 @@ static bool ParseTIFFIFD(const StreamReader& sr,
       case TAG_STRIP_OFFSET:
       case TAG_JPEG_IF_OFFSET:
         offt_strip_offset = static_cast<long>(sr.tell());
+        type_strip_offset = type;
+        // Note: in case of TAG_STRIP_OFFSET, the parsing of the table will be done later
         if (!sr.read4(&image.offset)) {
           if (err) {
             (*err) += "Failed to parse Compression Tag.\n";
@@ -3835,13 +3873,8 @@ static bool ParseTIFFIFD(const StreamReader& sr,
 
       case TAG_STRIP_BYTE_COUNTS:
         offt_strip_byte_counts = static_cast<long>(sr.tell());
-        if (!sr.read4(&image.strip_byte_count)) {
-          if (err) {
-            (*err) = "Failed to parse StripByteCount Tag.\n";
-          }
-          return false;
-        }
-        TINY_DNG_DPRINTF("strip_byte_count = %d\n", image.strip_byte_count);
+        type_strip_byte_counts = type;
+        // The table will be parsed later
         break;
 
       case TAG_PLANAR_CONFIGURATION:
@@ -4115,7 +4148,7 @@ static bool ParseTIFFIFD(const StreamReader& sr,
         TINY_DNG_DPRINTF("tone curve datalen = %d\n", len);
 
         // len = samples * 2.
-        // It seems single channel tone curve only. 
+        // It seems single channel tone curve only.
         if ((len % 2) != 0) {
           if (err) {
             (*err) += "Invalid data size for ProfileToneCurve Tag.\n";
@@ -4123,7 +4156,7 @@ static bool ParseTIFFIFD(const StreamReader& sr,
 
           return false;
         }
-        size_t readLen = len * sizeof(float);
+        //size_t readLen = len * sizeof(float);
 
         const size_t kMaxSamples = 1024 * 1024;
 
@@ -4180,7 +4213,7 @@ static bool ParseTIFFIFD(const StreamReader& sr,
         // or
         // DOUBLE * 2 * colorPlanes
 
-        // It seems single channel tone curve only. 
+        // It seems single channel tone curve only.
         if ((len % 2) != 0) {
           if (err) {
             (*err) += "Invalid data size for ProfileToneCurve Tag.\n";
@@ -4196,7 +4229,7 @@ static bool ParseTIFFIFD(const StreamReader& sr,
             }
           }
 
-          if (len != (image.samples_per_pixel * 2)) {
+          if (size_t(len) != (size_t(image.samples_per_pixel) * 2)) {
             if (err) {
               (*err) += "Counts in NoisProfile must be 2 * SamplesPerPixel.\n";
             }
@@ -4222,7 +4255,7 @@ static bool ParseTIFFIFD(const StreamReader& sr,
             return false;
           }
         }
-    
+
         // TODO: Validate noise profile data.
         image.noise_profile = buf;
 
@@ -4562,7 +4595,7 @@ static bool ParseTIFFIFD(const StreamReader& sr,
 
       for (int k = 0; k < image.strips_per_image; k++) {
         unsigned int strip_byte_count;
-        if (!sr.read4(&strip_byte_count)) {
+        if (!sr.read_uint(type_strip_byte_counts, &strip_byte_count)) {
           if (err) {
             (*err) += "Failed to read StripByteCount value.\n";
           }
@@ -4583,7 +4616,7 @@ static bool ParseTIFFIFD(const StreamReader& sr,
 
       for (int k = 0; k < image.strips_per_image; k++) {
         unsigned int strip_offset;
-        if (!sr.read4(&strip_offset)) {
+        if (!sr.read_uint(type_strip_offset, &strip_offset)) {
           if (err) {
             (*err) += "Failed to read StripOffset value.\n";
           }
@@ -5723,6 +5756,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
       } else {
         // Baseline 8bit JPEG
 
+#ifndef TINY_DNG_LOADER_NO_STB_IMAGE_INCLUDE
         image->bits_per_sample_original = 8;
         image->bits_per_sample = 8;
 
@@ -5776,7 +5810,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
         int w = 0, h = 0, components = 0;
 
         // Check if data is in valid range.
-        if ((sr.tell() + data_offset + static_cast<uint32_t>(jpeg_len)) >= sr.size()) {
+        if ((data_offset + static_cast<uint32_t>(jpeg_len)) > sr.size()) {
           if (err) {
             (*err) += "Invalid JPEG image data size.\n";
           }
@@ -5801,12 +5835,13 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
         image->width = w;
         image->height = h;
+#endif
       }
-
     } else if (image->compression ==
                COMPRESSION_NEW_JPEG) {  //  new JPEG(baseline DCT JPEG or
                                         //  lossless JPEG)
 
+#ifndef TINY_DNG_LOADER_NO_STB_IMAGE_INCLUDE
       bool decoded = false;
 
       if (image->bits_per_sample_original == 8) {
@@ -5931,7 +5966,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
           }
           return false;
         }
-        TINY_DNG_DPRINTF("image.data.size = %lld\n", len);
+        TINY_DNG_DPRINTF("image.data.size = %u\n", uint32_t(len));
 
         image->data.resize(len);
         TINY_DNG_DPRINTF("image.data.size = %d\n", int(len));
@@ -5968,7 +6003,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
           image->bits_per_sample_original = lj_bits;
         }
       }
-
+#endif
     } else if (image->compression == COMPRESSION_ZIP) {  // ZIP
 #ifdef TINY_DNG_LOADER_ENABLE_ZIP
       TINY_DNG_CHECK_AND_RETURN(image->bits_per_sample_original > 0,
@@ -6029,6 +6064,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 #endif
     } else if (image->compression == COMPRESSION_LOSSY) {  // lossy JPEG
 
+#ifndef TINY_DNG_LOADER_NO_STB_IMAGE_INCLUDE
       // TOOD: Check bps and photometric_interpretation.
 
       size_t jpeg_len = static_cast<size_t>(image->jpeg_byte_count);
@@ -6110,7 +6146,7 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 #endif
         free(decoded_image);
       }
-
+#endif
     } else if (image->compression == 34713) {  // NEF lossless?
 
       image->bits_per_sample_original = 1;  // FIXME
