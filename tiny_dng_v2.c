@@ -1265,12 +1265,9 @@ static tinydng_v2_status tdng_parse_ifd(
         }
         break;
       case TINYDNG_V2_TAG_PROFILE_NAME:
-        if (type == 2 && count > 0u && count < 256u) {
-          size_t off = value_or_offset;
-          if (off + count <= r->size) {
-            b.profile_name = (char*)(r->data + off);
-            b.profile_name[count - 1] = '\0';
-          }
+        if (type == 2 && count > 0u) {
+          size_t str_off = (count <= 4u) ? value_or_offset : value_or_offset;
+          b.profile_name = tdng_read_string(ctx, r, str_off, (size_t)count, err);
         }
         break;
       default:
@@ -1983,6 +1980,11 @@ const tinydng_v2_cfa_pattern* tinydng_v2_image_cfa(const tinydng_v2_image* img) 
 
 const tinydng_v2_raw_info* tinydng_v2_image_raw_info(const tinydng_v2_image* img) {
   return img ? &img->raw_info : NULL;
+}
+
+const char* tinydng_v2_image_profile_name(const tinydng_v2_image* img) {
+  if (!img) return NULL;
+  return img->raw_info.profile_name;
 }
 
 static void tdng_write_u16(FILE* fp, uint16_t v, int big_endian) {

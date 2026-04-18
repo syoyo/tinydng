@@ -110,6 +110,13 @@ int main(int argc, char** argv) {
       if (raw->calibration_illuminant2) {
         printf("  calibration_illuminant2: %u\n", raw->calibration_illuminant2);
       }
+      if (raw->has_default_black_render) {
+        printf("  default_black_render: %u\n", raw->default_black_render);
+      }
+      const char* profile_name = tinydng_v2_image_profile_name(img);
+      if (profile_name) {
+        printf("  profile_name: %s\n", profile_name);
+      }
     }
     if (as_is && img->segments) {
       size_t n = img->segment_count;

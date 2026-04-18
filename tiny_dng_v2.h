@@ -156,6 +156,7 @@ typedef struct tinydng_v2_image {
 
 const tinydng_v2_cfa_pattern* tinydng_v2_image_cfa(const tinydng_v2_image* img);
 const tinydng_v2_raw_info* tinydng_v2_image_raw_info(const tinydng_v2_image* img);
+const char* tinydng_v2_image_profile_name(const tinydng_v2_image* img);
 
 typedef struct tinydng_v2_write_options {
   uint8_t big_endian;
