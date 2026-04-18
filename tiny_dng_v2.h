@@ -122,6 +122,8 @@ typedef struct tinydng_v2_raw_info {
   uint16_t default_black_render;
   uint8_t has_default_black_render;
   char* profile_name;
+  double profile_tone_curve[16];
+  uint16_t profile_tone_curve_count;
 } tinydng_v2_raw_info;
 
 void tinydng_v2_exif_init(tinydng_v2_basic_exif* exif);

@@ -94,6 +94,7 @@ Access via `tinydng_v2_image_raw_info()` which returns `tinydng_v2_raw_info*`
 - `0xC705` (ActiveArea) - Active area (4 LONG values: top, left, bottom, right)
 - `0xC709` (DefaultBlackRender) - Default black render (SHORT)
 - `0xC718` (ProfileName) - Profile name (ASCII string)
+- `0xC72C` (ProfileToneCurve) - Profile tone curve (up to 16 doubles)
 
 ### Type Handling
 - Color matrices support both type 5 (RATIONAL) and type 10 (SRATIONAL)

@@ -61,6 +61,7 @@
 #define TINYDNG_V2_TAG_ACTIVE_AREA 50829u
 #define TINYDNG_V2_TAG_DEFAULT_BLACK_RENDER 50713u
 #define TINYDNG_V2_TAG_PROFILE_NAME 50936u
+#define TINYDNG_V2_TAG_PROFILE_TONE_CURVE 50940u
 
 #define TINYDNG_V2_COMP_NONE 1u
 #define TINYDNG_V2_COMP_LZW 5u
@@ -172,6 +173,8 @@ typedef struct tdng_ifd_build {
   uint16_t default_black_render;
   uint8_t has_default_black_render;
   char* profile_name;
+  double profile_tone_curve[16];
+  uint16_t profile_tone_curve_count;
 } tdng_ifd_build;
 
 static void tdng_destroy_image_payload(tinydng_v2_context* ctx,
@@ -1270,6 +1273,19 @@ static tinydng_v2_status tdng_parse_ifd(
           b.profile_name = tdng_read_string(ctx, r, str_off, (size_t)count, err);
         }
         break;
+      case TINYDNG_V2_TAG_PROFILE_TONE_CURVE:
+        if ((type == 5 || type == 12) && count > 0u && count <= 16u) {
+          size_t off = value_or_offset;
+          uint16_t n = (uint16_t)(count < 16u ? count : 16u);
+          for (uint16_t j = 0; j < n; j++) {
+            uint32_t num = 0, den = 0;
+            tdng_read_u32(r, off + j * 8, &num);
+            tdng_read_u32(r, off + j * 8 + 4, &den);
+            b.profile_tone_curve[j] = (den != 0) ? ((double)num / (double)den) : 0.0;
+          }
+          b.profile_tone_curve_count = n;
+        }
+        break;
       default:
         break;
     }
@@ -1440,6 +1456,12 @@ static tinydng_v2_status tdng_parse_ifd(
   }
   if (b.profile_name) {
     image->raw_info.profile_name = b.profile_name;
+  }
+  if (b.profile_tone_curve_count > 0) {
+    for (uint16_t i = 0; i < b.profile_tone_curve_count; i++) {
+      image->raw_info.profile_tone_curve[i] = b.profile_tone_curve[i];
+    }
+    image->raw_info.profile_tone_curve_count = b.profile_tone_curve_count;
   }
 
   if (load_flags & TINYDNG_V2_LOAD_FLAG_PARSE_IMAGE_AS_IS) {
