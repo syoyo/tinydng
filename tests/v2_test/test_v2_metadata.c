@@ -136,6 +136,12 @@ static void test_proraw(tinydng_v2_context* ctx, tinydng_v2_error* err) {
         check(diff < 0.01, "Color matrix1[0] ~ 1.2902 (SRATIONAL)");
     }
 
+    const char* profile_name = tinydng_v2_image_profile_name(img);
+    check(profile_name != NULL, "Has profile_name");
+    if (profile_name) {
+        check(strlen(profile_name) > 0, "Profile name is non-empty");
+    }
+
     tinydng_v2_document_destroy(ctx, doc);
 }
 
@@ -170,6 +176,49 @@ static void test_cr2(tinydng_v2_context* ctx, tinydng_v2_error* err) {
     tinydng_v2_document_destroy(ctx, doc);
 }
 
+static void test_pixel3_asis(tinydng_v2_context* ctx, tinydng_v2_error* err) {
+    printf("Testing pixel3.dng (as-is mode)...\n");
+
+    tinydng_v2_load_options lopt;
+    memset(&lopt, 0, sizeof(lopt));
+    lopt.flags |= TINYDNG_V2_LOAD_FLAG_PARSE_IMAGE_AS_IS;
+
+    tinydng_v2_document* doc = NULL;
+    tinydng_v2_status st = tinydng_v2_load_from_file_with_options(ctx, test_files[1], &lopt, &doc, err);
+    check(st == TINYDNG_V2_STATUS_OK, "Load succeeded");
+    check(doc != NULL, "Document not NULL");
+
+    if (!doc) return;
+
+    check(tinydng_v2_document_image_count(doc) == 2, "Has 2 images");
+
+    const tinydng_v2_image* img1 = tinydng_v2_document_image_at(doc, 1);
+    check(img1 != NULL, "Image 1 (SubIFD) retrieved");
+    if (img1) {
+        check(img1->width == 4032, "Image 1 width = 4032");
+        check(img1->height == 3024, "Image 1 height = 3024");
+        check(img1->bits_per_sample == 16, "Image 1 BPS = 16");
+
+        const tinydng_v2_cfa_pattern* cfa = tinydng_v2_image_cfa(img1);
+        check(cfa != NULL, "Has CFA pattern");
+        if (cfa) {
+            check(cfa->cfa_pattern_dim[0] == 2, "CFA dim[0] = 2");
+            check(cfa->cfa_pattern_dim[1] == 4, "CFA dim[1] = 4");
+            check(cfa->cfa_pattern_size == 4, "CFA pattern size = 4");
+            check(cfa->cfa_layout == 1, "CFA layout = 1");
+        }
+
+        const tinydng_v2_raw_info* raw = &img1->raw_info;
+        check(raw != NULL, "Image 1 has raw_info");
+        if (raw) {
+            check(raw->white_level_present == 1, "Image 1 has white_level");
+            check(raw->white_level[0] == 16368, "Image 1 white_level[0] = 16368");
+        }
+    }
+
+    tinydng_v2_document_destroy(ctx, doc);
+}
+
 int main() {
     printf("=== V2 Loader Unit Tests ===\n\n");
 
@@ -183,6 +232,7 @@ int main() {
 
     test_colorchart(ctx, &err);
     test_pixel3(ctx, &err);
+    test_pixel3_asis(ctx, &err);
     test_proraw(ctx, &err);
     test_cr2(ctx, &err);
 
