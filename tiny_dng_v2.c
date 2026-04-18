@@ -44,6 +44,20 @@
 #define TINYDNG_V2_TAG_SOFTWARE 305u
 #define TINYDNG_V2_TAG_DATETIME 306u
 #define TINYDNG_V2_TAG_IMAGEDESCRIPTION 270u
+#define TINYDNG_V2_TAG_CFA_REPEAT_PATTERN_DIM 33421u
+#define TINYDNG_V2_TAG_CFA_PATTERN 33422u
+#define TINYDNG_V2_TAG_CFA_PLANE_COLOR 50710u
+#define TINYDNG_V2_TAG_CFA_LAYOUT 50711u
+#define TINYDNG_V2_TAG_BLACK_LEVEL 50714u
+#define TINYDNG_V2_TAG_WHITE_LEVEL 50717u
+#define TINYDNG_V2_TAG_COLOR_MATRIX1 50721u
+#define TINYDNG_V2_TAG_COLOR_MATRIX2 50722u
+#define TINYDNG_V2_TAG_FORWARD_MATRIX1 50964u
+#define TINYDNG_V2_TAG_FORWARD_MATRIX2 50965u
+#define TINYDNG_V2_TAG_DNG_VERSION 50706u
+#define TINYDNG_V2_TAG_AS_SHOT_NEUTRAL 50728u
+#define TINYDNG_V2_TAG_CALIBRATION_ILLUMINANT1 50778u
+#define TINYDNG_V2_TAG_CALIBRATION_ILLUMINANT2 50779u
 
 #define TINYDNG_V2_COMP_NONE 1u
 #define TINYDNG_V2_COMP_LZW 5u
@@ -125,6 +139,31 @@ typedef struct tdng_ifd_build {
   uint8_t has_exif_datetime;
   uint8_t has_exif_image_description;
   uint8_t has_exif_orientation;
+  uint16_t cfa_pattern_dim[2];
+  uint8_t cfa_pattern[16];
+  uint8_t cfa_pattern_size;
+  uint8_t has_cfa_pattern;
+  uint8_t cfa_plane_color[4];
+  uint8_t has_cfa_plane_color;
+  uint16_t cfa_layout;
+  uint8_t has_cfa_layout;
+  int32_t black_level[4];
+  uint8_t has_black_level;
+  int32_t white_level[4];
+  uint8_t has_white_level;
+  double color_matrix1[9];
+  double color_matrix2[9];
+  double forward_matrix1[9];
+  double forward_matrix2[9];
+  uint8_t has_color_matrix;
+  uint8_t dng_version[4];
+  uint8_t has_dng_version;
+  double as_shot_neutral[3];
+  uint8_t has_as_shot_neutral;
+  uint16_t calibration_illuminant1;
+  uint8_t has_calibration_illuminant1;
+  uint16_t calibration_illuminant2;
+  uint8_t has_calibration_illuminant2;
 } tdng_ifd_build;
 
 static void tdng_destroy_image_payload(tinydng_v2_context* ctx,
@@ -390,6 +429,21 @@ static int tdng_read_u32(const tdng_reader* r, size_t at, uint32_t* out) {
     *out = ((uint32_t)r->data[at + 3] << 24) |
            ((uint32_t)r->data[at + 2] << 16) |
            ((uint32_t)r->data[at + 1] << 8) | (uint32_t)r->data[at];
+  }
+  return 1;
+}
+
+static int tdng_read_i32(const tdng_reader* r, size_t at, int32_t* out) {
+  if (!r || !out || (at + 4u > r->size)) {
+    return 0;
+  }
+  if (r->big_endian) {
+    *out = ((int32_t)r->data[at] << 24) | ((int32_t)r->data[at + 1] << 16) |
+           ((int32_t)r->data[at + 2] << 8) | (int32_t)r->data[at + 3];
+  } else {
+    *out = ((int32_t)r->data[at + 3] << 24) |
+           ((int32_t)r->data[at + 2] << 16) |
+           ((int32_t)r->data[at + 1] << 8) | (int32_t)r->data[at];
   }
   return 1;
 }
@@ -1028,6 +1082,163 @@ static tinydng_v2_status tdng_parse_ifd(
           b.has_exif_orientation = 1;
         }
         break;
+      case TINYDNG_V2_TAG_CFA_REPEAT_PATTERN_DIM:
+        if ((type == TINYDNG_V2_TYPE_SHORT) && (count == 2u)) {
+          uint16_t v0 = 0, v1 = 0;
+          tdng_extract_inline_u16(r, value_or_offset, &v0);
+          tdng_extract_inline_u16(r, value_or_offset + 2, &v1);
+          b.cfa_pattern_dim[0] = v0;
+          b.cfa_pattern_dim[1] = v1;
+        }
+        break;
+      case TINYDNG_V2_TAG_CFA_PATTERN:
+        if (type == 1 && count > 0u && count <= 16u) {
+          size_t off = (count <= 4u) ? value_or_offset : value_or_offset;
+          if (off + count <= r->size) {
+            b.cfa_pattern_size = (uint8_t)count;
+            memcpy(b.cfa_pattern, r->data + off, count);
+            b.has_cfa_pattern = 1;
+          }
+        }
+        break;
+      case TINYDNG_V2_TAG_CFA_PLANE_COLOR:
+        if (type == 1 && count == 4u) {
+          size_t off = (count <= 4u) ? value_or_offset : value_or_offset;
+          if (off + 4 <= r->size) {
+            memcpy(b.cfa_plane_color, r->data + off, 4);
+            b.has_cfa_plane_color = 1;
+          }
+        }
+        break;
+      case TINYDNG_V2_TAG_CFA_LAYOUT:
+        if ((type == TINYDNG_V2_TYPE_SHORT) && (count == 1u)) {
+          tdng_extract_inline_u16(r, value_or_offset, &b.cfa_layout);
+          b.has_cfa_layout = 1;
+        }
+        break;
+      case TINYDNG_V2_TAG_BLACK_LEVEL:
+        if ((type == TINYDNG_V2_TYPE_SHORT || type == TINYDNG_V2_TYPE_LONG) && count > 0u && count <= 4u) {
+          if (count == 1) {
+            if (type == TINYDNG_V2_TYPE_SHORT) {
+              uint16_t v = 0;
+              tdng_extract_inline_u16(r, value_or_offset, &v);
+              b.black_level[0] = (int32_t)v;
+            } else {
+              b.black_level[0] = (int32_t)value_or_offset;
+            }
+          } else {
+            size_t i;
+            size_t stride = (type == TINYDNG_V2_TYPE_SHORT) ? 2 : 4;
+            size_t base_off = (type == TINYDNG_V2_TYPE_SHORT && count <= 2u) ? 0 : value_or_offset;
+            for (i = 0; i < count; i++) {
+              if (type == TINYDNG_V2_TYPE_SHORT) {
+                uint16_t v = 0;
+                tdng_extract_inline_u16(r, (uint32_t)(base_off + i * stride), &v);
+                b.black_level[i] = (int32_t)v;
+              } else {
+                uint32_t v = 0;
+                tdng_read_u32(r, base_off + i * stride, &v);
+                b.black_level[i] = (int32_t)v;
+              }
+            }
+          }
+          b.has_black_level = 1;
+        }
+        break;
+      case TINYDNG_V2_TAG_WHITE_LEVEL:
+        if ((type == TINYDNG_V2_TYPE_SHORT || type == TINYDNG_V2_TYPE_LONG) && count > 0u && count <= 4u) {
+          if (count == 1) {
+            if (type == TINYDNG_V2_TYPE_SHORT) {
+              uint16_t v = 0;
+              tdng_extract_inline_u16(r, value_or_offset, &v);
+              b.white_level[0] = (int32_t)v;
+            } else {
+              b.white_level[0] = (int32_t)value_or_offset;
+            }
+          } else {
+            size_t i;
+            size_t stride = (type == TINYDNG_V2_TYPE_SHORT) ? 2 : 4;
+            size_t base_off = (type == TINYDNG_V2_TYPE_SHORT && count <= 2u) ? 0 : value_or_offset;
+            for (i = 0; i < count; i++) {
+              if (type == TINYDNG_V2_TYPE_SHORT) {
+                uint16_t v = 0;
+                tdng_extract_inline_u16(r, (uint32_t)(base_off + i * stride), &v);
+                b.white_level[i] = (int32_t)v;
+              } else {
+                uint32_t v = 0;
+                tdng_read_u32(r, base_off + i * stride, &v);
+                b.white_level[i] = (int32_t)v;
+              }
+            }
+          }
+          b.has_white_level = 1;
+        }
+        break;
+      case TINYDNG_V2_TAG_COLOR_MATRIX1:
+      case TINYDNG_V2_TAG_COLOR_MATRIX2:
+      case TINYDNG_V2_TAG_FORWARD_MATRIX1:
+      case TINYDNG_V2_TAG_FORWARD_MATRIX2:
+        if ((type == 5 || type == 10) && count == 9u) {
+          double* mat = (tag == TINYDNG_V2_TAG_COLOR_MATRIX1) ? b.color_matrix1 :
+                        (tag == TINYDNG_V2_TAG_COLOR_MATRIX2) ? b.color_matrix2 :
+                        (tag == TINYDNG_V2_TAG_FORWARD_MATRIX1) ? b.forward_matrix1 : b.forward_matrix2;
+          size_t off = value_or_offset;
+          for (size_t j = 0; j < 9; j++) {
+            if (type == 5) {
+              uint32_t num = 0, den = 0;
+              tdng_read_u32(r, off + j * 8, &num);
+              tdng_read_u32(r, off + j * 8 + 4, &den);
+              mat[j] = (den != 0) ? ((double)num / (double)den) : 0.0;
+            } else {
+              int32_t num = 0, den = 0;
+              tdng_read_i32(r, off + j * 8, &num);
+              tdng_read_i32(r, off + j * 8 + 4, &den);
+              mat[j] = (den != 0) ? ((double)num / (double)den) : 0.0;
+            }
+          }
+          b.has_color_matrix = 1;
+        }
+        break;
+      case TINYDNG_V2_TAG_DNG_VERSION:
+        if (type == 1 && count == 4u) {
+          size_t off = (count <= 4u) ? value_or_offset : value_or_offset;
+          if (off + 4 <= r->size) {
+            memcpy(b.dng_version, r->data + off, 4);
+            b.has_dng_version = 1;
+          }
+        }
+        break;
+      case TINYDNG_V2_TAG_AS_SHOT_NEUTRAL:
+        if ((type == 5 || type == 10) && count == 3u) {
+          size_t off = value_or_offset;
+          for (size_t j = 0; j < 3; j++) {
+            if (type == 5) {
+              uint32_t num = 0, den = 0;
+              tdng_read_u32(r, off + j * 8, &num);
+              tdng_read_u32(r, off + j * 8 + 4, &den);
+              b.as_shot_neutral[j] = (den != 0) ? ((double)num / (double)den) : 0.0;
+            } else {
+              int32_t num = 0, den = 0;
+              tdng_read_i32(r, off + j * 8, &num);
+              tdng_read_i32(r, off + j * 8 + 4, &den);
+              b.as_shot_neutral[j] = (den != 0) ? ((double)num / (double)den) : 0.0;
+            }
+          }
+          b.has_as_shot_neutral = 1;
+        }
+        break;
+      case TINYDNG_V2_TAG_CALIBRATION_ILLUMINANT1:
+        if (type == 3 && count == 1u) {
+          b.calibration_illuminant1 = (uint16_t)value_or_offset;
+          b.has_calibration_illuminant1 = 1;
+        }
+        break;
+      case TINYDNG_V2_TAG_CALIBRATION_ILLUMINANT2:
+        if (type == 3 && count == 1u) {
+          b.calibration_illuminant2 = (uint16_t)value_or_offset;
+          b.has_calibration_illuminant2 = 1;
+        }
+        break;
       default:
         break;
     }
@@ -1144,6 +1355,49 @@ static tinydng_v2_status tdng_parse_ifd(
   }
   if (b.has_exif_orientation) {
     image->exif.orientation = b.exif_orientation;
+  }
+
+  if (b.cfa_pattern_dim[0] > 0 && b.cfa_pattern_size > 0 && b.has_cfa_pattern) {
+    image->cfa.cfa_pattern_dim[0] = b.cfa_pattern_dim[0];
+    image->cfa.cfa_pattern_dim[1] = b.cfa_pattern_dim[1];
+    image->cfa.cfa_pattern_size = b.cfa_pattern_size;
+    memcpy(image->cfa.cfa_pattern, b.cfa_pattern, b.cfa_pattern_size);
+  }
+  if (b.has_cfa_plane_color) {
+    memcpy(image->cfa.cfa_plane_color, b.cfa_plane_color, 4);
+  }
+  if (b.has_cfa_layout) {
+    image->cfa.cfa_layout = b.cfa_layout;
+  }
+  if (b.has_black_level) {
+    for (int i = 0; i < 4; i++) image->raw_info.black_level[i] = b.black_level[i];
+    image->raw_info.black_level_present = 1;
+  }
+  if (b.has_white_level) {
+    for (int i = 0; i < 4; i++) image->raw_info.white_level[i] = b.white_level[i];
+    image->raw_info.white_level_present = 1;
+  }
+  if (b.has_color_matrix) {
+    for (int i = 0; i < 9; i++) {
+      image->raw_info.color_matrix1[i] = b.color_matrix1[i];
+      image->raw_info.color_matrix2[i] = b.color_matrix2[i];
+      image->raw_info.forward_matrix1[i] = b.forward_matrix1[i];
+      image->raw_info.forward_matrix2[i] = b.forward_matrix2[i];
+    }
+    image->raw_info.color_matrix_present = 1;
+  }
+  if (b.has_dng_version) {
+    memcpy(image->raw_info.dng_version, b.dng_version, 4);
+  }
+  if (b.has_as_shot_neutral) {
+    for (int i = 0; i < 3; i++) image->raw_info.as_shot_neutral[i] = b.as_shot_neutral[i];
+    image->raw_info.has_as_shot_neutral = 1;
+  }
+  if (b.has_calibration_illuminant1) {
+    image->raw_info.calibration_illuminant1 = b.calibration_illuminant1;
+  }
+  if (b.has_calibration_illuminant2) {
+    image->raw_info.calibration_illuminant2 = b.calibration_illuminant2;
   }
 
   if (load_flags & TINYDNG_V2_LOAD_FLAG_PARSE_IMAGE_AS_IS) {
@@ -1672,6 +1926,18 @@ const char* tinydng_v2_exif_image_description(const tinydng_v2_basic_exif* exif)
 
 uint16_t tinydng_v2_exif_orientation(const tinydng_v2_basic_exif* exif) {
   return exif ? exif->orientation : 0;
+}
+
+const tinydng_v2_cfa_pattern* tinydng_v2_image_cfa(const tinydng_v2_image* img) {
+  if (!img) return NULL;
+  if (img->cfa.cfa_pattern_dim[0] == 0 && img->cfa.cfa_pattern_dim[1] == 0) {
+    return NULL;
+  }
+  return &img->cfa;
+}
+
+const tinydng_v2_raw_info* tinydng_v2_image_raw_info(const tinydng_v2_image* img) {
+  return img ? &img->raw_info : NULL;
 }
 
 static void tdng_write_u16(FILE* fp, uint16_t v, int big_endian) {

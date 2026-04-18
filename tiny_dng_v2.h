@@ -93,6 +93,32 @@ typedef struct tinydng_v2_basic_exif {
   uint16_t orientation;
 } tinydng_v2_basic_exif;
 
+typedef struct tinydng_v2_cfa_pattern {
+  uint16_t cfa_pattern_dim[2];
+  uint8_t cfa_pattern[16];
+  uint8_t cfa_pattern_size;
+  uint8_t cfa_plane_color[4];
+  uint16_t cfa_layout;
+} tinydng_v2_cfa_pattern;
+
+typedef struct tinydng_v2_raw_info {
+  int32_t black_level[4];
+  int32_t white_level[4];
+  uint16_t black_level_present;
+  uint16_t white_level_present;
+  double color_matrix1[9];
+  double color_matrix2[9];
+  double forward_matrix1[9];
+  double forward_matrix2[9];
+  uint16_t color_matrix_present;
+  uint8_t dng_version[4];
+  uint8_t has_dng_version;
+  double as_shot_neutral[3];
+  uint16_t has_as_shot_neutral;
+  uint16_t calibration_illuminant1;
+  uint16_t calibration_illuminant2;
+} tinydng_v2_raw_info;
+
 void tinydng_v2_exif_init(tinydng_v2_basic_exif* exif);
 void tinydng_v2_exif_destroy(tinydng_v2_context* ctx, tinydng_v2_basic_exif* exif);
 const char* tinydng_v2_exif_make(const tinydng_v2_basic_exif* exif);
@@ -119,7 +145,12 @@ typedef struct tinydng_v2_image {
   const tinydng_v2_image_data_segment* segments;
   uint32_t flags;
   tinydng_v2_basic_exif exif;
+  tinydng_v2_cfa_pattern cfa;
+  tinydng_v2_raw_info raw_info;
 } tinydng_v2_image;
+
+const tinydng_v2_cfa_pattern* tinydng_v2_image_cfa(const tinydng_v2_image* img);
+const tinydng_v2_raw_info* tinydng_v2_image_raw_info(const tinydng_v2_image* img);
 
 typedef struct tinydng_v2_write_options {
   uint8_t big_endian;

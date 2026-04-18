@@ -61,3 +61,37 @@ V2 parses the following EXIF tags:
 - `0x0132` (DateTime) - date/time string
 - `0x010E` (ImageDescription) - image description
 - `0x0112` (Orientation) - 1-8, 0=not specified
+
+## Extended Metadata (Phase 2)
+
+V2 parses the following extended metadata tags:
+
+### CFA Pattern Tags
+- `0x828E` (CFARepeatPatternDim) - CFA pattern dimensions (2 values: rows, cols)
+- `0x828F` (CFAPattern) - CFA pattern values
+- `0xC616` (CFAPlaneColor) - CFA plane colors
+- `0xC617` (CFALayout) - CFA layout (1=normal, 2=flipped, etc)
+
+Access via `tinydng_v2_image_cfa()` which returns `tinydng_v2_cfa_pattern*`
+
+### Raw Info Tags
+- `0xC618` (BlackLevel) - Black level values (can be 1 or 4 values)
+- `0xC61A` (WhiteLevel) - White level values (can be 1 or 4 values)
+- `0x828D` (ColorMatrix1) - Color matrix for illuminant 1
+- `0x828C` (ColorMatrix2) - Color matrix for illuminant 2
+- `0x829A` (ForwardMatrix1) - Forward matrix for illuminant 1
+- `0x829B` (ForwardMatrix2) - Forward matrix for illuminant 2
+- `0xC612` (DNGVersion) - DNG version (4 bytes)
+
+Access via `tinydng_v2_image_raw_info()` which returns `tinydng_v2_raw_info*`
+
+### Additional Metadata
+- `0xC61E` (AsShotNeutral) - As-shot neutral values (3 RATIONAL/SRATIONAL)
+- `0xC760` (CalibrationIlluminant1) - Calibration illuminant 1 (SHORT)
+- `0xC761` (CalibrationIlluminant2) - Calibration illuminant 2 (SHORT)
+
+### Type Handling
+- Color matrices support both type 5 (RATIONAL) and type 10 (SRATIONAL)
+- proraw-48mp-02.dng uses SRATIONAL (type 10) for color matrices
+- colorchart.dng uses RATIONAL (type 5) for color matrices
+- Black/White levels support both LONG (type 4) and SHORT (type 3)
