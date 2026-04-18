@@ -146,10 +146,40 @@ int main(int argc, char **argv) {
                   << image.as_shot_neutral[1] << " , "
                   << image.as_shot_neutral[2] << std::endl;
       }
+
+      if (image.profile_name.size()) {
+        std::cout << "profile_name = " << image.profile_name << "\n";
+      }
+
+      if (image.profile_tone_curve.size()) {
+        std::cout << "profile_tone_curve = [";
+        for (size_t k = 0; k < image.profile_tone_curve.size(); k++) {
+          if (k > 0) {
+            std::cout << ", ";
+          }
+          std::cout << image.profile_tone_curve[k];
+        }
+        std::cout << "]\n";
+      }
+
+      if (image.profile_embed_policy > -1) {
+        std::cout << "profile_embed_policy = " << image.profile_embed_policy << "\n";
+      }
+
+      if (image.noise_profile.size()) {
+        std::cout << "noise_profile = [";
+        for (size_t k = 0; k < image.noise_profile.size(); k++) {
+          if (k > 0) {
+            std::cout << ", ";
+          }
+          std::cout << image.noise_profile[k];
+        }
+        std::cout << "]\n";
+      }
     }
 
   } else {
-    std::cout << "Fail to load DNG " << input_filename << std::endl;
+    std::cout << "Failed to load DNG " << input_filename << std::endl;
   }
 
   return EXIT_SUCCESS;
