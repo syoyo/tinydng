@@ -62,6 +62,7 @@
 #define TINYDNG_V2_TAG_DEFAULT_BLACK_RENDER 50713u
 #define TINYDNG_V2_TAG_PROFILE_NAME 50936u
 #define TINYDNG_V2_TAG_PROFILE_TONE_CURVE 50940u
+#define TINYDNG_V2_TAG_NOISE_PROFILE 51041u
 
 #define TINYDNG_V2_COMP_NONE 1u
 #define TINYDNG_V2_COMP_LZW 5u
@@ -175,6 +176,8 @@ typedef struct tdng_ifd_build {
   char* profile_name;
   double profile_tone_curve[16];
   uint16_t profile_tone_curve_count;
+  double noise_profile[8];
+  uint16_t noise_profile_count;
 } tdng_ifd_build;
 
 static void tdng_destroy_image_payload(tinydng_v2_context* ctx,
@@ -455,6 +458,24 @@ static int tdng_read_i32(const tdng_reader* r, size_t at, int32_t* out) {
     *out = ((int32_t)r->data[at + 3] << 24) |
            ((int32_t)r->data[at + 2] << 16) |
            ((int32_t)r->data[at + 1] << 8) | (int32_t)r->data[at];
+  }
+  return 1;
+}
+
+static int tdng_read_u64(const tdng_reader* r, size_t at, uint64_t* out) {
+  if (!r || !out || (at + 8u > r->size)) {
+    return 0;
+  }
+  if (r->big_endian) {
+    *out = ((uint64_t)r->data[at] << 56) | ((uint64_t)r->data[at + 1] << 48) |
+           ((uint64_t)r->data[at + 2] << 40) | ((uint64_t)r->data[at + 3] << 32) |
+           ((uint64_t)r->data[at + 4] << 24) | ((uint64_t)r->data[at + 5] << 16) |
+           ((uint64_t)r->data[at + 6] << 8) | (uint64_t)r->data[at + 7];
+  } else {
+    *out = ((uint64_t)r->data[at + 7] << 56) | ((uint64_t)r->data[at + 6] << 48) |
+           ((uint64_t)r->data[at + 5] << 40) | ((uint64_t)r->data[at + 4] << 32) |
+           ((uint64_t)r->data[at + 3] << 24) | ((uint64_t)r->data[at + 2] << 16) |
+           ((uint64_t)r->data[at + 1] << 8) | (uint64_t)r->data[at];
   }
   return 1;
 }
@@ -1286,6 +1307,18 @@ static tinydng_v2_status tdng_parse_ifd(
           b.profile_tone_curve_count = n;
         }
         break;
+      case TINYDNG_V2_TAG_NOISE_PROFILE:
+        if (type == 12 && count > 0u && count <= 8u) {
+          size_t off = value_or_offset;
+          uint16_t n = (uint16_t)(count < 8u ? count : 8u);
+          for (uint16_t j = 0; j < n; j++) {
+            uint64_t val = 0;
+            tdng_read_u64(r, off + j * 8, &val);
+            b.noise_profile[j] = *(double*)&val;
+          }
+          b.noise_profile_count = n;
+        }
+        break;
       default:
         break;
     }
@@ -1462,6 +1495,12 @@ static tinydng_v2_status tdng_parse_ifd(
       image->raw_info.profile_tone_curve[i] = b.profile_tone_curve[i];
     }
     image->raw_info.profile_tone_curve_count = b.profile_tone_curve_count;
+  }
+  if (b.noise_profile_count > 0) {
+    for (uint16_t i = 0; i < b.noise_profile_count; i++) {
+      image->raw_info.noise_profile[i] = b.noise_profile[i];
+    }
+    image->raw_info.noise_profile_count = b.noise_profile_count;
   }
 
   if (load_flags & TINYDNG_V2_LOAD_FLAG_PARSE_IMAGE_AS_IS) {

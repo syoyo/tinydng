@@ -95,6 +95,7 @@ Access via `tinydng_v2_image_raw_info()` which returns `tinydng_v2_raw_info*`
 - `0xC709` (DefaultBlackRender) - Default black render (SHORT)
 - `0xC718` (ProfileName) - Profile name (ASCII string)
 - `0xC72C` (ProfileToneCurve) - Profile tone curve (up to 16 doubles)
+- `0xC741` (NoiseProfile) - Noise profile (up to 8 doubles, type 12)
 
 ### Type Handling
 - Color matrices support both type 5 (RATIONAL) and type 10 (SRATIONAL)
