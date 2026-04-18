@@ -68,6 +68,14 @@ int main(int argc, char** argv) {
       printf("  CFA plane colors: %u,%u,%u,%u\n",
              cfa->cfa_plane_color[0], cfa->cfa_plane_color[1],
              cfa->cfa_plane_color[2], cfa->cfa_plane_color[3]);
+      if (cfa->cfa_pattern_size > 0) {
+        printf("  CFA pattern: ");
+        for (size_t p = 0; p < cfa->cfa_pattern_size; p++) {
+          if (p > 0) printf(",");
+          printf("%u", cfa->cfa_pattern[p]);
+        }
+        printf("\n");
+      }
     }
     const tinydng_v2_raw_info* raw = tinydng_v2_image_raw_info(img);
     if (raw) {

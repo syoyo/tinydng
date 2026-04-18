@@ -67,12 +67,14 @@ V2 parses the following EXIF tags:
 V2 parses the following extended metadata tags:
 
 ### CFA Pattern Tags
-- `0x828E` (CFARepeatPatternDim) - CFA pattern dimensions (2 values: rows, cols)
+- `0x828E` (CFARepeatPatternDim) - CFA pattern dimensions (rows, cols)
 - `0x828F` (CFAPattern) - CFA pattern values
 - `0xC616` (CFAPlaneColor) - CFA plane colors
 - `0xC617` (CFALayout) - CFA layout (1=normal, 2=flipped, etc)
 
 Access via `tinydng_v2_image_cfa()` which returns `tinydng_v2_cfa_pattern*`
+
+Note: CFA data is typically in SubIFDs, not IFD0. Use as-is mode to see CFA pattern.
 
 ### Raw Info Tags
 - `0xC618` (BlackLevel) - Black level values (can be 1 or 4 values)
@@ -89,6 +91,7 @@ Access via `tinydng_v2_image_raw_info()` which returns `tinydng_v2_raw_info*`
 - `0xC61E` (AsShotNeutral) - As-shot neutral values (3 RATIONAL/SRATIONAL)
 - `0xC760` (CalibrationIlluminant1) - Calibration illuminant 1 (SHORT)
 - `0xC761` (CalibrationIlluminant2) - Calibration illuminant 2 (SHORT)
+- `0xC705` (ActiveArea) - Active area (4 LONG values: top, left, bottom, right)
 
 ### Type Handling
 - Color matrices support both type 5 (RATIONAL) and type 10 (SRATIONAL)

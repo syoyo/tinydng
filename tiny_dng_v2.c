@@ -58,6 +58,7 @@
 #define TINYDNG_V2_TAG_AS_SHOT_NEUTRAL 50728u
 #define TINYDNG_V2_TAG_CALIBRATION_ILLUMINANT1 50778u
 #define TINYDNG_V2_TAG_CALIBRATION_ILLUMINANT2 50779u
+#define TINYDNG_V2_TAG_ACTIVE_AREA 50829u
 
 #define TINYDNG_V2_COMP_NONE 1u
 #define TINYDNG_V2_COMP_LZW 5u
@@ -164,6 +165,8 @@ typedef struct tdng_ifd_build {
   uint8_t has_calibration_illuminant1;
   uint16_t calibration_illuminant2;
   uint8_t has_calibration_illuminant2;
+  uint32_t active_area[4];
+  uint8_t has_active_area;
 } tdng_ifd_build;
 
 static void tdng_destroy_image_payload(tinydng_v2_context* ctx,
@@ -1239,6 +1242,17 @@ static tinydng_v2_status tdng_parse_ifd(
           b.has_calibration_illuminant2 = 1;
         }
         break;
+      case TINYDNG_V2_TAG_ACTIVE_AREA:
+        if ((type == 3 || type == 4) && count == 4u) {
+          size_t off = value_or_offset;
+          for (size_t j = 0; j < 4; j++) {
+            uint32_t val = 0;
+            tdng_read_u32(r, off + j * 4, &val);
+            b.active_area[j] = val;
+          }
+          b.has_active_area = 1;
+        }
+        break;
       default:
         break;
     }
@@ -1398,6 +1412,10 @@ static tinydng_v2_status tdng_parse_ifd(
   }
   if (b.has_calibration_illuminant2) {
     image->raw_info.calibration_illuminant2 = b.calibration_illuminant2;
+  }
+  if (b.has_active_area) {
+    for (int i = 0; i < 4; i++) image->raw_info.active_area[i] = b.active_area[i];
+    image->raw_info.has_active_area = 1;
   }
 
   if (load_flags & TINYDNG_V2_LOAD_FLAG_PARSE_IMAGE_AS_IS) {
