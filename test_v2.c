@@ -94,6 +94,10 @@ int main(int argc, char** argv) {
                raw->color_matrix1[0], raw->color_matrix1[1], raw->color_matrix1[2],
                raw->color_matrix1[3], raw->color_matrix1[4], raw->color_matrix1[5],
                raw->color_matrix1[6], raw->color_matrix1[7], raw->color_matrix1[8]);
+        printf("  forward_matrix1: %.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n",
+               raw->forward_matrix1[0], raw->forward_matrix1[1], raw->forward_matrix1[2],
+               raw->forward_matrix1[3], raw->forward_matrix1[4], raw->forward_matrix1[5],
+               raw->forward_matrix1[6], raw->forward_matrix1[7], raw->forward_matrix1[8]);
       }
       if (raw->has_dng_version) {
         printf("  DNG version: %u.%u.%u.%u\n",
