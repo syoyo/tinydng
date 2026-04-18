@@ -63,6 +63,8 @@
 #define TINYDNG_V2_TAG_PROFILE_NAME 50936u
 #define TINYDNG_V2_TAG_PROFILE_TONE_CURVE 50940u
 #define TINYDNG_V2_TAG_NOISE_PROFILE 51041u
+#define TINYDNG_V2_TAG_CAMERA_CALIBRATION1 50723u
+#define TINYDNG_V2_TAG_CAMERA_CALIBRATION2 50724u
 
 #define TINYDNG_V2_COMP_NONE 1u
 #define TINYDNG_V2_COMP_LZW 5u
@@ -178,6 +180,9 @@ typedef struct tdng_ifd_build {
   uint16_t profile_tone_curve_count;
   double noise_profile[8];
   uint16_t noise_profile_count;
+  double camera_calibration1[9];
+  double camera_calibration2[9];
+  uint8_t has_camera_calibration;
 } tdng_ifd_build;
 
 static void tdng_destroy_image_payload(tinydng_v2_context* ctx,
@@ -1319,6 +1324,27 @@ static tinydng_v2_status tdng_parse_ifd(
           b.noise_profile_count = n;
         }
         break;
+      case TINYDNG_V2_TAG_CAMERA_CALIBRATION1:
+      case TINYDNG_V2_TAG_CAMERA_CALIBRATION2:
+        if ((type == 5 || type == 10) && count == 9u) {
+          double* mat = (tag == TINYDNG_V2_TAG_CAMERA_CALIBRATION1) ? b.camera_calibration1 : b.camera_calibration2;
+          size_t off = value_or_offset;
+          for (size_t j = 0; j < 9; j++) {
+            if (type == 5) {
+              uint32_t num = 0, den = 0;
+              tdng_read_u32(r, off + j * 8, &num);
+              tdng_read_u32(r, off + j * 8 + 4, &den);
+              mat[j] = (den != 0) ? ((double)num / (double)den) : 0.0;
+            } else {
+              int32_t num = 0, den = 0;
+              tdng_read_i32(r, off + j * 8, &num);
+              tdng_read_i32(r, off + j * 8 + 4, &den);
+              mat[j] = (den != 0) ? ((double)num / (double)den) : 0.0;
+            }
+          }
+          b.has_camera_calibration = 1;
+        }
+        break;
       default:
         break;
     }
@@ -1501,6 +1527,13 @@ static tinydng_v2_status tdng_parse_ifd(
       image->raw_info.noise_profile[i] = b.noise_profile[i];
     }
     image->raw_info.noise_profile_count = b.noise_profile_count;
+  }
+  if (b.has_camera_calibration) {
+    for (int i = 0; i < 9; i++) {
+      image->raw_info.camera_calibration1[i] = b.camera_calibration1[i];
+      image->raw_info.camera_calibration2[i] = b.camera_calibration2[i];
+    }
+    image->raw_info.has_camera_calibration = 1;
   }
 
   if (load_flags & TINYDNG_V2_LOAD_FLAG_PARSE_IMAGE_AS_IS) {
