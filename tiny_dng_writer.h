@@ -2213,9 +2213,10 @@ bool DNGImage::SetImageData(const unsigned char *data, const size_t data_len) {
   // NOTE: STRIP_OFFSET tag will be written at `WriteIFDToStream()`.
 
   {
-    unsigned int count = 1;
+    unsigned int count = 1; // TODO: support 2: N = SamplesPerPixel * StripsPerImage for PlanarConfiguration equal to 2
     unsigned int bytes = static_cast<unsigned int>(data_len);
 
+    // TODO: Ue TIFF_SHORT for small image(bytes < 65535?)
     bool ret = WriteTIFFTag(
         static_cast<unsigned short>(TIFFTAG_STRIP_BYTE_COUNTS), TIFF_LONG,
         count, reinterpret_cast<const unsigned char *>(&bytes), &ifd_tags_,
