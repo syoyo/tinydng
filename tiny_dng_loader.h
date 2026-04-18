@@ -2062,6 +2062,17 @@ typedef enum {
   TAG_SEMANTIC_NAME = 52526,  // Type: ASCII, Count: String length including
                               // null, Value: null-terminated string
 
+  // GeoTIFF
+  // http://geotiff.maptools.org/spec/geotiff2.4.html
+  // http://geotiff.maptools.org/spec/geotiff2.6.html#2.6
+
+  TAG_GEOTIFF_MODEL_TILEPOINT = 33922, // double, N = 6*K(K = number of tilepoints)
+  TAG_GEOTIFF_MODEL_PIXEL_SCALE = 33550, // double, N = 3
+  TAG_GEOTIFF_MODEL_TRANSFORMATION = 34264, // double, N = 16
+  TAG_GEOTIFF_GEO_KEY_DIRECTORY = 34735, // short, N = variable(>= 4)
+  TAG_GEOTIFF_GEO_DOUBLE_PARAMS = 34736, // double[n]
+  TAG_GEOTIFF_GEO_ASCII_PARAMS = 34737, // string
+
   TAG_INVALID = 65535
 } TiffTag;
 
