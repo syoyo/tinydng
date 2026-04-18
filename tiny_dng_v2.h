@@ -78,6 +78,32 @@ typedef enum tinydng_v2_image_flags {
   TINYDNG_V2_IMAGE_FLAG_DATA_IS_FILE_VIEW = 1u << 1
 } tinydng_v2_image_flags;
 
+typedef struct tinydng_v2_string_view {
+  const char* data;
+  size_t length;
+  uint8_t is_owned;
+} tinydng_v2_string_view;
+
+typedef struct tinydng_v2_basic_exif {
+  char* make;
+  char* model;
+  char* software;
+  char* datetime;
+  char* image_description;
+  uint16_t orientation;
+} tinydng_v2_basic_exif;
+
+void tinydng_v2_exif_init(tinydng_v2_basic_exif* exif);
+void tinydng_v2_exif_destroy(tinydng_v2_context* ctx, tinydng_v2_basic_exif* exif);
+const char* tinydng_v2_exif_make(const tinydng_v2_basic_exif* exif);
+const char* tinydng_v2_exif_model(const tinydng_v2_basic_exif* exif);
+const char* tinydng_v2_exif_software(const tinydng_v2_basic_exif* exif);
+const char* tinydng_v2_exif_datetime(const tinydng_v2_basic_exif* exif);
+const char* tinydng_v2_exif_image_description(const tinydng_v2_basic_exif* exif);
+uint16_t tinydng_v2_exif_orientation(const tinydng_v2_basic_exif* exif);
+
+const tinydng_v2_basic_exif* tinydng_v2_document_global_exif(const tinydng_v2_document* doc);
+
 typedef struct tinydng_v2_image {
   uint32_t width;
   uint32_t height;
@@ -92,6 +118,7 @@ typedef struct tinydng_v2_image {
   size_t segment_count;
   const tinydng_v2_image_data_segment* segments;
   uint32_t flags;
+  tinydng_v2_basic_exif exif;
 } tinydng_v2_image;
 
 typedef struct tinydng_v2_write_options {

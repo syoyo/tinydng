@@ -38,6 +38,12 @@
 #define TINYDNG_V2_TAG_TILE_BYTE_COUNTS 325u
 #define TINYDNG_V2_TAG_JPEG_IF_BYTE_COUNT 514u
 #define TINYDNG_V2_TAG_SAMPLE_FORMAT 339u
+#define TINYDNG_V2_TAG_ORIENTATION 274u
+#define TINYDNG_V2_TAG_MAKE 271u
+#define TINYDNG_V2_TAG_MODEL 272u
+#define TINYDNG_V2_TAG_SOFTWARE 305u
+#define TINYDNG_V2_TAG_DATETIME 306u
+#define TINYDNG_V2_TAG_IMAGEDESCRIPTION 270u
 
 #define TINYDNG_V2_COMP_NONE 1u
 #define TINYDNG_V2_COMP_LZW 5u
@@ -67,6 +73,7 @@ struct tinydng_v2_context {
 struct tinydng_v2_document {
   size_t image_count;
   tinydng_v2_image* images;
+  tinydng_v2_basic_exif global_exif;
   const uint8_t* mapped_data;
   size_t mapped_size;
   int mapped_fd;
@@ -106,6 +113,18 @@ typedef struct tdng_ifd_build {
   uint8_t has_bps;
   uint8_t has_spp;
   uint8_t has_compression;
+  char* exif_make;
+  char* exif_model;
+  char* exif_software;
+  char* exif_datetime;
+  char* exif_image_description;
+  uint16_t exif_orientation;
+  uint8_t has_exif_make;
+  uint8_t has_exif_model;
+  uint8_t has_exif_software;
+  uint8_t has_exif_datetime;
+  uint8_t has_exif_image_description;
+  uint8_t has_exif_orientation;
 } tdng_ifd_build;
 
 static void tdng_destroy_image_payload(tinydng_v2_context* ctx,
@@ -409,6 +428,21 @@ static int tdng_extract_inline_u16(const tdng_reader* r, uint32_t v, uint16_t* o
     *out = (uint16_t)(v & 0xFFFFu);
   }
   return 1;
+}
+
+static char* tdng_read_string(tinydng_v2_context* ctx, const tdng_reader* r,
+                              size_t offset, size_t count,
+                              tinydng_v2_error* err) {
+  if (!ctx || !r) return NULL;
+  if (count == 0) return NULL;
+  if (offset + count > r->size) return NULL;
+
+  char* str = (char*)tdng_ctx_alloc(ctx, count + 1, err);
+  if (!str) return NULL;
+
+  memcpy(str, r->data + offset, count);
+  str[count] = '\0';
+  return str;
 }
 
 static int tdng_read_u32_array(tinydng_v2_context* ctx, const tdng_reader* r,
@@ -953,6 +987,47 @@ static tinydng_v2_status tdng_parse_ifd(
           tdng_extract_inline_u16(r, value_or_offset, &b.sample_format);
         }
         break;
+      case TINYDNG_V2_TAG_MAKE:
+        if (type == 2 && count > 0u) {
+          size_t str_off = (count <= 4u) ? value_or_offset : value_or_offset;
+          b.exif_make = tdng_read_string(ctx, r, str_off, (size_t)count, err);
+          b.has_exif_make = (b.exif_make != NULL) ? 1 : 0;
+        }
+        break;
+      case TINYDNG_V2_TAG_MODEL:
+        if (type == 2 && count > 0u) {
+          size_t str_off = (count <= 4u) ? value_or_offset : value_or_offset;
+          b.exif_model = tdng_read_string(ctx, r, str_off, (size_t)count, err);
+          b.has_exif_model = (b.exif_model != NULL) ? 1 : 0;
+        }
+        break;
+      case TINYDNG_V2_TAG_SOFTWARE:
+        if (type == 2 && count > 0u) {
+          size_t str_off = (count <= 4u) ? value_or_offset : value_or_offset;
+          b.exif_software = tdng_read_string(ctx, r, str_off, (size_t)count, err);
+          b.has_exif_software = (b.exif_software != NULL) ? 1 : 0;
+        }
+        break;
+      case TINYDNG_V2_TAG_DATETIME:
+        if (type == 2 && count > 0u) {
+          size_t str_off = (count <= 4u) ? value_or_offset : value_or_offset;
+          b.exif_datetime = tdng_read_string(ctx, r, str_off, (size_t)count, err);
+          b.has_exif_datetime = (b.exif_datetime != NULL) ? 1 : 0;
+        }
+        break;
+      case TINYDNG_V2_TAG_IMAGEDESCRIPTION:
+        if (type == 2 && count > 0u) {
+          size_t str_off = (count <= 4u) ? value_or_offset : value_or_offset;
+          b.exif_image_description = tdng_read_string(ctx, r, str_off, (size_t)count, err);
+          b.has_exif_image_description = (b.exif_image_description != NULL) ? 1 : 0;
+        }
+        break;
+      case TINYDNG_V2_TAG_ORIENTATION:
+        if ((type == TINYDNG_V2_TYPE_SHORT) && (count == 1u)) {
+          tdng_extract_inline_u16(r, value_or_offset, &b.exif_orientation);
+          b.has_exif_orientation = 1;
+        }
+        break;
       default:
         break;
     }
@@ -1046,6 +1121,30 @@ static tinydng_v2_status tdng_parse_ifd(
   image->bits_per_sample = b.bits_per_sample;
   image->compression = b.compression;
   image->sample_format = b.sample_format;
+
+  if (b.has_exif_make && b.exif_make) {
+    image->exif.make = b.exif_make;
+    b.exif_make = NULL;
+  }
+  if (b.has_exif_model && b.exif_model) {
+    image->exif.model = b.exif_model;
+    b.exif_model = NULL;
+  }
+  if (b.has_exif_software && b.exif_software) {
+    image->exif.software = b.exif_software;
+    b.exif_software = NULL;
+  }
+  if (b.has_exif_datetime && b.exif_datetime) {
+    image->exif.datetime = b.exif_datetime;
+    b.exif_datetime = NULL;
+  }
+  if (b.has_exif_image_description && b.exif_image_description) {
+    image->exif.image_description = b.exif_image_description;
+    b.exif_image_description = NULL;
+  }
+  if (b.has_exif_orientation) {
+    image->exif.orientation = b.exif_orientation;
+  }
 
   if (load_flags & TINYDNG_V2_LOAD_FLAG_PARSE_IMAGE_AS_IS) {
     if (!tdng_parse_image_as_is(ctx, r, &b, image, err, ifd_index)) {
@@ -1227,6 +1326,31 @@ static tinydng_v2_status tdng_parse_document(tinydng_v2_context* ctx,
       return st;
     }
 
+    // Copy IFD0 exif data to document global exif (only on first IFD)
+    if (ifd_index == 0 && images[0].exif.make) {
+      doc->global_exif.make = images[0].exif.make;
+      images[0].exif.make = NULL;
+    }
+    if (ifd_index == 0 && images[0].exif.model) {
+      doc->global_exif.model = images[0].exif.model;
+      images[0].exif.model = NULL;
+    }
+    if (ifd_index == 0 && images[0].exif.software) {
+      doc->global_exif.software = images[0].exif.software;
+      images[0].exif.software = NULL;
+    }
+    if (ifd_index == 0 && images[0].exif.datetime) {
+      doc->global_exif.datetime = images[0].exif.datetime;
+      images[0].exif.datetime = NULL;
+    }
+    if (ifd_index == 0 && images[0].exif.image_description) {
+      doc->global_exif.image_description = images[0].exif.image_description;
+      images[0].exif.image_description = NULL;
+    }
+    if (ifd_index == 0 && images[0].exif.orientation) {
+      doc->global_exif.orientation = images[0].exif.orientation;
+    }
+
     // Only count this IFD as an image if it has valid dimensions.
     // Skipped IFDs (e.g., thumbnail-only IFDs in CR2) have width/height=0.
     if (images[ifd_index].width != 0u && images[ifd_index].height != 0u) {
@@ -1267,6 +1391,11 @@ static void tdng_destroy_image_payload(tinydng_v2_context* ctx,
   if (image->segments) {
     tdng_ctx_free(ctx, (void*)(uintptr_t)image->segments);
   }
+  if (image->exif.make) { tdng_ctx_free(ctx, image->exif.make); image->exif.make = NULL; }
+  if (image->exif.model) { tdng_ctx_free(ctx, image->exif.model); image->exif.model = NULL; }
+  if (image->exif.software) { tdng_ctx_free(ctx, image->exif.software); image->exif.software = NULL; }
+  if (image->exif.datetime) { tdng_ctx_free(ctx, image->exif.datetime); image->exif.datetime = NULL; }
+  if (image->exif.image_description) { tdng_ctx_free(ctx, image->exif.image_description); image->exif.image_description = NULL; }
   image->data = NULL;
   image->segments = NULL;
   image->data_size = 0;
@@ -1453,6 +1582,11 @@ void tinydng_v2_document_destroy(tinydng_v2_context* ctx, tinydng_v2_document* d
     }
     tdng_ctx_free(ctx, doc->images);
   }
+  if (doc->global_exif.make) { tdng_ctx_free(ctx, doc->global_exif.make); }
+  if (doc->global_exif.model) { tdng_ctx_free(ctx, doc->global_exif.model); }
+  if (doc->global_exif.software) { tdng_ctx_free(ctx, doc->global_exif.software); }
+  if (doc->global_exif.datetime) { tdng_ctx_free(ctx, doc->global_exif.datetime); }
+  if (doc->global_exif.image_description) { tdng_ctx_free(ctx, doc->global_exif.image_description); }
 #if TINYDNG_V2_HAS_MMAP
   if (doc->owns_mmap && doc->mapped_data && doc->mapped_size > 0u) {
     munmap((void*)(uintptr_t)doc->mapped_data, doc->mapped_size);
@@ -1491,6 +1625,53 @@ const uint8_t* tinydng_v2_document_memory(const tinydng_v2_document* doc,
     *size = doc->mapped_size;
   }
   return doc->mapped_data;
+}
+
+const tinydng_v2_basic_exif* tinydng_v2_document_global_exif(const tinydng_v2_document* doc) {
+  return doc ? &doc->global_exif : NULL;
+}
+
+void tinydng_v2_exif_init(tinydng_v2_basic_exif* exif) {
+  if (!exif) return;
+  exif->make = NULL;
+  exif->model = NULL;
+  exif->software = NULL;
+  exif->datetime = NULL;
+  exif->image_description = NULL;
+  exif->orientation = 0;
+}
+
+void tinydng_v2_exif_destroy(tinydng_v2_context* ctx, tinydng_v2_basic_exif* exif) {
+  if (!ctx || !exif) return;
+  if (exif->make) { tdng_ctx_free(ctx, exif->make); exif->make = NULL; }
+  if (exif->model) { tdng_ctx_free(ctx, exif->model); exif->model = NULL; }
+  if (exif->software) { tdng_ctx_free(ctx, exif->software); exif->software = NULL; }
+  if (exif->datetime) { tdng_ctx_free(ctx, exif->datetime); exif->datetime = NULL; }
+  if (exif->image_description) { tdng_ctx_free(ctx, exif->image_description); exif->image_description = NULL; }
+}
+
+const char* tinydng_v2_exif_make(const tinydng_v2_basic_exif* exif) {
+  return exif ? exif->make : NULL;
+}
+
+const char* tinydng_v2_exif_model(const tinydng_v2_basic_exif* exif) {
+  return exif ? exif->model : NULL;
+}
+
+const char* tinydng_v2_exif_software(const tinydng_v2_basic_exif* exif) {
+  return exif ? exif->software : NULL;
+}
+
+const char* tinydng_v2_exif_datetime(const tinydng_v2_basic_exif* exif) {
+  return exif ? exif->datetime : NULL;
+}
+
+const char* tinydng_v2_exif_image_description(const tinydng_v2_basic_exif* exif) {
+  return exif ? exif->image_description : NULL;
+}
+
+uint16_t tinydng_v2_exif_orientation(const tinydng_v2_basic_exif* exif) {
+  return exif ? exif->orientation : 0;
 }
 
 static void tdng_write_u16(FILE* fp, uint16_t v, int big_endian) {
