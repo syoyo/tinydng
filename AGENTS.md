@@ -92,6 +92,8 @@ Access via `tinydng_v2_image_raw_info()` which returns `tinydng_v2_raw_info*`
 - `0xC760` (CalibrationIlluminant1) - Calibration illuminant 1 (SHORT)
 - `0xC761` (CalibrationIlluminant2) - Calibration illuminant 2 (SHORT)
 - `0xC705` (ActiveArea) - Active area (4 LONG values: top, left, bottom, right)
+- `0xC709` (DefaultBlackRender) - Default black render (SHORT)
+- `0xC718` (ProfileName) - Profile name (ASCII string)
 
 ### Type Handling
 - Color matrices support both type 5 (RATIONAL) and type 10 (SRATIONAL)

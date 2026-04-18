@@ -119,6 +119,9 @@ typedef struct tinydng_v2_raw_info {
   uint16_t calibration_illuminant2;
   uint32_t active_area[4];
   uint8_t has_active_area;
+  uint16_t default_black_render;
+  uint8_t has_default_black_render;
+  char* profile_name;
 } tinydng_v2_raw_info;
 
 void tinydng_v2_exif_init(tinydng_v2_basic_exif* exif);

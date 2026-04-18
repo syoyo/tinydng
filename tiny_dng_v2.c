@@ -59,6 +59,8 @@
 #define TINYDNG_V2_TAG_CALIBRATION_ILLUMINANT1 50778u
 #define TINYDNG_V2_TAG_CALIBRATION_ILLUMINANT2 50779u
 #define TINYDNG_V2_TAG_ACTIVE_AREA 50829u
+#define TINYDNG_V2_TAG_DEFAULT_BLACK_RENDER 50713u
+#define TINYDNG_V2_TAG_PROFILE_NAME 50936u
 
 #define TINYDNG_V2_COMP_NONE 1u
 #define TINYDNG_V2_COMP_LZW 5u
@@ -167,6 +169,9 @@ typedef struct tdng_ifd_build {
   uint8_t has_calibration_illuminant2;
   uint32_t active_area[4];
   uint8_t has_active_area;
+  uint16_t default_black_render;
+  uint8_t has_default_black_render;
+  char* profile_name;
 } tdng_ifd_build;
 
 static void tdng_destroy_image_payload(tinydng_v2_context* ctx,
@@ -1253,6 +1258,21 @@ static tinydng_v2_status tdng_parse_ifd(
           b.has_active_area = 1;
         }
         break;
+      case TINYDNG_V2_TAG_DEFAULT_BLACK_RENDER:
+        if (type == 3 && count == 1u) {
+          b.default_black_render = (uint16_t)value_or_offset;
+          b.has_default_black_render = 1;
+        }
+        break;
+      case TINYDNG_V2_TAG_PROFILE_NAME:
+        if (type == 2 && count > 0u && count < 256u) {
+          size_t off = value_or_offset;
+          if (off + count <= r->size) {
+            b.profile_name = (char*)(r->data + off);
+            b.profile_name[count - 1] = '\0';
+          }
+        }
+        break;
       default:
         break;
     }
@@ -1416,6 +1436,13 @@ static tinydng_v2_status tdng_parse_ifd(
   if (b.has_active_area) {
     for (int i = 0; i < 4; i++) image->raw_info.active_area[i] = b.active_area[i];
     image->raw_info.has_active_area = 1;
+  }
+  if (b.has_default_black_render) {
+    image->raw_info.default_black_render = b.default_black_render;
+    image->raw_info.has_default_black_render = 1;
+  }
+  if (b.profile_name) {
+    image->raw_info.profile_name = b.profile_name;
   }
 
   if (load_flags & TINYDNG_V2_LOAD_FLAG_PARSE_IMAGE_AS_IS) {
