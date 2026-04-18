@@ -459,6 +459,13 @@ static int tdng_read_u32_array(tinydng_v2_context* ctx, const tdng_reader* r,
     for (i = 0; i < (size_t)count; i++) {
       if (type == TINYDNG_V2_TYPE_SHORT) {
         uint16_t v16 = 0;
+        if (offset > SIZE_MAX - (i * 2u)) {
+          tdng_set_error(err, TINYDNG_V2_STATUS_BOUNDS_ERROR,
+                         TINYDNG_V2_STAGE_PARSE_IFD, ifd_index, tag,
+                         value_or_offset, "overflow in offset calculation");
+          tdng_ctx_free(ctx, arr);
+          return 0;
+        }
         if (!tdng_read_u16(r, offset + i * 2u, &v16)) {
           tdng_set_error(err, TINYDNG_V2_STATUS_BOUNDS_ERROR,
                          TINYDNG_V2_STAGE_PARSE_IFD, ifd_index, tag,
@@ -469,6 +476,13 @@ static int tdng_read_u32_array(tinydng_v2_context* ctx, const tdng_reader* r,
         arr[i] = (uint32_t)v16;
       } else if (type == TINYDNG_V2_TYPE_LONG) {
         uint32_t v32 = 0;
+        if (offset > SIZE_MAX - (i * 4u)) {
+          tdng_set_error(err, TINYDNG_V2_STATUS_BOUNDS_ERROR,
+                         TINYDNG_V2_STAGE_PARSE_IFD, ifd_index, tag,
+                         value_or_offset, "overflow in offset calculation");
+          tdng_ctx_free(ctx, arr);
+          return 0;
+        }
         if (!tdng_read_u32(r, offset + i * 4u, &v32)) {
           tdng_set_error(err, TINYDNG_V2_STATUS_BOUNDS_ERROR,
                          TINYDNG_V2_STAGE_PARSE_IFD, ifd_index, tag,
