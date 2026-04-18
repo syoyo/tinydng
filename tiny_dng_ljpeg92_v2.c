@@ -46,6 +46,7 @@ typedef struct _ljp {
   int y;           // Height
   int bits;        // Bit depth
   int components;  // Number of components (Nf)
+  int sof_marker;  // The SOF marker found (0xC0..0xC3, or 0 if none)
   int skiplen;     // Pixels to skip after each output row
   u16* linearize;  // Linearization table (or NULL)
   int linlen;
@@ -196,9 +197,10 @@ static int parseHuff(ljp* self) {
   // Allow hufflen >= 19 + total_codes to tolerate trailing padding some
   // encoders emit; reject only if the declared length is too short.
   if (hufflen - 19 < total_codes) return TDNG_LJ92_ERROR_CORRUPT;
-  for (int i = 0; i < total_codes; i++) {
-    if (huffvals[i] > 16) return TDNG_LJ92_ERROR_CORRUPT;  // SSSS in [0,16]
-  }
+  // Note: symbols > 16 are allowed for baseline JPEG (DC/AC coefficient
+  // categories); lossless JPEG uses only 0-16. We don't reject here because
+  // the SOF marker type distinguishes the stream. If this is a baseline JPEG,
+  // findSoI will return NOT_LOSSLESS before decoding starts.
 
   int maxbits = 16;
   while (maxbits > 0 && !bits[maxbits]) maxbits--;
@@ -231,8 +233,11 @@ static int parseHuff(ljp* self) {
   return TDNG_LJ92_ERROR_NONE;
 }
 
-static int parseSof3(ljp* self) {
-  // SOF3: Lf(2) P(1) Y(2) X(2) Nf(1) [Ci Hi/Vi Tqi]*Nf.
+static int parseSof3(ljp* self, int marker) {
+  // SOF markers: 0xC0 (SOF0 baseline), 0xC1 (SOF1 extended sequential),
+  // 0xC2 (SOF2 progressive), 0xC3 (SOF3 lossless).
+  // All share the same frame header format:
+  //   Lf(2) P(1) Y(2) X(2) Nf(1) [Ci Hi/Vi Tqi]*Nf
   // A2: header alone is 8 bytes past the current ix.
   if (self->ix + 8 > self->datalen) return TDNG_LJ92_ERROR_CORRUPT;
   int Lf = BEH(self->data[self->ix]);
@@ -242,6 +247,7 @@ static int parseSof3(ljp* self) {
   self->y = BEH(self->data[self->ix + 3]);
   self->x = BEH(self->data[self->ix + 5]);
   self->components = self->data[self->ix + 7];
+  self->sof_marker = marker;
   self->ix += Lf;
 
   // A4: bitdepth must be in [2,16] so that 1 << (bits-1) is defined.
@@ -756,7 +762,16 @@ static int parseImage(ljp* self) {
       TINY_DNG_DPRINTF("Parse huffman table.\n");
       ret = parseHuff(self);
     } else if (nextMarker == 0xc3) {
-      ret = parseSof3(self);
+      ret = parseSof3(self, 0xC3);
+    } else if (nextMarker >= 0xc0 && nextMarker <= 0xcf && nextMarker != 0xc4) {
+      // SOF0 (0xC0), SOF1 (0xC1), SOF2 (0xC2): baseline/progressive DCT.
+      // Parse the frame header to extract dimensions and bitdepth, but the
+      // stream cannot be decoded as lossless JPEG.
+      ret = parseSof3(self, nextMarker);
+    } else if (nextMarker == 0xdb) {
+      // DQT (Define Quantization Table) - skip it; baseline JPEG uses DCT
+      // which we don't support. Just skip the block.
+      ret = parseBlock(self, nextMarker);
     } else if (nextMarker == 0xfe) {  // Comment
       ret = parseBlock(self, nextMarker);
     } else if (nextMarker == 0xd9) {  // End of image
@@ -779,6 +794,16 @@ static int findSoI(ljp* self) {
   int ret = TDNG_LJ92_ERROR_CORRUPT;
   if (find(self) == 0xd8) {
     ret = parseImage(self);
+    // Validate that we found a valid JPEG with dimensions.
+    if (ret == TDNG_LJ92_ERROR_NONE && (self->x <= 0 || self->components <= 0)) {
+      return TDNG_LJ92_ERROR_CORRUPT;
+    }
+    // Check if this is a lossless JPEG (SOF3) or a non-lossless type.
+    // SOF0 (0xC0) = baseline DCT, SOF1 (0xC1) = extended sequential,
+    // SOF2 (0xC2) = progressive - none of these are lossless.
+    if (ret == TDNG_LJ92_ERROR_NONE && self->sof_marker != 0xC3) {
+      return TDNG_LJ92_ERROR_NOT_LOSSLESS;
+    }
   } else {
     TINY_DNG_DPRINTF("findSoI: corrupt\n");
   }

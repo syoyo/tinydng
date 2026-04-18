@@ -617,6 +617,36 @@ static int tdng_decode_ljpeg(tinydng_v2_context* ctx, const tdng_reader* r,
   }
 
   ret = tdng_lj92_open(&lj, r->data + off, (int)len, &w, &h, &bits, &components);
+  if (ret == TDNG_LJ92_ERROR_NOT_LOSSLESS) {
+    // This is a baseline/progressive JPEG (SOF0/1/2), not lossless.
+    // Copy the raw JPEG data since the file buffer will be freed after loading.
+    // Use the image dimensions from the TIFF tags (b->width/height), not from
+    // the JPEG header which may differ.
+    uint8_t* jpeg_copy = (uint8_t*)tdng_ctx_alloc(ctx, len, err);
+    if (!jpeg_copy) {
+      tdng_set_error(err, TINYDNG_V2_STATUS_OOM, TINYDNG_V2_STAGE_DECODE,
+                     ifd_index, TINYDNG_V2_TAG_COMPRESSION, off,
+                     "failed to allocate memory for baseline JPEG");
+      return 0;
+    }
+    memcpy(jpeg_copy, r->data + off, len);
+    out->width = b->width;
+    out->height = b->height;
+    out->bits_per_sample = 8u;  // Baseline JPEG is always 8-bit
+    out->bits_per_sample_stored = 8u;
+    out->samples_per_pixel = b->samples_per_pixel;
+    out->compression = TINYDNG_V2_COMP_NEW_JPEG;
+    out->data = jpeg_copy;
+    out->data_size = len;
+    out->data_offset = (uint64_t)off;
+    out->segment_count = 1u;
+    out->flags |= TINYDNG_V2_IMAGE_FLAG_DATA_OWNS_MEMORY;
+    tdng_set_error(err, TINYDNG_V2_STATUS_UNSUPPORTED, TINYDNG_V2_STAGE_DECODE,
+                   ifd_index, TINYDNG_V2_TAG_COMPRESSION, off,
+                   "baseline JPEG (not lossless JPEG)");
+    // Return OK with the raw data available
+    return 1;  // Success, but data is raw JPEG (not decoded)
+  }
   if (ret != TDNG_LJ92_ERROR_NONE) {
     tdng_set_error(err, TINYDNG_V2_STATUS_UNSUPPORTED, TINYDNG_V2_STAGE_DECODE,
                    ifd_index, TINYDNG_V2_TAG_COMPRESSION, off,
@@ -937,14 +967,40 @@ static tinydng_v2_status tdng_parse_ifd(
     goto cleanup;
   }
 
-  if (!b.has_width || !b.has_height || !b.has_spp || !b.has_bps || !b.has_compression) {
+  // SamplesPerPixel may be missing for some JPEG-based RAW files (e.g., Canon CR2).
+  // For JPEG compression (6,7), components will come from the JPEG stream.
+  // Also skip IFDs that don't have minimum image tags (e.g., thumbnail IFDs
+  // that only have JPEGInterchangeFormat).
+  if (!b.has_width || !b.has_height) {
+    // IFD doesn't have image dimensions - skip it rather than treating as error.
+    // This handles thumbnail IFDs in CR2 and similar formats.
+    // Zero the image slot so the caller knows this slot is empty.
+    memset(image, 0, sizeof(*image));
+    st = TINYDNG_V2_STATUS_OK;
+    goto cleanup;
+  }
+
+  if (!b.has_bps || !b.has_compression) {
     tdng_set_error(err, TINYDNG_V2_STATUS_PARSE_ERROR, TINYDNG_V2_STAGE_PARSE_IFD,
                    ifd_index, 0, ifd_off,
-                   "missing required tags width=%u height=%u spp=%u bps=%u compression=%u",
-                   b.has_width, b.has_height, b.has_spp, b.has_bps,
-                   b.has_compression);
+                   "missing required tags bps=%u compression=%u",
+                   b.has_bps, b.has_compression);
     st = TINYDNG_V2_STATUS_PARSE_ERROR;
     goto cleanup;
+  }
+
+  // For non-JPEG compression, require samples_per_pixel to be set.
+  // For JPEG compression (6=old JPEG, 7=new JPEG), samples_per_pixel may be
+  // determined from the JPEG stream, so only check if it was explicitly set.
+  if (b.compression != TINYDNG_V2_COMP_NEW_JPEG &&
+      b.compression != TINYDNG_V2_COMP_OLD_JPEG) {
+    if (!b.has_spp) {
+      tdng_set_error(err, TINYDNG_V2_STATUS_PARSE_ERROR, TINYDNG_V2_STAGE_PARSE_IFD,
+                     ifd_index, 0, ifd_off,
+                     "missing required tag SamplesPerPixel");
+      st = TINYDNG_V2_STATUS_PARSE_ERROR;
+      goto cleanup;
+    }
   }
 
   if ((b.samples_per_pixel == 0u) || (b.samples_per_pixel > 4u)) {
@@ -1171,7 +1227,11 @@ static tinydng_v2_status tdng_parse_document(tinydng_v2_context* ctx,
       return st;
     }
 
-    ifd_index++;
+    // Only count this IFD as an image if it has valid dimensions.
+    // Skipped IFDs (e.g., thumbnail-only IFDs in CR2) have width/height=0.
+    if (images[ifd_index].width != 0u && images[ifd_index].height != 0u) {
+      ifd_index++;
+    }
 
     if (load_flags & TINYDNG_V2_LOAD_FLAG_PARSE_IMAGE_AS_IS) {
       for (k = 0; k < sub_ifd_count; k++) {
