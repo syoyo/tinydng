@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 
 set(EXE_TARGET "test_dng_loader")
 set(PY_TARGET "tinydng_ext")
-project(${EXE_TARGET} CXX)
+project(${EXE_TARGET} C CXX)
 
 option(TINYDNG_WITH_PYTHON "Build Python module(For developer)." Off)
 option(
@@ -47,6 +47,15 @@ add_executable(${EXE_TARGET}
   test_loader.cc
   )
 add_sanitizers(${EXE_TARGET})
+
+add_library(tinydng_v2 STATIC
+  tiny_dng_v2.c
+  tiny_dng_ljpeg92_v2.c)
+target_include_directories(tinydng_v2 PUBLIC ${CMAKE_SOURCE_DIR})
+target_compile_features(tinydng_v2 PUBLIC c_std_11)
+
+add_executable(test_dng_v2 test_v2.c)
+target_link_libraries(test_dng_v2 PRIVATE tinydng_v2)
 
 if (TINYDNG_WITH_PYTHON)
   # pybind11 method:
