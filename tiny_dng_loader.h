@@ -35,6 +35,7 @@ THE SOFTWARE.
 #include <string>
 #include <vector>
 #include <array>
+#include <cstdint>
 
 namespace tinydng {
 
