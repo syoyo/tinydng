@@ -46,9 +46,10 @@ solution "TiffViewerSolution"
             }
       end
       if os.is("Linux") then
+         defines { "TINY_DNG_LOADER_USE_THREAD" }
          defines { "TINY_DNG_LOADER_ENABLE_ZIP" }
-         buildoptions { "-fsanitize=address" }
-         linkoptions { "-fsanitize=address" }
+         --buildoptions { "-fsanitize=address,undefined" }
+         --linkoptions { "-fsanitize=address,undefined" }
          files {
             "../viewer/OpenGLWindow/X11OpenGLWindow.cpp",
             "../viewer/OpenGLWindow/X11OpenGLWindows.h"

@@ -67,6 +67,8 @@ solution "ViewerSolution"
             buildoptions { "`pkg-config --cflags gtk+-3.0`" }
             linkoptions { "`pkg-config --libs gtk+-3.0`" }
          end
+         buildoptions { "-fsanitize=address" }
+         linkoptions { "-fsanitize=address" }
       end
       if os.is("MacOSX") then
          buildoptions { "-fsanitize=address" }
