@@ -182,14 +182,18 @@ static int parseHuff(ljp* self) {
   // A2: need at least 2 bytes for Lh.
   if (self->ix + 2 > self->datalen) return TDNG_LJ92_ERROR_CORRUPT;
   u8* huffhead = &self->data[self->ix];
-  u8* bits = &huffhead[2];
   int hufflen = BEH(huffhead[0]);
   // A5: DHT payload is Lh + Tc/Th(1) + L[1..16] + V[]; need at least 19
   // bytes and must not run off the end.
+  u8 bits[17];  // local copy so we never mutate the (possibly read-only) input
+  int L;
   if (hufflen < 19) return TDNG_LJ92_ERROR_CORRUPT;
   if (self->ix + hufflen > self->datalen) return TDNG_LJ92_ERROR_CORRUPT;
   if (self->num_huff_idx >= LJ92_MAX_COMPONENTS) return TDNG_LJ92_ERROR_CORRUPT;
-  bits[0] = 0;  // sentinel: no length-0 codes
+  // bits[0] is the length-0 sentinel (no codes); bits[1..16] are the DHT
+  // code-length counts L1..L16 at huffhead[3..18].
+  bits[0] = 0;
+  for (L = 1; L <= 16; L++) bits[L] = huffhead[2 + L];
 
   u8* huffvals = &self->data[self->ix + 19];
   int total_codes = 0;

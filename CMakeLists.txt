@@ -57,6 +57,64 @@ target_compile_features(tinydng_v2 PUBLIC c_std_11)
 add_executable(test_dng_v2 test_v2.c)
 target_link_libraries(test_dng_v2 PRIVATE tinydng_v2)
 
+# ----------------------------------------------------------------------
+# tinydng v3 (clean-room pure C11 loader)
+# ----------------------------------------------------------------------
+set(TINYDNG_V3_CORE_SRCS
+  tinydng_api.c
+  tinydng_io.c
+  tinydng_tiff.c
+  tinydng_dng.c
+  tinydng_codec.c
+  tinydng_write.c)
+
+set(TINYDNG_V3_VENDOR_SRCS
+  tinydng_miniz.c
+  tinydng_stb_image.c)
+
+add_library(tinydng STATIC
+  ${TINYDNG_V3_CORE_SRCS}
+  ${TINYDNG_V3_VENDOR_SRCS}
+  tiny_dng_ljpeg92_v2.c)
+target_include_directories(tinydng PUBLIC ${CMAKE_SOURCE_DIR})
+target_compile_features(tinydng PUBLIC c_std_11)
+
+# Vendored third-party TUs: silence their warnings (not our code) and exclude
+# them from the alignment sanitizer (miniz/stb use intentional, x86-safe
+# unaligned fast-path loads that are correct but trip UBSan).
+if(NOT MSVC)
+  set_source_files_properties(${TINYDNG_V3_VENDOR_SRCS}
+    PROPERTIES COMPILE_OPTIONS "-w;-fno-sanitize=alignment")
+endif()
+
+option(TINYDNG_WERROR "Treat warnings as errors for tinydng core sources" OFF)
+if(NOT MSVC)
+  set(TINYDNG_V3_FLAGS -Wall -Wextra -Wpedantic -Wshadow)
+  if(TINYDNG_WERROR)
+    list(APPEND TINYDNG_V3_FLAGS -Werror)
+  endif()
+  set_source_files_properties(${TINYDNG_V3_CORE_SRCS}
+    PROPERTIES COMPILE_OPTIONS "${TINYDNG_V3_FLAGS}")
+endif()
+
+add_executable(test_dng_v3 test_v3.c)
+target_link_libraries(test_dng_v3 PRIVATE tinydng)
+add_sanitizers(test_dng_v3)
+
+enable_testing()
+
+# v3 unit tests (link the tinydng library; honor sanitizer options).
+set(TINYDNG_V3_TESTS test_v3_roundtrip test_v3_decode test_v3_metadata)
+foreach(t ${TINYDNG_V3_TESTS})
+  add_executable(${t} tests/v3_test/${t}.c)
+  target_link_libraries(${t} PRIVATE tinydng)
+  add_sanitizers(${t})
+endforeach()
+
+add_test(NAME v3_roundtrip COMMAND test_v3_roundtrip)
+add_test(NAME v3_decode COMMAND test_v3_decode "${CMAKE_SOURCE_DIR}")
+add_test(NAME v3_metadata COMMAND test_v3_metadata "${CMAKE_SOURCE_DIR}")
+
 if (TINYDNG_WITH_PYTHON)
   # pybind11 method:
   pybind11_add_module(${PY_TARGET} python/python-bindings.cc)

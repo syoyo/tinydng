@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+enable_testing()
+
 # Deps build is broken, skipping
 # include(loadDeps.cmake)
 # include_directories(deps/tinydng)
@@ -13,3 +15,4 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # add_executable(tinyDngTest repackTest.cpp)
 
 add_subdirectory(v2_test)
+add_subdirectory(v3_test)
