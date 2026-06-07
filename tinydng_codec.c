@@ -258,10 +258,9 @@ static tinydng_status td_fill_block_from_stored(const td_geom *g, int big_endian
     size_t stored_bytes = (size_t)g->bps / 8u;
     size_t in_row_bytes = (size_t)bw * g->spp * stored_bytes;
     int need_swap = (stored_bytes > 1u) && (big_endian != td_host_big());
-    for (y = 0; y < bh; y++) {
-      memcpy(block + (size_t)y * in_row_bytes, src + (size_t)y * in_row_bytes,
-             in_row_bytes);
-    }
+    /* Use pre-validated `need` (bounds-checked by td_stored_block_size above)
+       instead of re-computing per-row sizes from raw metadata fields. */
+    memcpy(block, src, need);
     if (need_swap) {
       size_t total_samples = (size_t)bw * bh * g->spp;
       size_t i;
