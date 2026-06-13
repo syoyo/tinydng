@@ -1,5 +1,7 @@
 # build artifacts
 bench
+bench_mt
+bench_mt_tsan
 bench_encode
 bench_synth
 bench_hist

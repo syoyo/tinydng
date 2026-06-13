@@ -124,6 +124,43 @@ contains them and picks the best at runtime via `__builtin_cpu_supports`.
 active one. (SSE4.1 shares the SSE2 kernels here — the hot kernels need no
 `pshufb`/blend; the tier is distinguished only so it can be targeted.)
 
+## Multi-threaded tile decode
+
+A single LJPEG scan is inherently serial (the entropy decode is a data
+dependency chain), so threads can't speed up *one* tile. But a DNG frame is many
+independent tiles — ProRAW 48MP is 48 × 1008×1008 streams — and those decode in
+parallel with no shared state.
+
+**Threading contract.** The codec keeps all mutable state inside the
+heap-allocated `lj92_dec` instance, so concurrent decode across independent
+instances and output buffers is safe. The one exception is the lazy runtime SIMD
+dispatch (a one-time write to a shared table on first open/encode). Call
+`lj92_init()` once on a single thread before starting workers; after that the
+table is read-only and the codec is fully thread-safe. (ThreadSanitizer confirms
+both directions: a data race in `lj92_simd_init` when concurrent first-opens race
+the dispatch, and clean once `lj92_init()` precedes the threads.)
+
+`bench_mt.c` drives this: each worker pulls tiles from an atomic counter
+(dynamic load balancing — tiles vary in entropy size), decodes into its own
+buffer, and hashes the whole output; the total hash must match the
+single-threaded run for every thread count.
+
+Scaling (AVX2 build, all 48 ProRAW tiles, same machine):
+
+| threads | MPix/s | speedup |
+|--------:|-------:|--------:|
+| 1  |   96 | ×1.00 |
+| 2  |  193 | ×2.00 |
+| 4  |  382 | ×3.96 |
+| 8  |  744 | ×7.72 |
+| 16 | 1362 | ×14.1 |
+| 32 | 1699 | ×17.6 |
+
+Near-linear to the 16 physical cores; the last stretch to 32 is SMT (two
+hardware threads per core sharing execution ports on this entropy-bound integer
+workload), which adds the expected ~25%. Peak ≈1.7 GPix/s — a full 48MP ProRAW
+frame's tiles decode in ~29 ms wall-clock.
+
 ## Files
 
 | file | purpose |
@@ -133,6 +170,7 @@ active one. (SSE4.1 shares the SSE2 kernels here — the hot kernels need no
 | `test_correct.c` | decode every tile, compare byte-for-byte vs v2, all SIMD paths |
 | `test_encode.c` | round-trip + interop vs v2 + real-data re-encode, all SIMD paths |
 | `bench.c` | decode benchmark (new vs v2, per SIMD path) |
+| `bench_mt.c` | multi-threaded tile-decode scaling (1–32 threads, checksum-verified) |
 | `bench_encode.c` | encode benchmark (new vs v2, per SIMD path) |
 | `bench_synth.c` | synthetic decode benchmark isolating predictor-1 SIMD |
 | `bench_hist.c` | isolates the encoder frequency-scan (histogram) pass; compares scalar/privatized/SIMD-ssss strategies |
@@ -144,6 +182,7 @@ make                 # builds everything (needs ../../tiny_dng_v2.* for the driv
 make testdata        # extracts tiles from ../../proraw-48mp-01.dng
 make check           # correctness: test_correct + test_encode
 make run-bench       # decode throughput
+make run-bench-mt    # multi-threaded decode scaling (1–32 threads)
 ./bench_encode testdata 48 20
 ./bench_synth 2048 2048 40
 ```
@@ -156,3 +195,5 @@ make run-bench       # decode throughput
   re-encoding real decoded tiles — 21603 checks across bitdepths 8–16,
   1–4 components, predictors 1/2/4/5/6/7, and all SIMD paths.
 * Clean under `-fsanitize=address,undefined`.
+* Multi-threaded decode is clean under `-fsanitize=thread` (1–32 threads), and
+  every thread count reproduces the single-threaded whole-buffer hash.

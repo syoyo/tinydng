@@ -23,12 +23,16 @@ LJ92_SRC = lj92.c
 REF_SRC  = $(ROOT)/tiny_dng_ljpeg92_v2.c
 DNG_SRC  = $(ROOT)/tiny_dng_v2.c
 
-BINS = bench test_correct test_encode extract_streams
+BINS = bench bench_mt test_correct test_encode extract_streams
 
 all: $(BINS)
 
 bench: bench.c $(LJ92_SRC) $(REF_SRC)
 	$(CC) $(OPT) $(CSTD) $(INC) $^ -o $@
+
+# Multi-threaded tile-decode scaling benchmark (codec only; no v2 reference).
+bench_mt: bench_mt.c $(LJ92_SRC)
+	$(CC) $(OPT) $(CSTD) $(WARN) $(INC) -pthread $^ -o $@
 
 test_correct: test_correct.c $(LJ92_SRC) $(REF_SRC)
 	$(CC) $(OPT) $(CSTD) $(WARN) $(INC) $^ -o $@
@@ -55,7 +59,10 @@ check: test_correct test_encode
 run-bench: bench
 	./bench testdata 48 20
 
+run-bench-mt: bench_mt
+	./bench_mt testdata 48 20
+
 clean:
 	rm -f $(BINS) test_correct_asan
 
-.PHONY: all check run-bench clean testdata
+.PHONY: all check run-bench run-bench-mt clean testdata

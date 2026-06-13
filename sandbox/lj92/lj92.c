@@ -745,6 +745,10 @@ void lj92_decode_close(lj92_dec dec) {
   if (dec) { free_decoder(dec); free(dec); }
 }
 
+/* Run the one-time SIMD dispatch selection up front. Call once before using the
+ * codec concurrently so worker threads only ever read the dispatch table. */
+void lj92_init(void) { lj92_simd_init(); }
+
 /* ===========================================================================
  * Encoder
  * ===========================================================================

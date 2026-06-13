@@ -49,6 +49,15 @@ int lj92_decode_run(lj92_dec dec, uint16_t* target, int write_stride, int skip,
 
 void lj92_decode_close(lj92_dec dec);
 
+/* Initialize the internal runtime SIMD dispatch once. Optional for
+ * single-threaded use (open/encode initialize it lazily), but REQUIRED before
+ * driving the codec from multiple threads: call lj92_init() once on one thread
+ * before any others start. After that the codec is thread-safe for concurrent
+ * decode/encode across independent lj92_dec instances and output buffers --
+ * the only shared state is the dispatch table, which is then read-only. (Tiled
+ * images such as ProRAW are independent LJPEG streams and decode in parallel.) */
+void lj92_init(void);
+
 /* ---- Encoder -------------------------------------------------------------
  * Encode `image` (interleaved 16-bit samples) into a single-scan LJPEG stream
  * with one Huffman table per component. The caller owns *encoded (free()).
