@@ -1,0 +1,88 @@
+# libFuzzer dictionary for the tinydng v3 reader (fuzz-v3).
+# Magic byte sequences that exact-match branches in the TIFF/DNG parser and the
+# lossless/baseline JPEG codecs gate on; random mutation rarely produces these,
+# so feeding them as tokens drives coverage past the structural barriers.
+
+# ---- container headers (little/big endian, TIFF + BigTIFF) ----
+tiff_le="II*\x00"
+tiff_be="MM\x00*"
+bigtiff_le="II+\x00"
+bigtiff_be="MM\x00+"
+bigtiff_bytesize="\x08\x00"
+
+# ---- TIFF field type codes (LE u16) ----
+type_byte="\x01\x00"
+type_short="\x03\x00"
+type_long="\x04\x00"
+type_rational="\x05\x00"
+type_undefined="\x07\x00"
+type_slong="\x09\x00"
+type_srational="\x0a\x00"
+type_float="\x0b\x00"
+type_double="\x0c\x00"
+type_ifd="\x0d\x00"
+type_long8="\x10\x00"
+type_ifd8="\x12\x00"
+
+# ---- core TIFF tag IDs (LE u16) ----
+tag_imagewidth="\x00\x01"
+tag_imagelength="\x01\x01"
+tag_bitspersample="\x02\x01"
+tag_compression="\x03\x01"
+tag_photometric="\x06\x01"
+tag_stripoffsets="\x11\x01"
+tag_samplesperpixel="\x15\x01"
+tag_rowsperstrip="\x16\x01"
+tag_stripbytecounts="\x17\x01"
+tag_planarconfig="\x1c\x01"
+tag_predictor="\x3d\x01"
+tag_tilewidth="\x42\x01"
+tag_tilelength="\x43\x01"
+tag_tileoffsets="\x44\x01"
+tag_tilebytecounts="\x45\x01"
+tag_subifds="\x4a\x01"
+tag_sampleformat="\x53\x01"
+tag_jpeginterchange="\x01\x02"
+tag_jpegbytecount="\x02\x02"
+
+# ---- DNG / EXIF tag IDs (LE u16) ----
+tag_exififd="\x69\x87"
+tag_cfarepeatdim="\x8d\x82"
+tag_cfapattern="\x8e\x82"
+tag_dngversion="\x12\xc6"
+tag_linearization="\x18\xc6"
+tag_blacklevel="\x1a\xc6"
+tag_whitelevel="\x1d\xc6"
+tag_colormatrix1="\x21\xc6"
+tag_asshotneutral="\x28\xc6"
+tag_activearea="\x4d\xc6"
+tag_opcodelist1="\x40\xc7"
+tag_opcodelist2="\x41\xc7"
+tag_opcodelist3="\x4e\xc7"
+
+# ---- compression values (LE u16) ----
+comp_none="\x01\x00"
+comp_lzw="\x05\x00"
+comp_oldjpeg="\x06\x00"
+comp_newjpeg="\x07\x00"
+comp_zip="\x08\x00"
+comp_packbits="\x05\x80"
+
+# ---- photometric / planar / sampleformat values (LE u16) ----
+photo_cfa="\x23\x80"
+planar_separate="\x02\x00"
+sampleformat_ieeefp="\x03\x00"
+
+# ---- JPEG markers (big-endian, as in the stream) ----
+jpeg_soi="\xff\xd8"
+jpeg_sof0="\xff\xc0"
+jpeg_sof3="\xff\xc3"
+jpeg_dht="\xff\xc4"
+jpeg_sos="\xff\xda"
+jpeg_eoi="\xff\xd9"
+
+# ---- DNG OpcodeList opcode ids (big-endian u32) + version blob ----
+opcode_warp="\x00\x00\x00\x01"
+opcode_vignette="\x00\x00\x00\x03"
+opcode_gainmap="\x00\x00\x00\x09"
+dng_version_blob="\x01\x04\x00\x00"
