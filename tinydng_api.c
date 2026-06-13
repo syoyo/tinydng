@@ -333,8 +333,7 @@ static void td_free_exif(tinydng_context *ctx, tinydng_exif *e) {
   memset(e, 0, sizeof(*e));
 }
 
-static void td_free_image_payload(tinydng_context *ctx,
-                                  tinydng_image_info *img) {
+void td_free_image_payload(tinydng_context *ctx, tinydng_image_info *img) {
   size_t i;
   td_free_exif(ctx, &img->exif);
   td_ctx_free(ctx, img->raw.profile_name);

@@ -58,6 +58,11 @@ void td_ctx_free_all(tinydng_context *ctx);
 void *td_ctx_realloc(tinydng_context *ctx, void *ptr, size_t old_size,
                      size_t new_size, tinydng_error *err);
 
+/* Free all heap payload owned by an image_info (exif/raw/opcodes/gainmaps/
+   segments/custom_fields) and zero it. Used by document destroy and to discard
+   a partially-parsed scratch image on an error path. */
+void td_free_image_payload(tinydng_context *ctx, tinydng_image_info *img);
+
 /* ------------------------------------------------------------------ */
 /* Safe arithmetic                                                    */
 /* ------------------------------------------------------------------ */

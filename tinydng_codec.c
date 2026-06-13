@@ -217,13 +217,21 @@ static int td_apply_predictor(tinydng_context *ctx, const td_geom *g,
 /* Bytes of stored (pre-decode) sample data for one bw*bh block. */
 static int td_stored_block_size(const td_geom *g, uint32_t bw, uint32_t bh,
                                 size_t *out) {
-  size_t in_row, total;
+  size_t spr, in_row, total;
+  /* samples per row = bw * spp; overflow-safe so 32-bit builds fail closed. */
+  if (!td_safe_mul_size((size_t)bw, (size_t)g->spp, &spr)) {
+    return 0;
+  }
   if (g->bps == 8u || g->bps == 16u || g->bps == 32u) {
-    if (!td_safe_mul_size((size_t)bw * g->spp, (size_t)g->bps / 8u, &in_row)) {
+    if (!td_safe_mul_size(spr, (size_t)g->bps / 8u, &in_row)) {
       return 0;
     }
   } else if (g->bps >= 2u && g->bps <= 16u) {
-    in_row = ((size_t)bw * g->spp * g->bps + 7u) / 8u;
+    size_t bits;
+    if (!td_safe_mul_size(spr, (size_t)g->bps, &bits)) {
+      return 0;
+    }
+    in_row = (bits + 7u) / 8u;
   } else {
     return 0;
   }
@@ -863,7 +871,9 @@ static tinydng_status td_decode_window(tinydng_context *ctx,
     if (direct) {
       target = dst + (size_t)(seg->y - win_y) * dst_row_stride;
     } else {
-      if (!td_safe_mul_size((size_t)bw * bh, (size_t)gseg.spp, &block_samples) ||
+      size_t block_px;
+      if (!td_safe_mul_size((size_t)bw, (size_t)bh, &block_px) ||
+          !td_safe_mul_size(block_px, (size_t)gseg.spp, &block_samples) ||
           !td_safe_mul_size(block_samples, gseg.out_bytes, &need)) {
         td_ctx_free(ctx, block);
         td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0, 0,

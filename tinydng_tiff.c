@@ -329,15 +329,20 @@ static int td_read_u64_array(tinydng_context *ctx, const td_reader *r,
     *out_count = 0;
     return 1;
   }
-  /* The array's source elements (count * type_size bytes) must physically fit
-   * in the file. This ties the up-front u64[] allocation to the input size, so
-   * a tiny file cannot declare a huge count and force a large allocation before
-   * the per-element reads would fail. (Checked via division to avoid overflow.) */
-  if (e->type_size == 0u || e->count > (r->size / (uint64_t)e->type_size)) {
-    td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_IFD, ifd_index, e->tag, 0,
-                 "array count %llu exceeds file capacity (%llu bytes)",
-                 (unsigned long long)e->count, (unsigned long long)r->size);
-    return 0;
+  /* The array's source range [data_off, data_off + count*type_size) must fit in
+   * the file. This ties the up-front u64[] allocation to the input size (a tiny
+   * file can't declare a huge count to force a large allocation) and, computed
+   * overflow-safe, also rejects a 64-bit data_off/stride that would wrap. */
+  {
+    uint64_t span, last;
+    if (e->type_size == 0u ||
+        !td_safe_mul_u64(e->count, (uint64_t)e->type_size, &span) ||
+        !td_safe_add_u64(e->data_off, span, &last) || last > r->size) {
+      td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_IFD, ifd_index, e->tag, 0,
+                   "array range out of file bounds (count %llu)",
+                   (unsigned long long)e->count);
+      return 0;
+    }
   }
   if (!td_safe_mul_size(n, sizeof(uint64_t), &bytes)) {
     td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_IFD, ifd_index, e->tag, 0,
@@ -362,6 +367,27 @@ static int td_read_u64_array(tinydng_context *ctx, const td_reader *r,
   *out_arr = arr;
   *out_count = n;
   return 1;
+}
+
+/* Double a context-owned array with overflow-safe sizing. Returns the new
+ * pointer (and updates *cap) or NULL on overflow/OOM; on failure the old block
+ * is left intact for the caller to free. */
+static void *td_grow_array(tinydng_context *ctx, void *ptr, size_t *cap,
+                           size_t elem, tinydng_error *err) {
+  size_t oldc = *cap, newc, ob, nb;
+  void *np;
+  if (oldc > (SIZE_MAX / 2u)) {
+    return NULL;
+  }
+  newc = oldc ? (oldc * 2u) : 16u;
+  if (!td_safe_mul_size(oldc, elem, &ob) || !td_safe_mul_size(newc, elem, &nb)) {
+    return NULL;
+  }
+  np = td_ctx_realloc(ctx, ptr, ob, nb, err);
+  if (np) {
+    *cap = newc;
+  }
+  return np;
 }
 
 static int td_read_scalar_uint(const td_reader *r, const td_entry *e,
@@ -1036,15 +1062,13 @@ tinydng_status tinydng_open_io(tinydng_context *ctx, tinydng_io io,
       continue;
     }
     if (vcount == vcap) {
-      size_t nc = vcap * 2u;
-      uint64_t *nv = (uint64_t *)td_ctx_realloc(
-          ctx, visited, vcap * sizeof(uint64_t), nc * sizeof(uint64_t), err);
+      uint64_t *nv =
+          (uint64_t *)td_grow_array(ctx, visited, &vcap, sizeof(uint64_t), err);
       if (!nv) {
         st = TINYDNG_E_OOM;
         goto done;
       }
       visited = nv;
-      vcap = nc;
     }
     visited[vcount++] = ref.off;
 
@@ -1067,17 +1091,14 @@ tinydng_status tinydng_open_io(tinydng_context *ctx, tinydng_io io,
         ref.depth < ctx->max_ifd_depth) {
       for (k = 0; k < b.sub_ifd_count; k++) {
         if (qtail == qcap) {
-          size_t nc = qcap * 2u;
-          td_ifd_ref *nq = (td_ifd_ref *)td_ctx_realloc(
-              ctx, queue, qcap * sizeof(td_ifd_ref), nc * sizeof(td_ifd_ref),
-              err);
+          td_ifd_ref *nq = (td_ifd_ref *)td_grow_array(
+              ctx, queue, &qcap, sizeof(td_ifd_ref), err);
           if (!nq) {
             td_free_build(ctx, &b);
             st = TINYDNG_E_OOM;
             goto done;
           }
           queue = nq;
-          qcap = nc;
         }
         queue[qtail].off = b.sub_ifds[k];
         queue[qtail].depth = ref.depth + 1u;
@@ -1086,17 +1107,14 @@ tinydng_status tinydng_open_io(tinydng_context *ctx, tinydng_io io,
     }
     if (next_ifd != 0u) {
       if (qtail == qcap) {
-        size_t nc = qcap * 2u;
-        td_ifd_ref *nq = (td_ifd_ref *)td_ctx_realloc(
-            ctx, queue, qcap * sizeof(td_ifd_ref), nc * sizeof(td_ifd_ref),
-            err);
+        td_ifd_ref *nq = (td_ifd_ref *)td_grow_array(
+            ctx, queue, &qcap, sizeof(td_ifd_ref), err);
         if (!nq) {
           td_free_build(ctx, &b);
           st = TINYDNG_E_OOM;
           goto done;
         }
         queue = nq;
-        qcap = nc;
       }
       queue[qtail].off = next_ifd;
       queue[qtail].depth = ref.depth;
@@ -1107,6 +1125,7 @@ tinydng_status tinydng_open_io(tinydng_context *ctx, tinydng_io io,
     if (b.has_width && b.has_height) {
       tinydng_image_info *img = td_doc_new_image(ctx, doc, &img_cap, err);
       if (!img) {
+        td_free_image_payload(ctx, &tmp); /* tmp not yet moved into the doc */
         td_free_build(ctx, &b);
         st = err->status ? err->status : TINYDNG_E_OOM;
         goto done;
@@ -1119,28 +1138,8 @@ tinydng_status tinydng_open_io(tinydng_context *ctx, tinydng_io io,
         goto done;
       }
     } else {
-      /* Not an image IFD: free any metadata payload parsed into tmp. */
-      size_t fi;
-      td_ctx_free(ctx, tmp.exif.make);
-      td_ctx_free(ctx, tmp.exif.model);
-      td_ctx_free(ctx, tmp.exif.software);
-      td_ctx_free(ctx, tmp.exif.datetime);
-      td_ctx_free(ctx, tmp.exif.image_description);
-      td_ctx_free(ctx, tmp.raw.profile_name);
-      td_ctx_free(ctx, tmp.raw.semantic_name);
-      td_ctx_free(ctx, tmp.raw.linearization_table);
-      if (tmp.raw.gainmaps) {
-        for (fi = 0; fi < tmp.raw.gainmap_count; fi++) {
-          td_ctx_free(ctx, tmp.raw.gainmaps[fi].pixels);
-        }
-        td_ctx_free(ctx, tmp.raw.gainmaps);
-      }
-      if (tmp.custom_fields) {
-        for (fi = 0; fi < tmp.custom_field_count; fi++) {
-          td_ctx_free(ctx, tmp.custom_fields[fi].data);
-        }
-        td_ctx_free(ctx, tmp.custom_fields);
-      }
+      /* Not an image IFD: discard any metadata payload parsed into tmp. */
+      td_free_image_payload(ctx, &tmp);
     }
     td_free_build(ctx, &b);
     ifd_seq++;

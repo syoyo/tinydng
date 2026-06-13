@@ -396,6 +396,18 @@ static int td_parse_opcode_list(tinydng_context *ctx, const td_reader *r,
   return 1;
 }
 
+/* Assign an ASCII tag, freeing any value already parsed for the same tag so a
+ * duplicate occurrence cannot orphan the earlier allocation. A read that yields
+ * nothing leaves the prior value intact. */
+static void td_set_ascii(tinydng_context *ctx, char **dst, const td_reader *r,
+                         uint64_t data_off, uint64_t count, tinydng_error *err) {
+  char *s = td_read_ascii(ctx, r, data_off, count, err);
+  if (s) {
+    td_ctx_free(ctx, *dst);
+    *dst = s;
+  }
+}
+
 int td_dng_handle_tag(tinydng_context *ctx, const td_reader *r,
                       tinydng_image_info *img, uint32_t ifd_index, uint16_t tag,
                       uint16_t type, uint64_t count, uint64_t data_off,
@@ -404,19 +416,19 @@ int td_dng_handle_tag(tinydng_context *ctx, const td_reader *r,
 
   switch (tag) {
     case TD_TAG_MAKE:
-      img->exif.make = td_read_ascii(ctx, r, data_off, count, err);
+      td_set_ascii(ctx, &img->exif.make, r, data_off, count, err);
       break;
     case TD_TAG_MODEL:
-      img->exif.model = td_read_ascii(ctx, r, data_off, count, err);
+      td_set_ascii(ctx, &img->exif.model, r, data_off, count, err);
       break;
     case TD_TAG_SOFTWARE:
-      img->exif.software = td_read_ascii(ctx, r, data_off, count, err);
+      td_set_ascii(ctx, &img->exif.software, r, data_off, count, err);
       break;
     case TD_TAG_DATETIME:
-      img->exif.datetime = td_read_ascii(ctx, r, data_off, count, err);
+      td_set_ascii(ctx, &img->exif.datetime, r, data_off, count, err);
       break;
     case TD_TAG_IMAGEDESCRIPTION:
-      img->exif.image_description = td_read_ascii(ctx, r, data_off, count, err);
+      td_set_ascii(ctx, &img->exif.image_description, r, data_off, count, err);
       break;
     case TD_TAG_ORIENTATION: {
       uint64_t v;
@@ -427,7 +439,8 @@ int td_dng_handle_tag(tinydng_context *ctx, const td_reader *r,
     }
     case TD_TAG_SHUTTER_SPEED_VALUE: {
       int32_t num, den;
-      if (td_tiff_type_size(type) == 8u && td_r_i32(r, data_off, &num) &&
+      if ((type == TD_TYPE_RATIONAL || type == TD_TYPE_SRATIONAL) &&
+          td_r_i32(r, data_off, &num) &&
           td_r_i32(r, data_off + 4u, &den)) {
         img->exif.shutter_speed[0] = num;
         img->exif.shutter_speed[1] = den;
@@ -437,7 +450,8 @@ int td_dng_handle_tag(tinydng_context *ctx, const td_reader *r,
     }
     case TD_TAG_APERTURE_VALUE: {
       int32_t num, den;
-      if (td_tiff_type_size(type) == 8u && td_r_i32(r, data_off, &num) &&
+      if ((type == TD_TYPE_RATIONAL || type == TD_TYPE_SRATIONAL) &&
+          td_r_i32(r, data_off, &num) &&
           td_r_i32(r, data_off + 4u, &den)) {
         img->exif.aperture_value[0] = num;
         img->exif.aperture_value[1] = den;
@@ -447,7 +461,8 @@ int td_dng_handle_tag(tinydng_context *ctx, const td_reader *r,
     }
     case TD_TAG_EXPOSURE_TIME: {
       int32_t num, den;
-      if (td_tiff_type_size(type) == 8u && td_r_i32(r, data_off, &num) &&
+      if ((type == TD_TYPE_RATIONAL || type == TD_TYPE_SRATIONAL) &&
+          td_r_i32(r, data_off, &num) &&
           td_r_i32(r, data_off + 4u, &den)) {
         img->exif.exposure_time[0] = num;
         img->exif.exposure_time[1] = den;
@@ -604,10 +619,10 @@ int td_dng_handle_tag(tinydng_context *ctx, const td_reader *r,
       break;
     }
     case TD_TAG_PROFILE_NAME:
-      img->raw.profile_name = td_read_ascii(ctx, r, data_off, count, err);
+      td_set_ascii(ctx, &img->raw.profile_name, r, data_off, count, err);
       break;
     case TD_TAG_SEMANTIC_NAME:
-      img->raw.semantic_name = td_read_ascii(ctx, r, data_off, count, err);
+      td_set_ascii(ctx, &img->raw.semantic_name, r, data_off, count, err);
       break;
     case TD_TAG_PROFILE_TONE_CURVE: {
       size_t n =
@@ -634,10 +649,11 @@ int td_dng_handle_tag(tinydng_context *ctx, const td_reader *r,
       break;
     }
     case TD_TAG_LINEARIZATION_TABLE: {
-      size_t i, n;
+      size_t i, n, ts;
       uint16_t *tbl;
       size_t bytes;
-      if (count == 0u || count > (1u << 20)) {
+      ts = td_tiff_type_size(type);  /* element stride must match the type */
+      if (count == 0u || count > (1u << 20) || ts == 0u) {
         break; /* benign skip */
       }
       n = (size_t)count;
@@ -650,7 +666,7 @@ int td_dng_handle_tag(tinydng_context *ctx, const td_reader *r,
       }
       for (i = 0; i < n; i++) {
         uint64_t v;
-        if (!td_r_val_uint(r, type, data_off + (uint64_t)i * 2u, &v)) {
+        if (!td_r_val_uint(r, type, data_off + (uint64_t)i * (uint64_t)ts, &v)) {
           break;
         }
         tbl[i] = (uint16_t)v;
