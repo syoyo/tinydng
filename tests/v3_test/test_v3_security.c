@@ -265,6 +265,64 @@ static void case_duplicate_tag(void) {
         used_ctrl, used_dup);
 }
 
+/* G: a lossless-JPEG stream whose DHT maps a code to SSSS category 31. The v2
+ * decoder's residual sign-extend does `1 << ssss` (and `64-ssss`/`bb<<=ssss`
+ * shifts), which is undefined for ssss>16/30. The fix rejects huffval>16 at
+ * table build, so decode returns an error instead of executing the UB. Built as
+ * a 1x1 16-bit compression-7 TIFF strip. (Meaningful under TINYDNG_TEST_SANITIZE
+ * / a -fno-sanitize-recover UBSan build, where the pre-fix code aborts here.) */
+static void case_ljpeg_ssss(void) {
+  static const uint8_t lj[] = {
+      0xFF, 0xD8,                                            /* SOI */
+      0xFF, 0xC3, 0x00, 0x0B, 0x10, 0x00, 0x01, 0x00, 0x01, /* SOF3 P16 1x1 */
+      0x01, 0x00, 0x11, 0x00,                               /* 1 component */
+      0xFF, 0xC4, 0x00, 0x14, 0x00,                         /* DHT, Lh=20 */
+      0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,    /* one len-1 code */
+      0x1F,                                                 /* symbol = 31 */
+      0xFF, 0xDA, 0x00, 0x08, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, /* SOS pred1 */
+      0, 0, 0, 0, 0, 0, 0, 0,                               /* entropy (bit0=0) */
+      0xFF, 0xD9};                                          /* EOI */
+  size_t ljlen = sizeof(lj);
+  size_t strip_off = 8, after = strip_off + ljlen;
+  size_t ifd_off = after + (after & 1u);
+  int nent = 9, i = 0;
+  size_t total = ifd_off + 2u + (size_t)nent * 12u + 4u;
+  uint8_t *buf = (uint8_t *)calloc(1, total), *e;
+  tinydng_context *ctx = tinydng_context_create(NULL, NULL);
+  tinydng_document *doc = NULL;
+  tinydng_error err;
+  buf[0] = 'I'; buf[1] = 'I'; tdt_pu16(buf + 2, 42, 0);
+  tdt_pu32(buf + 4, (uint32_t)ifd_off, 0);
+  memcpy(buf + strip_off, lj, ljlen);
+  tdt_pu16(buf + ifd_off, (uint16_t)nent, 0);
+  e = buf + ifd_off + 2u;
+#define E(t, ty, c, v)                            \
+  do {                                            \
+    tdt_pu16(e + i * 12, (uint16_t)(t), 0);       \
+    tdt_pu16(e + i * 12 + 2, (uint16_t)(ty), 0);  \
+    tdt_pu32(e + i * 12 + 4, (uint32_t)(c), 0);   \
+    tdt_pu32(e + i * 12 + 8, (uint32_t)(v), 0);   \
+    i++;                                          \
+  } while (0)
+  E(256, 3, 1, 1); E(257, 3, 1, 1); E(258, 3, 1, 16); E(259, 3, 1, 7);
+  E(262, 3, 1, 1); E(273, 4, 1, (uint32_t)strip_off); E(277, 3, 1, 1);
+  E(278, 3, 1, 1); E(279, 4, 1, (uint32_t)ljlen);
+#undef E
+  tdt_pu32(e + (size_t)nent * 12u, 0, 0);
+  /* Must not crash. With the fix, decode returns an error (or open does); the
+   * point is that no UB shift executes. */
+  if (tinydng_open_memory(ctx, buf, total, NULL, &doc, &err) == TINYDNG_OK) {
+    tinydng_pixels px;
+    tinydng_error derr;
+    int rc = tinydng_decode_image(ctx, doc, 0, NULL, &px, &derr);
+    CHECK(rc != TINYDNG_OK, "G: malicious LJPEG (ssss>16) rejected, no UB shift");
+    if (rc == TINYDNG_OK) tinydng_pixels_free(ctx, &px);
+    tinydng_document_destroy(ctx, doc);
+  }
+  tinydng_context_destroy(ctx);
+  free(buf);
+}
+
 int main(void) {
   (void)tdt_slurp; /* shared helper unused by this all-in-memory test */
   printf("== v3 security regression fixtures ==\n");
@@ -274,6 +332,7 @@ int main(void) {
   case_rational_type();
   case_linearization_stride();
   case_duplicate_tag();
+  case_ljpeg_ssss();
   printf(g_fail ? "SECURITY: FAILURES\n" : "SECURITY: ALL PASS\n");
   return g_fail;
 }

@@ -201,10 +201,15 @@ static int parseHuff(ljp* self) {
   // Allow hufflen >= 19 + total_codes to tolerate trailing padding some
   // encoders emit; reject only if the declared length is too short.
   if (hufflen - 19 < total_codes) return TDNG_LJ92_ERROR_CORRUPT;
-  // Note: symbols > 16 are allowed for baseline JPEG (DC/AC coefficient
-  // categories); lossless JPEG uses only 0-16. We don't reject here because
-  // the SOF marker type distinguishes the stream. If this is a baseline JPEG,
-  // findSoI will return NOT_LOSSLESS before decoding starts.
+  // Lossless JPEG SSSS categories are 0..16. A larger symbol value becomes the
+  // `ssss` used by bitio_decode_diff, where `1 << ssss` and the `64 - ssss` /
+  // `bb <<= ssss` shifts are undefined for ssss >= 17/31/64. Such a table is
+  // not valid lossless JPEG (it would be a baseline DC/AC table) -- reject it
+  // here rather than decoding it. (huffvals[0..total_codes) is in bounds:
+  // ix+19+total_codes <= ix+hufflen <= datalen, checked above.)
+  for (int v = 0; v < total_codes; v++) {
+    if (huffvals[v] > 16) return TDNG_LJ92_ERROR_NOT_LOSSLESS;
+  }
 
   int maxbits = 16;
   while (maxbits > 0 && !bits[maxbits]) maxbits--;
