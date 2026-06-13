@@ -1,0 +1,13 @@
+# build artifacts
+bench
+bench_encode
+bench_synth
+bench_hist
+test_correct
+test_encode
+test_correct_asan
+extract_streams
+*.o
+
+# extracted LJPEG tiles (regenerate with: make testdata)
+testdata/
