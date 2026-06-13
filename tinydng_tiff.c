@@ -329,6 +329,16 @@ static int td_read_u64_array(tinydng_context *ctx, const td_reader *r,
     *out_count = 0;
     return 1;
   }
+  /* The array's source elements (count * type_size bytes) must physically fit
+   * in the file. This ties the up-front u64[] allocation to the input size, so
+   * a tiny file cannot declare a huge count and force a large allocation before
+   * the per-element reads would fail. (Checked via division to avoid overflow.) */
+  if (e->type_size == 0u || e->count > (r->size / (uint64_t)e->type_size)) {
+    td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_IFD, ifd_index, e->tag, 0,
+                 "array count %llu exceeds file capacity (%llu bytes)",
+                 (unsigned long long)e->count, (unsigned long long)r->size);
+    return 0;
+  }
   if (!td_safe_mul_size(n, sizeof(uint64_t), &bytes)) {
     td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_IFD, ifd_index, e->tag, 0,
                  "array size overflow");

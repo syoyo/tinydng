@@ -315,11 +315,17 @@ static int td_parse_opcode_list(tinydng_context *ctx, const td_reader *r,
       double d[4];
       uint32_t map_planes = 0;
       uint64_t num_items;
+      uint64_t prod;
       uint64_t p = saved;
       uint32_t j;
       float *pixels;
       size_t pbytes;
       memset(&gm, 0, sizeof(gm));
+      /* The 76-byte header (10 u32 + 4 f64 + 1 u32) must fit in this opcode. */
+      if (nbytes < 76u) {
+        pos = saved + nbytes;
+        continue;
+      }
       for (j = 0; j < 10u; j++) {
         if (!td_r_u32(&br, p, &u[j])) {
           return 1;
@@ -337,8 +343,15 @@ static int td_parse_opcode_list(tinydng_context *ctx, const td_reader *r,
       }
       p += 4u;
 
-      num_items = (uint64_t)u[8] * (uint64_t)u[9] * (uint64_t)map_planes;
-      if (num_items == 0u || num_items > TD_MAX_GAINMAP_ITEMS) {
+      /* Overflow-safe map_points_v * map_points_h * map_planes. Reject if it
+       * overflows, is empty, exceeds the cap, or the pixel payload (num_items
+       * floats after the 76-byte header) would not fit inside this opcode.
+       * Computing it raw could wrap and let the cap check pass while the
+       * struct's dimension fields stay huge (inconsistent with pixel_count). */
+      if (!td_safe_mul_u64((uint64_t)u[8], (uint64_t)u[9], &prod) ||
+          !td_safe_mul_u64(prod, (uint64_t)map_planes, &num_items) ||
+          num_items == 0u || num_items > TD_MAX_GAINMAP_ITEMS ||
+          num_items > ((uint64_t)nbytes - 76u) / 4u) {
         pos = saved + nbytes;
         continue;
       }
