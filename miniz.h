@@ -172,7 +172,11 @@
 
 #if MINIZ_X86_OR_X64_CPU
 /* Set MINIZ_USE_UNALIGNED_LOADS_AND_STORES to 1 on CPU's that permit efficient integer loads and stores from unaligned addresses. */
+/* tinydng: allow a pre-definition (e.g. to 0) so a strict -fno-sanitize-recover
+   UBSan build can avoid miniz's intentional misaligned MZ_READ_LE32 loads. */
+#ifndef MINIZ_USE_UNALIGNED_LOADS_AND_STORES
 #define MINIZ_USE_UNALIGNED_LOADS_AND_STORES 1
+#endif
 #define MINIZ_UNALIGNED_USE_MEMCPY
 #else
 #define MINIZ_USE_UNALIGNED_LOADS_AND_STORES 0
