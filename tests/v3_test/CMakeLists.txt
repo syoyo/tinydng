@@ -9,6 +9,16 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(TINYDNG_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 include_directories(${TINYDNG_ROOT})
 
+# Strict sanitizer build: ASan + UBSan that ABORTS on undefined behavior, so a
+# recoverable UB (e.g. a misaligned load) fails the test instead of only
+# printing a warning. Enable with -DTINYDNG_TEST_SANITIZE=ON.
+option(TINYDNG_TEST_SANITIZE "Build v3 tests with ASan+UBSan (abort on UB)" OFF)
+if(TINYDNG_TEST_SANITIZE)
+  add_compile_options(-fsanitize=address,undefined -fno-sanitize-recover=all
+                      -fno-omit-frame-pointer -g)
+  add_link_options(-fsanitize=address,undefined)
+endif()
+
 add_library(tinydng_v3 STATIC
     ${TINYDNG_ROOT}/tinydng_api.c
     ${TINYDNG_ROOT}/tinydng_io.c
