@@ -22,7 +22,7 @@ add_library(tinydng_v3 STATIC
 
 enable_testing()
 
-foreach(t test_v3_roundtrip test_v3_decode test_v3_metadata)
+foreach(t test_v3_roundtrip test_v3_decode test_v3_metadata test_v3_security)
   add_executable(${t} ${t}.c)
   target_link_libraries(${t} PRIVATE tinydng_v3)
 endforeach()
@@ -30,3 +30,4 @@ endforeach()
 add_test(NAME v3_roundtrip COMMAND test_v3_roundtrip)
 add_test(NAME v3_decode COMMAND test_v3_decode ${TINYDNG_ROOT})
 add_test(NAME v3_metadata COMMAND test_v3_metadata ${TINYDNG_ROOT})
+add_test(NAME v3_security COMMAND test_v3_security)
