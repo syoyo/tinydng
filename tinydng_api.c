@@ -1,11 +1,33 @@
 /*
- * tinydng_api.c - allocator, safe math, error, context/document lifecycle.
+ * tinydng_api.c - allocator, safe math, error, context/document lifecycle,
+ * threading primitives.
  * SPDX-License-Identifier: MIT
  */
+/* Feature-test macros must precede system includes so sysconf() is visible
+   under a strict -std=c11 compile. */
+#if !defined(_WIN32)
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE 1
+#endif
+#endif
+
 #include "td_internal.h"
 
 #include <stdio.h>
 #include <stdlib.h>
+
+#if defined(TINYDNG_ENABLE_THREADS)
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <pthread.h>
+#include <unistd.h>
+#endif
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Error                                                              */
@@ -125,6 +147,186 @@ int td_safe_mul_u64(uint64_t a, uint64_t b, uint64_t *out) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Threading (all platform code is confined here)                     */
+/* ------------------------------------------------------------------ */
+
+struct td_mutex {
+#if defined(TINYDNG_ENABLE_THREADS)
+#if defined(_WIN32)
+  CRITICAL_SECTION cs;
+#else
+  pthread_mutex_t m;
+#endif
+#else
+  int dummy;
+#endif
+};
+
+td_mutex *td_mutex_create(tinydng_context *ctx) {
+#if defined(TINYDNG_ENABLE_THREADS)
+  td_mutex *m;
+  if (!ctx) {
+    return NULL;
+  }
+  m = (td_mutex *)ctx->allocator.alloc(ctx->allocator.user_data, sizeof(*m));
+  if (!m) {
+    return NULL;
+  }
+#if defined(_WIN32)
+  InitializeCriticalSection(&m->cs);
+#else
+  if (pthread_mutex_init(&m->m, NULL) != 0) {
+    ctx->allocator.free(ctx->allocator.user_data, m);
+    return NULL;
+  }
+#endif
+  return m;
+#else
+  (void)ctx;
+  return NULL;
+#endif
+}
+
+void td_mutex_destroy(tinydng_context *ctx, td_mutex *m) {
+  if (!ctx || !m) {
+    return;
+  }
+#if defined(TINYDNG_ENABLE_THREADS)
+#if defined(_WIN32)
+  DeleteCriticalSection(&m->cs);
+#else
+  pthread_mutex_destroy(&m->m);
+#endif
+  ctx->allocator.free(ctx->allocator.user_data, m);
+#endif
+}
+
+void td_mutex_lock(td_mutex *m) {
+#if defined(TINYDNG_ENABLE_THREADS)
+  if (!m) {
+    return;
+  }
+#if defined(_WIN32)
+  EnterCriticalSection(&m->cs);
+#else
+  pthread_mutex_lock(&m->m);
+#endif
+#else
+  (void)m;
+#endif
+}
+
+void td_mutex_unlock(td_mutex *m) {
+#if defined(TINYDNG_ENABLE_THREADS)
+  if (!m) {
+    return;
+  }
+#if defined(_WIN32)
+  LeaveCriticalSection(&m->cs);
+#else
+  pthread_mutex_unlock(&m->m);
+#endif
+#else
+  (void)m;
+#endif
+}
+
+int td_threads_available(void) {
+#if defined(TINYDNG_ENABLE_THREADS)
+  return 1;
+#else
+  return 0;
+#endif
+}
+
+unsigned td_cpu_count(void) {
+#if defined(TINYDNG_ENABLE_THREADS) && defined(_WIN32)
+  SYSTEM_INFO si;
+  GetSystemInfo(&si);
+  return si.dwNumberOfProcessors ? (unsigned)si.dwNumberOfProcessors : 1u;
+#elif defined(TINYDNG_ENABLE_THREADS) && defined(_SC_NPROCESSORS_ONLN)
+  long n = sysconf(_SC_NPROCESSORS_ONLN);
+  return n > 0 ? (unsigned)n : 1u;
+#else
+  return 1u;
+#endif
+}
+
+#if defined(TINYDNG_ENABLE_THREADS)
+typedef struct {
+  td_thread_fn fn;
+  void *arg;
+} td_thread_ctx;
+#if defined(_WIN32)
+static DWORD WINAPI td_thread_trampoline(LPVOID p) {
+  td_thread_ctx *tc = (td_thread_ctx *)p;
+  tc->fn(tc->arg);
+  return 0u;
+}
+#else
+static void *td_thread_trampoline(void *p) {
+  td_thread_ctx *tc = (td_thread_ctx *)p;
+  return tc->fn(tc->arg);
+}
+#endif
+#endif /* TINYDNG_ENABLE_THREADS */
+
+int td_threads_run(td_thread_fn fn, void *args, size_t arg_stride, unsigned n) {
+  unsigned i;
+  if (n == 0u || !fn) {
+    return 0;
+  }
+  if (n > TD_MAX_DECODE_THREADS) {
+    n = TD_MAX_DECODE_THREADS;
+  }
+  if (n == 1u || !td_threads_available()) {
+    for (i = 0u; i < n; i++) {
+      fn((char *)args + (size_t)i * arg_stride);
+    }
+    return 0;
+  }
+#if defined(TINYDNG_ENABLE_THREADS)
+  {
+    td_thread_ctx tc[TD_MAX_DECODE_THREADS];
+    int created[TD_MAX_DECODE_THREADS];
+#if defined(_WIN32)
+    HANDLE th[TD_MAX_DECODE_THREADS];
+#else
+    pthread_t th[TD_MAX_DECODE_THREADS];
+#endif
+    for (i = 1u; i < n; i++) {
+      tc[i].fn = fn;
+      tc[i].arg = (char *)args + (size_t)i * arg_stride;
+#if defined(_WIN32)
+      th[i] = CreateThread(NULL, 0, td_thread_trampoline, &tc[i], 0, NULL);
+      created[i] = (th[i] != NULL);
+#else
+      created[i] =
+          (pthread_create(&th[i], NULL, td_thread_trampoline, &tc[i]) == 0);
+#endif
+    }
+    /* This thread runs task 0 and helps drain the shared queue. */
+    fn((char *)args);
+    for (i = 1u; i < n; i++) {
+      if (created[i]) {
+#if defined(_WIN32)
+        WaitForSingleObject(th[i], INFINITE);
+        CloseHandle(th[i]);
+#else
+        pthread_join(th[i], NULL);
+#endif
+      } else {
+        /* Spawn failed: run inline. The queue is typically already drained,
+           so this returns immediately; correctness holds regardless. */
+        fn((char *)args + (size_t)i * arg_stride);
+      }
+    }
+  }
+#endif
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Allocator                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -142,10 +344,14 @@ void *td_ctx_alloc(tinydng_context *ctx, size_t size, tinydng_error *err) {
   td_alloc_header *h;
   size_t total = 0;
   void *raw;
+  /* Serialize only while a multi-threaded decode is in flight; the single-
+     threaded parse/decode paths take no lock (L stays NULL -> no-op). */
+  td_mutex *L;
 
   if (!ctx) {
     return NULL;
   }
+  L = ctx->mt_active ? ctx->lock : NULL;
   /* Disallow zero-size allocations returning a usable header-only block. */
   if (size == 0u) {
     size = 1u;
@@ -154,15 +360,20 @@ void *td_ctx_alloc(tinydng_context *ctx, size_t size, tinydng_error *err) {
     td_set_error(err, TINYDNG_E_OOM, TINYDNG_STAGE_ALLOC, 0, 0, 0,
                  "allocation size overflow (%zu + %zu)",
                  sizeof(td_alloc_header), size);
+    td_mutex_lock(L);
     ctx->alloc_failed = 1;
+    td_mutex_unlock(L);
     return NULL;
   }
+
+  td_mutex_lock(L);
   if ((ctx->memory_cap_bytes > 0u) &&
       (size > (ctx->memory_cap_bytes - ctx->memory_used))) {
     td_set_error(err, TINYDNG_E_OOM, TINYDNG_STAGE_ALLOC, 0, 0, 0,
                  "memory cap exceeded: requested=%zu used=%zu cap=%zu", size,
                  ctx->memory_used, ctx->memory_cap_bytes);
     ctx->alloc_failed = 1;
+    td_mutex_unlock(L);
     return NULL;
   }
 
@@ -171,6 +382,7 @@ void *td_ctx_alloc(tinydng_context *ctx, size_t size, tinydng_error *err) {
     td_set_error(err, TINYDNG_E_OOM, TINYDNG_STAGE_ALLOC, 0, 0, 0,
                  "allocator returned null for %zu bytes", total);
     ctx->alloc_failed = 1;
+    td_mutex_unlock(L);
     return NULL;
   }
 
@@ -188,6 +400,7 @@ void *td_ctx_alloc(tinydng_context *ctx, size_t size, tinydng_error *err) {
   if (ctx->memory_used > ctx->memory_peak) {
     ctx->memory_peak = ctx->memory_used;
   }
+  td_mutex_unlock(L);
   return (void *)(h + 1);
 }
 
@@ -201,11 +414,15 @@ void *td_ctx_calloc(tinydng_context *ctx, size_t size, tinydng_error *err) {
 
 void td_ctx_free(tinydng_context *ctx, void *ptr) {
   td_alloc_header *h;
+  td_mutex *L;
   if (!ctx || !ptr) {
     return;
   }
+  L = ctx->mt_active ? ctx->lock : NULL;
   h = ((td_alloc_header *)ptr) - 1;
+  td_mutex_lock(L);
   if (h->magic != TINYDNG_ALLOC_MAGIC) {
+    td_mutex_unlock(L);
     return; /* not ours / double free guard */
   }
   if (h->prev) {
@@ -223,6 +440,7 @@ void td_ctx_free(tinydng_context *ctx, void *ptr) {
   }
   h->magic = 0;
   ctx->allocator.free(ctx->allocator.user_data, h);
+  td_mutex_unlock(L);
 }
 
 void td_ctx_free_all(tinydng_context *ctx) {
@@ -299,6 +517,11 @@ tinydng_context *tinydng_context_create(const tinydng_config *config,
     return NULL;
   }
   *ctx = tmp;
+  /* Lock for multi-threaded decode; NULL when threads are disabled (decode
+     then stays serial). Allocation failure here is non-fatal for the same
+     reason -- MT simply won't engage. */
+  ctx->lock = td_mutex_create(ctx);
+  ctx->mt_active = 0;
   return ctx;
 }
 
@@ -308,6 +531,7 @@ void tinydng_context_destroy(tinydng_context *ctx) {
     return;
   }
   alloc = ctx->allocator;
+  td_mutex_destroy(ctx, ctx->lock);
   td_ctx_free_all(ctx);
   alloc.free(alloc.user_data, ctx);
 }

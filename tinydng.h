@@ -350,6 +350,13 @@ typedef struct tinydng_decode_options {
   void *dst;          /* caller buffer; NULL => library allocates */
   size_t dst_capacity;
   uint32_t flags;
+  /* Worker threads for multi-segment (tiled/striped) images: 0 = auto (one per
+     online CPU), 1 = serial, N = use N. Capped to the segment count. Ignored
+     for single-segment images and in builds compiled with
+     TINYDNG_DISABLE_THREADS. Segments decode independently into disjoint
+     output regions; a single decode call must not run concurrently with
+     another call on the same context. */
+  uint32_t num_threads;
 } tinydng_decode_options;
 
 typedef struct tinydng_pixels {

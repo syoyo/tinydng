@@ -24,6 +24,21 @@ typedef struct td_alloc_header {
   struct td_alloc_header *next;
 } td_alloc_header;
 
+/* ------------------------------------------------------------------ */
+/* Threading (opaque; all platform code lives in tinydng_api.c).      */
+/* Enabled on POSIX / Win32 unless TINYDNG_DISABLE_THREADS is set.    */
+/* ------------------------------------------------------------------ */
+
+#if !defined(TINYDNG_DISABLE_THREADS) && \
+    (defined(_WIN32) || defined(__unix__) || defined(__APPLE__) || \
+     defined(__linux__))
+#define TINYDNG_ENABLE_THREADS 1
+#endif
+
+typedef struct td_mutex td_mutex; /* opaque */
+
+#define TD_MAX_DECODE_THREADS 64
+
 struct tinydng_context {
   tinydng_allocator allocator;
   size_t memory_cap_bytes;
@@ -35,6 +50,8 @@ struct tinydng_context {
   uint32_t max_ifd_entries;
   td_alloc_header *alloc_head;
   int alloc_failed;
+  td_mutex *lock;  /* guards allocator + stdio reads while mt_active (may be NULL) */
+  int mt_active;   /* set only for the duration of a multi-threaded decode */
 };
 
 struct tinydng_document {
@@ -62,6 +79,31 @@ void *td_ctx_realloc(tinydng_context *ctx, void *ptr, size_t old_size,
    segments/custom_fields) and zero it. Used by document destroy and to discard
    a partially-parsed scratch image on an error path. */
 void td_free_image_payload(tinydng_context *ctx, tinydng_image_info *img);
+
+/* ------------------------------------------------------------------ */
+/* Threading helpers (no-ops / serial when threads are disabled)      */
+/* ------------------------------------------------------------------ */
+
+/* Create/destroy a mutex (heap-allocated via the ctx allocator, untracked).
+   Returns NULL on failure or when threads are disabled; lock/unlock are
+   NULL-safe no-ops, so callers never branch on the build configuration. */
+td_mutex *td_mutex_create(tinydng_context *ctx);
+void td_mutex_destroy(tinydng_context *ctx, td_mutex *m);
+void td_mutex_lock(td_mutex *m);
+void td_mutex_unlock(td_mutex *m);
+
+/* Run `n` tasks in parallel: task i calls fn((char *)args + i * arg_stride).
+   Every task is guaranteed to run and complete before return -- up to `n`
+   OS threads are used, with inline fallback for any that fail to spawn (and a
+   fully serial loop when threads are disabled). Returns 0. */
+typedef void *(*td_thread_fn)(void *);
+int td_threads_run(td_thread_fn fn, void *args, size_t arg_stride, unsigned n);
+
+/* 1 if real OS threads are available in this build, else 0. */
+int td_threads_available(void);
+
+/* Online CPU count (>= 1); 1 when undeterminable or threads disabled. */
+unsigned td_cpu_count(void);
 
 /* ------------------------------------------------------------------ */
 /* Safe arithmetic                                                    */

@@ -79,6 +79,15 @@ add_library(tinydng STATIC
 target_include_directories(tinydng PUBLIC ${CMAKE_SOURCE_DIR})
 target_compile_features(tinydng PUBLIC c_std_11)
 
+# Multi-threaded segment decode uses pthreads (POSIX) / Win32 threads. Link the
+# platform threading library; consumers inherit it via the PUBLIC dependency.
+# Define TINYDNG_DISABLE_THREADS to build a fully serial, dependency-free lib.
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads)
+if(Threads_FOUND)
+  target_link_libraries(tinydng PUBLIC Threads::Threads)
+endif()
+
 # Vendored third-party TUs: silence their warnings (not our code) and exclude
 # them from the alignment sanitizer (miniz/stb use intentional, x86-safe
 # unaligned fast-path loads that are correct but trip UBSan).
@@ -104,7 +113,8 @@ add_sanitizers(test_dng_v3)
 enable_testing()
 
 # v3 unit tests (link the tinydng library; honor sanitizer options).
-set(TINYDNG_V3_TESTS test_v3_roundtrip test_v3_decode test_v3_metadata)
+set(TINYDNG_V3_TESTS test_v3_roundtrip test_v3_decode test_v3_metadata
+                     test_v3_mt)
 foreach(t ${TINYDNG_V3_TESTS})
   add_executable(${t} tests/v3_test/${t}.c)
   target_link_libraries(${t} PRIVATE tinydng)
@@ -114,6 +124,7 @@ endforeach()
 add_test(NAME v3_roundtrip COMMAND test_v3_roundtrip)
 add_test(NAME v3_decode COMMAND test_v3_decode "${CMAKE_SOURCE_DIR}")
 add_test(NAME v3_metadata COMMAND test_v3_metadata "${CMAKE_SOURCE_DIR}")
+add_test(NAME v3_mt COMMAND test_v3_mt "${CMAKE_SOURCE_DIR}")
 
 if (TINYDNG_WITH_PYTHON)
   # pybind11 method:

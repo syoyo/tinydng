@@ -824,134 +824,278 @@ static void td_blit_block_planar(const td_geom *g, const uint8_t *block,
 /* Core: decode segments overlapping a destination window             */
 /* ------------------------------------------------------------------ */
 
+/* Shared, read-only-during-run state for one decode_window invocation. The
+   only mutable fields (`next`, `failed`) are guarded by `lock`; segments are
+   independent and blit to disjoint destination regions. */
+typedef struct {
+  tinydng_context *ctx;
+  tinydng_io *io;
+  uint64_t io_size;
+  int big_endian;
+  const tinydng_image_info *img;
+  const td_geom *g;
+  td_geom gseg;
+  int planar;
+  uint32_t win_x, win_y, win_w, win_h;
+  uint8_t *dst;
+  size_t dst_row_stride;
+  td_mutex *lock; /* guards next/failed; NULL when running serially */
+  size_t next;    /* next segment index to claim */
+  int failed;     /* a worker reported an error */
+} td_decode_par;
+
+/* Per-worker state: an owned scratch block (grown on demand) + a private
+   error slot so threads never share the caller's error object. */
+typedef struct {
+  td_decode_par *par;
+  uint8_t *block;
+  size_t block_cap;
+  tinydng_error err;
+} td_decode_worker_arg;
+
+/* Decode a single segment into the window. Returns 1 on success (including
+   no-op skips for non-overlapping / empty segments), 0 on error (with
+   w->err set). The worker's scratch block is reused/grown, never freed here. */
+static int td_decode_one_segment(td_decode_par *par, const tinydng_segment *seg,
+                                 td_decode_worker_arg *w) {
+  tinydng_context *ctx = par->ctx;
+  const td_geom *gseg = &par->gseg;
+  tinydng_error *err = &w->err;
+  uint32_t bw, bh;
+  size_t need, block_samples;
+  tinydng_status st;
+  uint8_t *target;
+  int direct;
+
+  /* Skip segments that don't overlap the window. */
+  if (seg->x >= par->win_x + par->win_w || seg->y >= par->win_y + par->win_h ||
+      seg->x + seg->w <= par->win_x || seg->y + seg->h <= par->win_y) {
+    return 1;
+  }
+  td_block_dims(par->img, seg, &bw, &bh);
+  if (bw == 0u || bh == 0u) {
+    return 1;
+  }
+
+  /* Direct decode into the destination when the block fills full window rows
+     (strips, and single-tile-as-whole-image): avoids a second full-size
+     buffer + blit. Requires matching row stride (bw == win_w) and chunky
+     layout (planar must scatter into plane slots). */
+  direct = (!par->planar && bw == par->win_w && seg->x == par->win_x &&
+            seg->y >= par->win_y &&
+            (uint64_t)(seg->y - par->win_y) + bh <= par->win_h);
+
+  if (direct) {
+    target = par->dst + (size_t)(seg->y - par->win_y) * par->dst_row_stride;
+  } else {
+    size_t block_px;
+    if (!td_safe_mul_size((size_t)bw, (size_t)bh, &block_px) ||
+        !td_safe_mul_size(block_px, (size_t)gseg->spp, &block_samples) ||
+        !td_safe_mul_size(block_samples, gseg->out_bytes, &need)) {
+      td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0, 0,
+                   "block size overflow");
+      return 0;
+    }
+    if (need > w->block_cap) {
+      td_ctx_free(ctx, w->block);
+      w->block = (uint8_t *)td_ctx_alloc(ctx, need, err);
+      if (!w->block) {
+        w->block_cap = 0;
+        return 0;
+      }
+      w->block_cap = need;
+    }
+    target = w->block;
+  }
+
+  switch (par->img->compression) {
+    case TINYDNG_COMPRESSION_NONE:
+      st = td_decode_block_uncompressed(ctx, par->io, par->io_size,
+                                        par->big_endian, gseg, seg, bw, bh,
+                                        target, err);
+      break;
+    case TINYDNG_COMPRESSION_OLD_JPEG:
+    case TINYDNG_COMPRESSION_NEW_JPEG:
+      if (gseg->out_bps <= 8u) {
+#ifndef TINYDNG_NO_BASELINE_JPEG
+        st = td_decode_block_baseline(ctx, par->io, par->io_size, gseg, seg,
+                                      target, bw, bh, err);
+#else
+        td_set_error(err, TINYDNG_E_UNSUPPORTED, TINYDNG_STAGE_DECODE, 0, 0, 0,
+                     "baseline JPEG disabled");
+        return 0;
+#endif
+      } else {
+        st = td_decode_block_ljpeg(ctx, par->io, par->io_size, gseg, seg, target,
+                                   bw, bh, err);
+      }
+      break;
+#ifndef TINYDNG_NO_BASELINE_JPEG
+    case TINYDNG_COMPRESSION_LOSSY_JPEG:
+      st = td_decode_block_baseline(ctx, par->io, par->io_size, gseg, seg,
+                                    target, bw, bh, err);
+      break;
+#endif
+    case TINYDNG_COMPRESSION_LZW:
+    case TINYDNG_COMPRESSION_PACKBITS:
+    case TINYDNG_COMPRESSION_ZIP:
+      st = td_decode_block_compressed(ctx, par->io, par->io_size,
+                                      par->big_endian, gseg, seg,
+                                      par->img->compression, bw, bh, target,
+                                      err);
+      break;
+    default:
+      td_set_error(err, TINYDNG_E_UNSUPPORTED, TINYDNG_STAGE_DECODE, 0, 0, 0,
+                   "compression %u not implemented yet",
+                   (unsigned)par->img->compression);
+      return 0;
+  }
+  if (st != TINYDNG_OK) {
+    return 0;
+  }
+  if (!td_apply_predictor(ctx, gseg, target, bw, bh, err)) {
+    if (err->status == TINYDNG_OK) {
+      td_set_error(err, TINYDNG_E_DECODE, TINYDNG_STAGE_DECODE, 0, 0, 0,
+                   "predictor failed");
+    }
+    return 0;
+  }
+  if (par->planar) {
+    td_blit_block_planar(par->g, target, bw, bh, seg->plane, seg->x, seg->y,
+                         par->dst, par->win_x, par->win_y, par->win_w,
+                         par->win_h, par->dst_row_stride);
+  } else if (!direct) {
+    td_blit_block(par->g, target, bw, bh, seg->x, seg->y, par->dst, par->win_x,
+                  par->win_y, par->win_w, par->win_h, par->dst_row_stride);
+  }
+  return 1;
+}
+
+/* Worker: claim segments from the shared queue until drained or another worker
+   fails. One worker running alone is the serial path. */
+static void *td_decode_worker(void *p) {
+  td_decode_worker_arg *w = (td_decode_worker_arg *)p;
+  td_decode_par *par = w->par;
+  for (;;) {
+    size_t i;
+    td_mutex_lock(par->lock);
+    if (par->failed || par->next >= par->img->segment_count) {
+      td_mutex_unlock(par->lock);
+      break;
+    }
+    i = par->next++;
+    td_mutex_unlock(par->lock);
+
+    if (!td_decode_one_segment(par, &par->img->segments[i], w)) {
+      td_mutex_lock(par->lock);
+      par->failed = 1;
+      td_mutex_unlock(par->lock);
+      break;
+    }
+  }
+  return NULL;
+}
+
 static tinydng_status td_decode_window(tinydng_context *ctx,
                                        const tinydng_document *doc,
                                        const tinydng_image_info *img,
                                        const td_geom *g, uint32_t win_x,
                                        uint32_t win_y, uint32_t win_w,
                                        uint32_t win_h, uint8_t *dst,
-                                       size_t dst_row_stride,
+                                       size_t dst_row_stride, unsigned nthreads,
                                        tinydng_error *err) {
-  tinydng_io *io = (tinydng_io *)&doc->io;
-  size_t i;
-  uint8_t *block = NULL;
-  size_t block_cap = 0;
-  int planar = (img->planar_configuration == 2u && g->spp > 1u);
-  td_geom gseg = *g;
-  /* In planar mode each segment carries a single component. */
-  if (planar) {
-    gseg.spp = 1u;
+  td_decode_par par;
+  td_decode_worker_arg *workers;
+  unsigned n, t;
+  int parallel;
+  tinydng_status st = TINYDNG_OK;
+
+  memset(&par, 0, sizeof(par));
+  par.ctx = ctx;
+  par.io = (tinydng_io *)&doc->io;
+  par.io_size = doc->io_size;
+  par.big_endian = doc->big_endian;
+  par.img = img;
+  par.g = g;
+  par.gseg = *g;
+  par.planar = (img->planar_configuration == 2u && g->spp > 1u);
+  if (par.planar) {
+    par.gseg.spp = 1u; /* in planar mode each segment carries one component */
+  }
+  par.win_x = win_x;
+  par.win_y = win_y;
+  par.win_w = win_w;
+  par.win_h = win_h;
+  par.dst = dst;
+  par.dst_row_stride = dst_row_stride;
+  par.lock = NULL;
+  par.next = 0;
+  par.failed = 0;
+
+  n = nthreads ? nthreads : 1u;
+  if ((size_t)n > img->segment_count) {
+    n = (unsigned)img->segment_count;
+  }
+  if (n > TD_MAX_DECODE_THREADS) {
+    n = TD_MAX_DECODE_THREADS;
+  }
+  if (n == 0u) {
+    n = 1u; /* segment_count == 0: one worker that decodes nothing */
+  }
+  parallel = (n > 1u && ctx->lock != NULL && td_threads_available());
+
+  workers = (td_decode_worker_arg *)td_ctx_alloc(
+      ctx, (size_t)n * sizeof(*workers), err);
+  if (!workers) {
+    return TINYDNG_E_OOM;
+  }
+  for (t = 0; t < n; t++) {
+    workers[t].par = &par;
+    workers[t].block = NULL;
+    workers[t].block_cap = 0;
+    tinydng_error_clear(&workers[t].err);
   }
 
-  for (i = 0; i < img->segment_count; i++) {
-    const tinydng_segment *seg = &img->segments[i];
-    uint32_t bw, bh;
-    size_t need, block_samples;
-    tinydng_status st;
-    uint8_t *target;
-    int direct;
+  if (parallel) {
+    par.lock = ctx->lock;
+    ctx->mt_active = 1;
+    td_threads_run(td_decode_worker, workers, sizeof(*workers), n);
+    ctx->mt_active = 0;
+  } else {
+    /* One worker drains the whole queue: identical to the old serial loop. */
+    td_decode_worker(&workers[0]);
+  }
 
-    /* Skip segments that don't overlap the window. */
-    if (seg->x >= win_x + win_w || seg->y >= win_y + win_h ||
-        seg->x + seg->w <= win_x || seg->y + seg->h <= win_y) {
-      continue;
-    }
-    td_block_dims(img, seg, &bw, &bh);
-    if (bw == 0u || bh == 0u) {
-      continue;
-    }
-
-    /* Direct decode into the destination when the block fills full window
-       rows (strips, and single-tile-as-whole-image): avoids a second
-       full-size buffer + blit. Requires matching row stride (bw == win_w)
-       and chunky layout (planar must scatter into plane slots). */
-    direct = (!planar && bw == win_w && seg->x == win_x && seg->y >= win_y &&
-              (uint64_t)(seg->y - win_y) + bh <= win_h);
-
-    if (direct) {
-      target = dst + (size_t)(seg->y - win_y) * dst_row_stride;
-    } else {
-      size_t block_px;
-      if (!td_safe_mul_size((size_t)bw, (size_t)bh, &block_px) ||
-          !td_safe_mul_size(block_px, (size_t)gseg.spp, &block_samples) ||
-          !td_safe_mul_size(block_samples, gseg.out_bytes, &need)) {
-        td_ctx_free(ctx, block);
-        td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0, 0,
-                     "block size overflow");
-        return TINYDNG_E_BOUNDS;
-      }
-      if (need > block_cap) {
-        td_ctx_free(ctx, block);
-        block = (uint8_t *)td_ctx_alloc(ctx, need, err);
-        if (!block) {
-          return TINYDNG_E_OOM;
-        }
-        block_cap = need;
-      }
-      target = block;
-    }
-
-    switch (img->compression) {
-      case TINYDNG_COMPRESSION_NONE:
-        st = td_decode_block_uncompressed(ctx, io, doc->io_size,
-                                          doc->big_endian, &gseg, seg, bw, bh,
-                                          target, err);
-        break;
-      case TINYDNG_COMPRESSION_OLD_JPEG:
-      case TINYDNG_COMPRESSION_NEW_JPEG:
-        if (gseg.out_bps <= 8u) {
-#ifndef TINYDNG_NO_BASELINE_JPEG
-          st = td_decode_block_baseline(ctx, io, doc->io_size, &gseg, seg,
-                                        target, bw, bh, err);
-#else
-          td_ctx_free(ctx, block);
-          td_set_error(err, TINYDNG_E_UNSUPPORTED, TINYDNG_STAGE_DECODE, 0, 0, 0,
-                       "baseline JPEG disabled");
-          return TINYDNG_E_UNSUPPORTED;
-#endif
-        } else {
-          st = td_decode_block_ljpeg(ctx, io, doc->io_size, &gseg, seg, target,
-                                     bw, bh, err);
-        }
-        break;
-#ifndef TINYDNG_NO_BASELINE_JPEG
-      case TINYDNG_COMPRESSION_LOSSY_JPEG:
-        st = td_decode_block_baseline(ctx, io, doc->io_size, &gseg, seg, target,
-                                      bw, bh, err);
-        break;
-#endif
-      case TINYDNG_COMPRESSION_LZW:
-      case TINYDNG_COMPRESSION_PACKBITS:
-      case TINYDNG_COMPRESSION_ZIP:
-        st = td_decode_block_compressed(ctx, io, doc->io_size, doc->big_endian,
-                                        &gseg, seg, img->compression, bw, bh,
-                                        target, err);
-        break;
-      default:
-        td_ctx_free(ctx, block);
-        td_set_error(err, TINYDNG_E_UNSUPPORTED, TINYDNG_STAGE_DECODE, 0, 0, 0,
-                     "compression %u not implemented yet",
-                     (unsigned)img->compression);
-        return TINYDNG_E_UNSUPPORTED;
-    }
-    if (st != TINYDNG_OK) {
-      td_ctx_free(ctx, block);
-      return st;
-    }
-    if (!td_apply_predictor(ctx, &gseg, target, bw, bh, err)) {
-      td_ctx_free(ctx, block);
-      return err->status ? err->status : TINYDNG_E_DECODE;
-    }
-    if (planar) {
-      td_blit_block_planar(g, target, bw, bh, seg->plane, seg->x, seg->y, dst,
-                           win_x, win_y, win_w, win_h, dst_row_stride);
-    } else if (!direct) {
-      td_blit_block(g, target, bw, bh, seg->x, seg->y, dst, win_x, win_y, win_w,
-                    win_h, dst_row_stride);
+  for (t = 0; t < n; t++) {
+    td_ctx_free(ctx, workers[t].block);
+    if (st == TINYDNG_OK && workers[t].err.status != TINYDNG_OK) {
+      *err = workers[t].err;
+      st = workers[t].err.status;
     }
   }
-  td_ctx_free(ctx, block);
-  return TINYDNG_OK;
+  td_ctx_free(ctx, workers);
+  return st;
+}
+
+/* Effective worker count for a decode: opts->num_threads (0 = auto = CPU
+   count), clamped to the segment count and TD_MAX_DECODE_THREADS. */
+static unsigned td_effective_threads(const tinydng_decode_options *opts,
+                                     size_t segment_count) {
+  unsigned n;
+  if (segment_count <= 1u) {
+    return 1u;
+  }
+  n = (opts && opts->num_threads) ? opts->num_threads : td_cpu_count();
+  if ((size_t)n > segment_count) {
+    n = (unsigned)segment_count;
+  }
+  if (n > TD_MAX_DECODE_THREADS) {
+    n = TD_MAX_DECODE_THREADS;
+  }
+  if (n == 0u) {
+    n = 1u;
+  }
+  return n;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1012,7 +1156,8 @@ tinydng_status tinydng_decode_image(tinydng_context *ctx,
     return st;
   }
   st = td_decode_window(ctx, doc, img, &g, 0, 0, g.width, g.height, dst,
-                        g.row_stride, err);
+                        g.row_stride,
+                        td_effective_threads(opts, img->segment_count), err);
   if (st != TINYDNG_OK) {
     if (owns) {
       td_ctx_free(ctx, dst);
@@ -1071,7 +1216,8 @@ tinydng_status tinydng_decode_region(tinydng_context *ctx,
   if (st != TINYDNG_OK) {
     return st;
   }
-  st = td_decode_window(ctx, doc, img, &g, x, y, w, h, dst, region_row, err);
+  st = td_decode_window(ctx, doc, img, &g, x, y, w, h, dst, region_row,
+                        td_effective_threads(opts, img->segment_count), err);
   if (st != TINYDNG_OK) {
     if (owns) {
       td_ctx_free(ctx, dst);

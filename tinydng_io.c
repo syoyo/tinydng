@@ -156,13 +156,24 @@ static int td_seek64(FILE *fp, uint64_t off) {
 static size_t td_stdio_read(tinydng_io *io, uint64_t off, void *dst,
                             size_t len) {
   td_io_stdio *s = (td_io_stdio *)io->backend;
+  /* The stdio backend shares one FILE* (and its position), so seek+read must
+     be atomic across decode threads. The lock is taken only while a
+     multi-threaded decode is active; mmap/memory backends use map() and never
+     reach this path. */
+  td_mutex *L;
+  size_t got;
   if (off > s->size || (uint64_t)len > (s->size - off)) {
     return 0;
   }
+  L = (s->ctx && s->ctx->mt_active) ? s->ctx->lock : NULL;
+  td_mutex_lock(L);
   if (td_seek64(s->fp, off) != 0) {
+    td_mutex_unlock(L);
     return 0;
   }
-  return fread(dst, 1, len, s->fp);
+  got = fread(dst, 1, len, s->fp);
+  td_mutex_unlock(L);
+  return got;
 }
 
 static uint64_t td_stdio_size(tinydng_io *io) {
