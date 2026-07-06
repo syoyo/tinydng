@@ -66,7 +66,9 @@ set(TINYDNG_V3_CORE_SRCS
   tinydng_tiff.c
   tinydng_dng.c
   tinydng_codec.c
-  tinydng_write.c)
+  tinydng_write.c
+  tinydng_psd.c
+  tinydng_psd_write.c)
 
 set(TINYDNG_V3_VENDOR_SRCS
   tinydng_miniz.c
@@ -114,7 +116,7 @@ enable_testing()
 
 # v3 unit tests (link the tinydng library; honor sanitizer options).
 set(TINYDNG_V3_TESTS test_v3_roundtrip test_v3_decode test_v3_metadata
-                     test_v3_mt)
+                     test_v3_mt test_v3_psd)
 foreach(t ${TINYDNG_V3_TESTS})
   add_executable(${t} tests/v3_test/${t}.c)
   target_link_libraries(${t} PRIVATE tinydng)
@@ -125,6 +127,7 @@ add_test(NAME v3_roundtrip COMMAND test_v3_roundtrip)
 add_test(NAME v3_decode COMMAND test_v3_decode "${CMAKE_SOURCE_DIR}")
 add_test(NAME v3_metadata COMMAND test_v3_metadata "${CMAKE_SOURCE_DIR}")
 add_test(NAME v3_mt COMMAND test_v3_mt "${CMAKE_SOURCE_DIR}")
+add_test(NAME v3_psd COMMAND test_v3_psd)
 
 if (TINYDNG_WITH_PYTHON)
   # pybind11 method:

@@ -945,10 +945,12 @@ tinydng_status tinydng_open_io(tinydng_context *ctx, tinydng_io io,
   {
     /* td_io_view may return a pointer into mapped memory (not `magic`), so
        read the header bytes through the returned pointer, not the scratch. */
-    const uint8_t *hp = td_io_view(&io, r.size, 0, 2u, magic, sizeof(magic));
+    uint8_t scratch4[4];
+    const uint8_t *hp = td_io_view(&io, r.size, 0, 4u, scratch4,
+                                   sizeof(scratch4));
     if (r.size < 8u || hp == NULL) {
       td_set_error(err, TINYDNG_E_PARSE, TINYDNG_STAGE_HEADER, 0, 0, 0,
-                   "buffer too small for TIFF header");
+                   "buffer too small for TIFF/PSD header");
       if (io.close) {
         io.close(&io);
       }
@@ -956,6 +958,38 @@ tinydng_status tinydng_open_io(tinydng_context *ctx, tinydng_io io,
     }
     magic[0] = hp[0];
     magic[1] = hp[1];
+    if (hp[0] == '8' && hp[1] == 'B' && hp[2] == 'P' && hp[3] == 'S') {
+#ifndef TINYDNG_NO_PSD
+      r.big_endian = 1;
+      doc = (tinydng_document *)td_ctx_calloc(ctx, sizeof(*doc), err);
+      if (!doc) {
+        if (io.close) {
+          io.close(&io);
+        }
+        return TINYDNG_E_OOM;
+      }
+      doc->io = io; /* take ownership */
+      doc->has_io = 1;
+      doc->io_size = r.size;
+      doc->big_endian = 1;
+      doc->format = TD_DOC_FORMAT_PSD;
+      r.io = &doc->io;
+      st = td_psd_open(ctx, &r, doc, flags, err);
+      if (st != TINYDNG_OK) {
+        tinydng_document_destroy(ctx, doc);
+        return st;
+      }
+      *out = doc;
+      return TINYDNG_OK;
+#else
+      td_set_error(err, TINYDNG_E_UNSUPPORTED, TINYDNG_STAGE_HEADER, 0, 0, 0,
+                   "PSD support disabled (TINYDNG_NO_PSD)");
+      if (io.close) {
+        io.close(&io);
+      }
+      return TINYDNG_E_UNSUPPORTED;
+#endif
+    }
   }
   if (magic[0] == 'I' && magic[1] == 'I') {
     r.big_endian = 0;
@@ -963,7 +997,7 @@ tinydng_status tinydng_open_io(tinydng_context *ctx, tinydng_io io,
     r.big_endian = 1;
   } else {
     td_set_error(err, TINYDNG_E_PARSE, TINYDNG_STAGE_HEADER, 0, 0, 0,
-                 "not a TIFF byte-order marker");
+                 "not a TIFF or PSD signature");
     if (io.close) {
       io.close(&io);
     }

@@ -37,6 +37,30 @@ $ ./fuzzer -rss_limit_mb=20000 -jobs 4
 ```
 
 
+## v3 (clean-room C11) fuzzers
+
+The `fuzz-v3*` harnesses target the clean-room parser/writer and are built with
+the bundled Makefile targets (clang + `-fsanitize=address,undefined,fuzzer`):
+
+```
+$ make v3            # all v3 harnesses
+$ make v3-psd        # PSD/PSB reader
+$ make v3-psd-write  # PSD writer round-trip (asserts byte-identical read-back)
+$ make psd-seeds     # writer-generated PSD/PSB seed corpus -> seeds-psd/
+```
+
+Run the PSD reader with its token dictionary and seeds:
+
+```
+$ ./fuzz-v3-psd -dict=v3-psd.dict -max_len=65536 seeds-psd
+$ ./fuzz-v3-psd-write            # no corpus needed; derives docs from input
+```
+
+`fuzz-v3-psd` walks composite decode, every layer (interleaved + per channel),
+the thumbnail, and depth-capped smart-object open/decode. `fuzz-v3-psd-write`
+writes a doc derived from the input, reopens it, and asserts the decoded
+composite and layer bytes match what was written.
+
 ## TODO
 
 * [ ] Fuzzer for DNG writer.

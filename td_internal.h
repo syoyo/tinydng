@@ -48,11 +48,17 @@ struct tinydng_context {
   uint64_t max_image_pixels;
   uint32_t max_ifd_depth;
   uint32_t max_ifd_entries;
+  uint32_t max_psd_layers;
+  uint32_t max_psd_resources;
+  uint32_t max_embed_depth;
   td_alloc_header *alloc_head;
   int alloc_failed;
   td_mutex *lock;  /* guards allocator + stdio reads while mt_active (may be NULL) */
   int mt_active;   /* set only for the duration of a multi-threaded decode */
 };
+
+#define TD_DOC_FORMAT_TIFF 0u
+#define TD_DOC_FORMAT_PSD 1u
 
 struct tinydng_document {
   tinydng_io io;  /* owned; closed on destroy */
@@ -60,10 +66,13 @@ struct tinydng_document {
   uint64_t io_size;
   uint8_t big_endian;
   uint8_t bigtiff;
+  uint8_t format;       /* TD_DOC_FORMAT_* */
+  uint32_t embed_depth; /* smart-object nesting level (0 = top file) */
   tinydng_image_info *images;
   size_t image_count;
   tinydng_exif global_exif;
   uint8_t has_global_exif;
+  struct tinydng_psd_info *psd; /* non-NULL for PSD/PSB documents */
 };
 
 void *td_ctx_alloc(tinydng_context *ctx, size_t size, tinydng_error *err);
@@ -286,5 +295,42 @@ int td_dng_handle_tag(tinydng_context *ctx, const td_reader *r,
                       tinydng_image_info *img, uint32_t ifd_index, uint16_t tag,
                       uint16_t type, uint64_t count, uint64_t data_off,
                       tinydng_error *err);
+
+/* ------------------------------------------------------------------ */
+/* Shared codecs                                                      */
+/* ------------------------------------------------------------------ */
+
+#ifndef TINYDNG_NO_PACKBITS
+/* Defined in tinydng_codec.c. Returns decoded byte count or -1. */
+long td_packbits_decode(const uint8_t *in, size_t in_len, uint8_t *out,
+                        size_t out_cap);
+#endif
+
+/* ------------------------------------------------------------------ */
+/* PSD / PSB (tinydng_psd.c, tinydng_psd_write.c)                     */
+/* ------------------------------------------------------------------ */
+
+#ifndef TINYDNG_NO_PSD
+
+/* Internal-only compression code for the composite segment table: zlib +
+   per-row delta prediction. Never collides with TIFF compression tags. */
+#define TD_COMPRESSION_PSD_ZIP_PRED 0xF003u
+
+/* Parse a PSD/PSB stream (magic already verified) and populate `doc`:
+   doc->psd plus doc->images[0] for the composite. `r` is positioned on the
+   whole file with big_endian=1. */
+tinydng_status td_psd_open(tinydng_context *ctx, td_reader *r,
+                           tinydng_document *doc, uint32_t open_flags,
+                           tinydng_error *err);
+
+/* Free all heap payload owned by a psd_info (incl. the struct itself). */
+void td_psd_free_info(tinydng_context *ctx, struct tinydng_psd_info *psd);
+
+/* Undo PSD zip-prediction in place on stored big-endian bytes of one plane
+   (w*h samples of `depth` bits, rows independent). Returns 1 ok / 0 error. */
+int td_psd_unpredict_plane(tinydng_context *ctx, uint8_t *plane, uint32_t w,
+                           uint32_t h, uint16_t depth, tinydng_error *err);
+
+#endif /* TINYDNG_NO_PSD */
 
 #endif /* TINYDNG_INTERNAL_H_ */

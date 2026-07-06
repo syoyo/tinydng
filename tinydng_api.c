@@ -508,6 +508,13 @@ tinydng_context *tinydng_context_create(const tinydng_config *config,
       (config && config->max_ifd_depth > 0u) ? config->max_ifd_depth : 8u;
   tmp.max_ifd_entries =
       (config && config->max_ifd_entries > 0u) ? config->max_ifd_entries : 4096u;
+  tmp.max_psd_layers =
+      (config && config->max_psd_layers > 0u) ? config->max_psd_layers : 4096u;
+  tmp.max_psd_resources = (config && config->max_psd_resources > 0u)
+                              ? config->max_psd_resources
+                              : 2048u;
+  tmp.max_embed_depth =
+      (config && config->max_embed_depth > 0u) ? config->max_embed_depth : 4u;
 
   ctx = (tinydng_context *)tmp.allocator.alloc(tmp.allocator.user_data,
                                                sizeof(*ctx));
@@ -600,6 +607,12 @@ void tinydng_document_destroy(tinydng_context *ctx, tinydng_document *doc) {
     td_ctx_free(ctx, doc->images);
   }
   td_free_exif(ctx, &doc->global_exif);
+#ifndef TINYDNG_NO_PSD
+  if (doc->psd) {
+    td_psd_free_info(ctx, doc->psd);
+    doc->psd = NULL;
+  }
+#endif
   if (doc->has_io && doc->io.close) {
     doc->io.close(&doc->io);
   }
@@ -620,6 +633,15 @@ const tinydng_image_info *tinydng_image_get(const tinydng_document *doc,
     return NULL;
   }
   return &doc->images[index];
+}
+
+const tinydng_psd_info *tinydng_document_psd(const tinydng_document *doc) {
+#ifndef TINYDNG_NO_PSD
+  return doc ? doc->psd : NULL;
+#else
+  (void)doc;
+  return NULL;
+#endif
 }
 
 const tinydng_exif *tinydng_document_exif(const tinydng_document *doc) {

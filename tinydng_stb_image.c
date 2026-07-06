@@ -10,6 +10,9 @@
 #define STBI_NO_LINEAR
 #define STBI_NO_HDR
 #define STBI_ONLY_JPEG
+#ifndef TINYDNG_NO_PSD
+#define STBI_ONLY_PNG /* PSD smart-object payload decode */
+#endif
 #include "stb_image.h"
 
 #endif /* TINYDNG_NO_BASELINE_JPEG */

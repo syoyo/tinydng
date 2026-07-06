@@ -72,6 +72,9 @@ typedef struct tinydng_config {
   uint64_t max_image_pixels;   /* per-image W*H cap; 0 => 1<<30        */
   uint32_t max_ifd_depth;      /* SubIFD recursion guard; 0 => 8       */
   uint32_t max_ifd_entries;    /* per-IFD entry cap; 0 => 4096         */
+  uint32_t max_psd_layers;     /* PSD layer cap; 0 => 4096             */
+  uint32_t max_psd_resources;  /* PSD 8BIM resource cap; 0 => 2048     */
+  uint32_t max_embed_depth;    /* smart-object recursion; 0 => 4       */
 } tinydng_config;
 
 /* ------------------------------------------------------------------ */
@@ -386,6 +389,257 @@ tinydng_status tinydng_decode_image(tinydng_context *ctx,
                                     const tinydng_decode_options *opts,
                                     tinydng_pixels *out, tinydng_error *err);
 void tinydng_pixels_free(tinydng_context *ctx, tinydng_pixels *px);
+
+/* ------------------------------------------------------------------ */
+/* PSD / PSB (Adobe Photoshop)                                        */
+/*                                                                    */
+/* A '8BPS' file opened through tinydng_open_* exposes its composite   */
+/* (merged) image as doc image 0 (planar, big-endian; decode with the  */
+/* normal tinydng_decode_* entry points). Everything PSD-specific --   */
+/* layers, image resources, tagged blocks, smart objects -- lives in   */
+/* the tinydng_psd_info reachable via tinydng_document_psd().          */
+/* Compile out with TINYDNG_NO_PSD.                                    */
+/* ------------------------------------------------------------------ */
+
+typedef enum tinydng_psd_color_mode {
+  TINYDNG_PSD_BITMAP = 0,
+  TINYDNG_PSD_GRAYSCALE = 1,
+  TINYDNG_PSD_INDEXED = 2,
+  TINYDNG_PSD_RGB = 3,
+  TINYDNG_PSD_CMYK = 4,
+  TINYDNG_PSD_MULTICHANNEL = 7,
+  TINYDNG_PSD_DUOTONE = 8,
+  TINYDNG_PSD_LAB = 9
+} tinydng_psd_color_mode;
+
+typedef enum tinydng_psd_compression {
+  TINYDNG_PSD_COMP_RAW = 0,
+  TINYDNG_PSD_COMP_RLE = 1, /* PackBits, per scanline           */
+  TINYDNG_PSD_COMP_ZIP = 2, /* zlib, whole channel              */
+  TINYDNG_PSD_COMP_ZIP_PRED = 3 /* zlib + per-row delta prediction */
+} tinydng_psd_compression;
+
+#define TINYDNG_PSD_FOURCC(a, b, c, d)                                   \
+  (((uint32_t)(uint8_t)(a) << 24) | ((uint32_t)(uint8_t)(b) << 16) |     \
+   ((uint32_t)(uint8_t)(c) << 8) | (uint32_t)(uint8_t)(d))
+
+typedef enum tinydng_psd_blend_mode {
+  TINYDNG_PSD_BLEND_PASS_THROUGH = TINYDNG_PSD_FOURCC('p', 'a', 's', 's'),
+  TINYDNG_PSD_BLEND_NORMAL = TINYDNG_PSD_FOURCC('n', 'o', 'r', 'm'),
+  TINYDNG_PSD_BLEND_DISSOLVE = TINYDNG_PSD_FOURCC('d', 'i', 's', 's'),
+  TINYDNG_PSD_BLEND_DARKEN = TINYDNG_PSD_FOURCC('d', 'a', 'r', 'k'),
+  TINYDNG_PSD_BLEND_MULTIPLY = TINYDNG_PSD_FOURCC('m', 'u', 'l', ' '),
+  TINYDNG_PSD_BLEND_COLOR_BURN = TINYDNG_PSD_FOURCC('i', 'd', 'i', 'v'),
+  TINYDNG_PSD_BLEND_LINEAR_BURN = TINYDNG_PSD_FOURCC('l', 'b', 'r', 'n'),
+  TINYDNG_PSD_BLEND_DARKER_COLOR = TINYDNG_PSD_FOURCC('d', 'k', 'C', 'l'),
+  TINYDNG_PSD_BLEND_LIGHTEN = TINYDNG_PSD_FOURCC('l', 'i', 't', 'e'),
+  TINYDNG_PSD_BLEND_SCREEN = TINYDNG_PSD_FOURCC('s', 'c', 'r', 'n'),
+  TINYDNG_PSD_BLEND_COLOR_DODGE = TINYDNG_PSD_FOURCC('d', 'i', 'v', ' '),
+  TINYDNG_PSD_BLEND_LINEAR_DODGE = TINYDNG_PSD_FOURCC('l', 'd', 'd', 'g'),
+  TINYDNG_PSD_BLEND_LIGHTER_COLOR = TINYDNG_PSD_FOURCC('l', 'g', 'C', 'l'),
+  TINYDNG_PSD_BLEND_OVERLAY = TINYDNG_PSD_FOURCC('o', 'v', 'e', 'r'),
+  TINYDNG_PSD_BLEND_SOFT_LIGHT = TINYDNG_PSD_FOURCC('s', 'L', 'i', 't'),
+  TINYDNG_PSD_BLEND_HARD_LIGHT = TINYDNG_PSD_FOURCC('h', 'L', 'i', 't'),
+  TINYDNG_PSD_BLEND_VIVID_LIGHT = TINYDNG_PSD_FOURCC('v', 'L', 'i', 't'),
+  TINYDNG_PSD_BLEND_LINEAR_LIGHT = TINYDNG_PSD_FOURCC('l', 'L', 'i', 't'),
+  TINYDNG_PSD_BLEND_PIN_LIGHT = TINYDNG_PSD_FOURCC('p', 'L', 'i', 't'),
+  TINYDNG_PSD_BLEND_HARD_MIX = TINYDNG_PSD_FOURCC('h', 'M', 'i', 'x'),
+  TINYDNG_PSD_BLEND_DIFFERENCE = TINYDNG_PSD_FOURCC('d', 'i', 'f', 'f'),
+  TINYDNG_PSD_BLEND_EXCLUSION = TINYDNG_PSD_FOURCC('s', 'm', 'u', 'd'),
+  TINYDNG_PSD_BLEND_SUBTRACT = TINYDNG_PSD_FOURCC('f', 's', 'u', 'b'),
+  TINYDNG_PSD_BLEND_DIVIDE = TINYDNG_PSD_FOURCC('f', 'd', 'i', 'v'),
+  TINYDNG_PSD_BLEND_HUE = TINYDNG_PSD_FOURCC('h', 'u', 'e', ' '),
+  TINYDNG_PSD_BLEND_SATURATION = TINYDNG_PSD_FOURCC('s', 'a', 't', ' '),
+  TINYDNG_PSD_BLEND_COLOR = TINYDNG_PSD_FOURCC('c', 'o', 'l', 'r'),
+  TINYDNG_PSD_BLEND_LUMINOSITY = TINYDNG_PSD_FOURCC('l', 'u', 'm', ' ')
+} tinydng_psd_blend_mode;
+
+typedef enum tinydng_psd_section {
+  TINYDNG_PSD_SECTION_LAYER = 0,
+  TINYDNG_PSD_SECTION_OPEN_FOLDER = 1,
+  TINYDNG_PSD_SECTION_CLOSED_FOLDER = 2,
+  TINYDNG_PSD_SECTION_DIVIDER = 3 /* hidden group-end marker */
+} tinydng_psd_section;
+
+/* Channel ids: 0..n-1 image components, -1 transparency (alpha),
+   -2 user-supplied layer mask, -3 real user mask (when both exist). */
+typedef struct tinydng_psd_channel {
+  int16_t id;
+  uint16_t compression; /* tinydng_psd_compression                   */
+  uint64_t data_offset; /* absolute offset of payload (past the tag) */
+  uint64_t data_length; /* payload bytes (excludes the 2-byte tag)   */
+} tinydng_psd_channel;
+
+typedef struct tinydng_psd_mask {
+  int32_t top, left, bottom, right;
+  uint8_t default_color;
+  uint8_t flags;
+  uint8_t present;
+} tinydng_psd_mask;
+
+/* A tagged block ('8BIM'/'8B64' + fourcc key), exposed as a byte range;
+   fetch the raw contents with tinydng_psd_read_block(). */
+typedef struct tinydng_psd_block {
+  uint32_t key;    /* fourcc, e.g. 'luni','lsct','SoLd'    */
+  uint64_t offset; /* absolute file offset of block data   */
+  uint64_t length;
+} tinydng_psd_block;
+
+typedef struct tinydng_psd_layer {
+  int32_t top, left, bottom, right; /* content rect (may be negative) */
+  uint32_t width, height;           /* right-left / bottom-top        */
+  char *name;          /* UTF-8; from 'luni' if present, else Pascal  */
+  uint32_t blend_mode; /* fourcc (tinydng_psd_blend_mode)             */
+  uint8_t opacity;     /* 0..255                                      */
+  uint8_t clipping;    /* 0 base, 1 non-base                          */
+  uint8_t flags;       /* bit1: visible==0, bit4: pixel-data-irrelevant */
+  uint8_t section;     /* tinydng_psd_section (from 'lsct')           */
+  uint32_t parent;     /* enclosing group layer index; UINT32_MAX=root */
+  tinydng_psd_mask mask;
+  tinydng_psd_channel *channels; /* context-owned */
+  size_t channel_count;
+  tinydng_psd_block *blocks; /* per-layer tagged blocks (context-owned) */
+  size_t block_count;
+} tinydng_psd_layer;
+
+typedef struct tinydng_psd_resource { /* 8BIM image resource */
+  uint16_t id;
+  char *name;      /* Pascal name as UTF-8 (usually "") */
+  uint64_t offset; /* absolute offset of resource data  */
+  uint64_t length;
+} tinydng_psd_resource;
+
+typedef struct tinydng_psd_smart_object {
+  uint32_t kind;     /* 'liFD' embedded, 'liFE' external, 'liFA' alias */
+  char *uid;         /* unique id linking placed layers to this file   */
+  char *filename;    /* original file name, UTF-8                      */
+  uint32_t filetype; /* fourcc: '8BPS','JPEG','png ',...               */
+  uint64_t data_offset; /* embedded raw bytes ('liFD' only; else 0)    */
+  uint64_t data_length;
+} tinydng_psd_smart_object;
+
+typedef struct tinydng_psd_info {
+  uint8_t is_psb;         /* header version 2 (large document)  */
+  uint16_t channel_count; /* composite channels (1..56)         */
+  uint16_t depth;         /* 1 / 8 / 16 / 32                    */
+  uint16_t color_mode;    /* tinydng_psd_color_mode             */
+  uint32_t width, height;
+  uint16_t composite_compression; /* tinydng_psd_compression     */
+  uint8_t has_transparency;       /* layer count was negative    */
+  uint8_t has_composite;          /* composite section present   */
+  /* Indexed palette (768 bytes, RGB planar) or duotone blob. */
+  uint8_t *color_mode_data;
+  size_t color_mode_data_size;
+  tinydng_psd_layer *layers; /* file (bottom-up) order */
+  size_t layer_count;
+  tinydng_psd_resource *resources;
+  size_t resource_count;
+  tinydng_psd_block *global_blocks;
+  size_t global_block_count;
+  tinydng_psd_smart_object *smart_objects;
+  size_t smart_object_count;
+} tinydng_psd_info;
+
+/* NULL when the document is not a PSD/PSB. */
+const tinydng_psd_info *tinydng_document_psd(const tinydng_document *doc);
+
+/* Decode a layer to interleaved pixels: image channels in id order followed
+   by transparency (-1) when present; mask channels are excluded. 1-bit
+   layers decode to 8-bit (0/255, black=255 inverted to intensity).
+   opts->num_threads parallelizes across channels. */
+tinydng_status tinydng_psd_decode_layer(tinydng_context *ctx,
+                                        const tinydng_document *doc,
+                                        size_t layer_idx,
+                                        const tinydng_decode_options *opts,
+                                        tinydng_pixels *out,
+                                        tinydng_error *err);
+
+/* Decode a single channel (by index into layer->channels; mask channels
+   use the mask rect). Output is one plane. */
+tinydng_status tinydng_psd_decode_layer_channel(
+    tinydng_context *ctx, const tinydng_document *doc, size_t layer_idx,
+    size_t channel_idx, const tinydng_decode_options *opts,
+    tinydng_pixels *out, tinydng_error *err);
+
+/* Copy `length` raw bytes at absolute `offset` (bounds-checked against the
+   file). Free the returned buffer with tinydng_buffer_free(). */
+tinydng_status tinydng_psd_read_block(tinydng_context *ctx,
+                                      const tinydng_document *doc,
+                                      uint64_t offset, uint64_t length,
+                                      uint8_t **out_data, size_t *out_size,
+                                      tinydng_error *err);
+
+/* Decode image resource 1036 (or legacy 1033) JPEG thumbnail via stb. */
+tinydng_status tinydng_psd_decode_thumbnail(tinydng_context *ctx,
+                                            const tinydng_document *doc,
+                                            tinydng_pixels *out,
+                                            tinydng_error *err);
+
+/* Open an embedded smart-object payload (PSD/PSB/TIFF/DNG) as a new
+   document on the same context. Depth-limited by max_embed_depth. */
+tinydng_status tinydng_psd_smart_object_open(tinydng_context *ctx,
+                                             const tinydng_document *doc,
+                                             size_t so_idx,
+                                             const tinydng_open_options *opts,
+                                             tinydng_document **out,
+                                             tinydng_error *err);
+
+/* Decode an embedded smart-object payload to pixels: JPEG/PNG via stb,
+   PSD/PSB/TIFF/DNG via a recursive open + decode of image 0. */
+tinydng_status tinydng_psd_smart_object_decode(tinydng_context *ctx,
+                                               const tinydng_document *doc,
+                                               size_t so_idx,
+                                               tinydng_pixels *out,
+                                               tinydng_error *err);
+
+/* ---- PSD writer ---- */
+
+typedef struct tinydng_psd_write_channel {
+  int16_t id;          /* 0..n-1 image, -1 transparency          */
+  const uint8_t *data; /* one plane, host byte order, w*h samples */
+  size_t size;         /* must equal w*h*depth/8                  */
+} tinydng_psd_write_channel;
+
+typedef struct tinydng_psd_write_layer {
+  int32_t top, left, bottom, right;
+  const char *name;    /* UTF-8; emitted as Pascal + 'luni'. NULL => "" */
+  uint32_t blend_mode; /* 0 => 'norm'                                   */
+  uint8_t opacity;     /* 0 => treated as 255                           */
+  uint8_t clipping;
+  uint8_t flags;
+  uint8_t section; /* tinydng_psd_section; != 0 emits 'lsct' */
+  const tinydng_psd_write_channel *channels;
+  uint16_t channel_count;
+} tinydng_psd_write_layer;
+
+typedef struct tinydng_psd_write_doc {
+  uint32_t width, height;
+  uint16_t depth;         /* 8 / 16 / 32                            */
+  uint16_t color_mode;    /* tinydng_psd_color_mode                 */
+  uint16_t channel_count; /* composite channels                     */
+  const uint8_t *composite; /* interleaved, host order; NULL => zeros */
+  size_t composite_size;
+  const uint8_t *palette; /* 768 bytes when color_mode == INDEXED   */
+  const tinydng_psd_write_layer *layers;
+  size_t layer_count;
+  const uint8_t *icc; /* optional ICC profile => resource 1039      */
+  size_t icc_size;
+} tinydng_psd_write_doc;
+
+typedef struct tinydng_psd_write_options {
+  uint16_t compression; /* tinydng_psd_compression: RAW or RLE (default) */
+  uint8_t as_psb;       /* version 2: 64-bit lengths, u32 RLE counts     */
+} tinydng_psd_write_options;
+
+tinydng_status tinydng_psd_write_memory(tinydng_context *ctx,
+                                        const tinydng_psd_write_doc *doc,
+                                        const tinydng_psd_write_options *opts,
+                                        uint8_t **out_data, size_t *out_size,
+                                        tinydng_error *err);
+tinydng_status tinydng_psd_write_file(tinydng_context *ctx, const char *path,
+                                      const tinydng_psd_write_doc *doc,
+                                      const tinydng_psd_write_options *opts,
+                                      tinydng_error *err);
 
 /* ------------------------------------------------------------------ */
 /* Writer (uncompressed TIFF / DNG, single image)                     */

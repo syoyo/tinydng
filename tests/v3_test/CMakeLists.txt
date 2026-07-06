@@ -26,6 +26,8 @@ add_library(tinydng_v3 STATIC
     ${TINYDNG_ROOT}/tinydng_dng.c
     ${TINYDNG_ROOT}/tinydng_codec.c
     ${TINYDNG_ROOT}/tinydng_write.c
+    ${TINYDNG_ROOT}/tinydng_psd.c
+    ${TINYDNG_ROOT}/tinydng_psd_write.c
     ${TINYDNG_ROOT}/tinydng_miniz.c
     ${TINYDNG_ROOT}/tinydng_stb_image.c
     ${TINYDNG_ROOT}/tiny_dng_ljpeg92_v2.c)
@@ -40,7 +42,7 @@ endif()
 enable_testing()
 
 foreach(t test_v3_roundtrip test_v3_decode test_v3_metadata test_v3_security
-          test_v3_mt)
+          test_v3_mt test_v3_psd)
   add_executable(${t} ${t}.c)
   target_link_libraries(${t} PRIVATE tinydng_v3)
 endforeach()
@@ -50,3 +52,4 @@ add_test(NAME v3_decode COMMAND test_v3_decode ${TINYDNG_ROOT})
 add_test(NAME v3_metadata COMMAND test_v3_metadata ${TINYDNG_ROOT})
 add_test(NAME v3_security COMMAND test_v3_security)
 add_test(NAME v3_mt COMMAND test_v3_mt ${TINYDNG_ROOT})
+add_test(NAME v3_psd COMMAND test_v3_psd)

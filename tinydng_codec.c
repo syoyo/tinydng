@@ -226,7 +226,7 @@ static int td_stored_block_size(const td_geom *g, uint32_t bw, uint32_t bh,
     if (!td_safe_mul_size(spr, (size_t)g->bps / 8u, &in_row)) {
       return 0;
     }
-  } else if (g->bps >= 2u && g->bps <= 16u) {
+  } else if (g->bps >= 1u && g->bps <= 16u) {
     size_t bits;
     if (!td_safe_mul_size(spr, (size_t)g->bps, &bits)) {
       return 0;
@@ -473,8 +473,8 @@ static long td_lzw_decode(const uint8_t *in, size_t in_len, uint8_t *out,
 #endif /* TINYDNG_NO_LZW */
 
 #ifndef TINYDNG_NO_PACKBITS
-static long td_packbits_decode(const uint8_t *in, size_t in_len, uint8_t *out,
-                               size_t out_cap) {
+long td_packbits_decode(const uint8_t *in, size_t in_len, uint8_t *out,
+                        size_t out_cap) {
   size_t ip = 0;
   long op = 0;
   while (ip < in_len) {
@@ -564,6 +564,19 @@ static tinydng_status td_decode_block_compressed(
       got = (mzr == MZ_OK) ? (long)dlen : -1;
       break;
     }
+#ifndef TINYDNG_NO_PSD
+    case TD_COMPRESSION_PSD_ZIP_PRED: {
+      /* PSD zip-with-prediction: one whole channel plane per segment. */
+      mz_ulong dlen = (mz_ulong)need;
+      int mzr = mz_uncompress(stored, &dlen, src, (mz_ulong)seg->byte_count);
+      got = (mzr == MZ_OK) ? (long)dlen : -1;
+      if (got == (long)need &&
+          !td_psd_unpredict_plane(ctx, stored, bw, bh, g->bps, err)) {
+        got = -1;
+      }
+      break;
+    }
+#endif
 #endif
     default:
       td_ctx_free(ctx, stored);
@@ -939,6 +952,9 @@ static int td_decode_one_segment(td_decode_par *par, const tinydng_segment *seg,
     case TINYDNG_COMPRESSION_LZW:
     case TINYDNG_COMPRESSION_PACKBITS:
     case TINYDNG_COMPRESSION_ZIP:
+#if !defined(TINYDNG_NO_PSD) && !defined(TINYDNG_NO_ZIP)
+    case TD_COMPRESSION_PSD_ZIP_PRED:
+#endif
       st = td_decode_block_compressed(ctx, par->io, par->io_size,
                                       par->big_endian, gseg, seg,
                                       par->img->compression, bw, bh, target,
