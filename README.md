@@ -6,6 +6,8 @@ Currently TinyDNG only supports lossless RAW DNG and limited lossless JPEG DNG(n
 
 TinyDNG can also be used as an TIFF RGB image loader(8bit, 16bit and 32bit are supported).
 
+TinyDNG v3 also includes a pure C11 Adobe PSD/PSB reader and writer for composite images, layers, tagged blocks and embedded smart objects.
+
 TinyDNG loader module is being fuzz tested using LLVMFuzzer, and is enoughly secure(and no C++ exception and assert/abort code exists).
 
 ![](images/tinydngloader_viewer.png)
@@ -25,6 +27,13 @@ TinyDNG loader module is being fuzz tested using LLVMFuzzer, and is enoughly sec
 * [x] TIFF
   * [x] 8bit uncompressed
   * [x] 8bit LZW compressed(no preditor, horizontal diff predictor)
+* [x] PSD / PSB (Adobe Photoshop, v3 C API)
+  * [x] Composite image decode through the normal `tinydng_decode_*` APIs
+  * [x] Layers, layer channels, masks, blend modes, groups and tagged blocks
+  * [x] RAW, RLE(PackBits), ZIP and ZIP-with-prediction channel data
+  * [x] 1, 8, 16 and 32 bit depths
+  * [x] Image resources and JPEG thumbnail resources
+  * [x] Embedded smart objects(PSD/PSB/TIFF/DNG/JPEG/PNG payloads)
 * Experimental
   * Apple ProRAW(Lossless JPEG 12bit)
     * [x] Lossless JPEG 12bit
@@ -42,6 +51,11 @@ TinyDNG loader module is being fuzz tested using LLVMFuzzer, and is enoughly sec
 
 * [x] DNG and TIFF
   * [x] LosslessJPEG compression
+* [x] PSD / PSB (v3 C API)
+  * [x] Composite image + layers
+  * [x] RAW or RLE(PackBits) output
+  * [x] 8, 16 and 32 bit depths
+  * [x] Optional ICC profile resource
 
 ## Supported DNG files
 
@@ -238,6 +252,100 @@ int main(int argc, char **argv) {
 }
 ```
 
+### Loading PSD/PSB (v3 C API)
+
+PSD/PSB support lives in the v3 C API (`tinydng.h`). Open a Photoshop file with the normal `tinydng_open_*` entry points. The merged composite image is exposed as document image 0, so it can be decoded with `tinydng_decode_image`, `tinydng_decode_region` or `tinydng_decode_segment`. PSD-specific metadata is available through `tinydng_document_psd()`.
+
+```c
+#include <stdio.h>
+#include "tinydng.h"
+
+int main(int argc, char **argv) {
+  tinydng_context *ctx = NULL;
+  tinydng_document *doc = NULL;
+  tinydng_error err;
+  const tinydng_psd_info *psd = NULL;
+  tinydng_pixels composite;
+
+  if (argc < 2) {
+    return 1;
+  }
+
+  ctx = tinydng_context_create(NULL, &err);
+  if (!ctx) {
+    fprintf(stderr, "%s\n", err.message);
+    return 1;
+  }
+
+  if (tinydng_open_file(ctx, argv[1], NULL, &doc, &err) != TINYDNG_OK) {
+    fprintf(stderr, "%s\n", err.message);
+    tinydng_context_destroy(ctx);
+    return 1;
+  }
+
+  psd = tinydng_document_psd(doc);
+  if (psd) {
+    printf("%s %ux%u depth=%u layers=%zu resources=%zu\n",
+           psd->is_psb ? "PSB" : "PSD", psd->width, psd->height,
+           psd->depth, psd->layer_count, psd->resource_count);
+  }
+
+  if (tinydng_decode_image(ctx, doc, 0, NULL, &composite, &err) == TINYDNG_OK) {
+    printf("composite: %ux%u channels=%u bytes=%zu\n",
+           composite.width, composite.height,
+           composite.samples_per_pixel, composite.size);
+    tinydng_pixels_free(ctx, &composite);
+  }
+
+  tinydng_document_destroy(ctx, doc);
+  tinydng_context_destroy(ctx);
+  return 0;
+}
+```
+
+Useful PSD-specific APIs:
+
+* `tinydng_document_psd(doc)` returns `tinydng_psd_info` for layers, image resources, global tagged blocks and embedded smart objects.
+* `tinydng_psd_decode_layer()` decodes a layer to interleaved pixels.
+* `tinydng_psd_decode_layer_channel()` decodes one layer channel or mask channel.
+* `tinydng_psd_read_block()` copies raw image-resource or tagged-block bytes.
+* `tinydng_psd_decode_thumbnail()` decodes Photoshop JPEG thumbnail resources 1036 or 1033.
+* `tinydng_psd_smart_object_open()` opens an embedded PSD/PSB/TIFF/DNG smart object as a nested `tinydng_document`.
+* `tinydng_psd_smart_object_decode()` decodes embedded PSD/PSB/TIFF/DNG/JPEG/PNG smart-object payloads to pixels.
+
+Define `TINYDNG_NO_PSD` to compile PSD/PSB support out.
+
+### Writing PSD/PSB (v3 C API)
+
+Use `tinydng_psd_write_memory()` or `tinydng_psd_write_file()` with a `tinydng_psd_write_doc`. The writer accepts interleaved composite pixels in host byte order and optional layer planes. Set `tinydng_psd_write_options::as_psb` to write PSB, otherwise PSD is emitted.
+
+```c
+tinydng_psd_write_doc doc;
+tinydng_psd_write_options opts;
+
+memset(&doc, 0, sizeof(doc));
+doc.width = width;
+doc.height = height;
+doc.depth = 16;
+doc.color_mode = TINYDNG_PSD_RGB;
+doc.channel_count = 3;
+doc.composite = rgb16_interleaved;
+doc.composite_size = (size_t)width * height * 3 * 2;
+
+memset(&opts, 0, sizeof(opts));
+opts.compression = TINYDNG_PSD_COMP_RLE; /* or TINYDNG_PSD_COMP_RAW */
+
+if (tinydng_psd_write_file(ctx, "out.psd", &doc, &opts, &err) != TINYDNG_OK) {
+  fprintf(stderr, "%s\n", err.message);
+}
+```
+
+The PSD writer currently supports 8/16/32-bit composite and layer data, RGB/grayscale/indexed and other Photoshop color-mode headers, RAW or RLE(PackBits) output compression, UTF-8 layer names, group section markers, alpha layer channels and optional ICC profile resource 1039. Mask-channel writing is not currently supported.
+
+### PSD/PSB tests
+
+The CMake test target `test_v3_psd` covers PSD/PSB writer-reader round trips, RAW/RLE, 8/16/32-bit depths, ZIP and ZIP-with-prediction reader paths, 1-bit composites, group trees, multi-threaded decode determinism, truncation checks and smart-object nesting. With an external corpus directory, run `test_v3_psd corpus <dir>` to open and fully decode every `*.psd` and `*.psb` in that directory.
+
 ## Customizations
 
 * `TINY_DNG_LOADER_USE_THREAD` : Enable threaded loading(requires C++11)
@@ -316,4 +424,3 @@ TinyDNG uses the following third party libraries.
 * stb_image : Public domain image loader.
 * lzw.hpp : Author: Guilherme R. Lampert. Public domain LZW decoder.
 * miniz : Copyright 2013-2014 RAD Game Tools and Valve Software. Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC MIT license. See `miniz.LICENSE`
-
