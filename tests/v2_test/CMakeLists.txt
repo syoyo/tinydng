@@ -16,3 +16,6 @@ target_link_libraries(test_v2_metadata tinydng_v2)
 
 add_executable(test_v2_streaming test_v2_streaming.c)
 target_link_libraries(test_v2_streaming tinydng_v2)
+
+add_executable(test_v2_streamencode test_v2_streamencode.c)
+target_link_libraries(test_v2_streamencode tinydng_v2)

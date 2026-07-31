@@ -43,6 +43,13 @@ In `tdng_parse_document()`, SubIFDs are only queued when `TINYDNG_V2_LOAD_FLAG_P
 - `tdng_lj92_open_streaming(lj, user, read_fn, size_fn, ...)` parses headers (incl. DHT) through a chunk-cached reader (64KB) and decodes with the regular `tdng_lj92_decode`; the entropy payload is destuffed straight from the callback (no full-segment materialization). `size_fn` may be NULL (unknown length). Tests: `tests/v2_test/test_v2_streaming.c` (memory==streaming byte parity, known/unknown size, skip lengths, truncation/garbage/baseline error paths).
 - v3 codec (`tinydng_codec.c` `td_decode_block_ljpeg`) uses the streaming path automatically when `io->map == NULL` (stdio backend).
 
+### LJPEG v2 Streaming Encode
+- `tdng_lj92_encode_open/scan/begin/rows/finish` emit the encoded stream to a `tdng_lj92_write_fn` sink (4KB staged chunks, never materialized). Two-pass: `scan` builds the SSSS histogram, `begin` emits SOI/SOF3/DHT/SOS, `rows(lj, image_base, row0, count)` feeds the entropy pass incrementally (predictor row cache persists; must be called in row order with the same base pointer). `TDNG_LJ92_ERROR_IO = -6` on a short sink write. `tdng_lj92_encode_ex` is a thin wrapper over the same API (growable-buffer sink). Tests: `tests/v2_test/test_v2_streamencode.c` (byte parity vs one-shot, chunked rows, DNG tile readLength/skipLength layout, error paths).
+
+### v3 Streaming / Tiled Writer
+- `tinydng_write_io` (absolute-offset write/size/close; file + memory backends; `tinydng_write_io_open_file/memory`, `tinydng_write_io_memory_take`) — TIFF needs a seekable sink to patch the header's IFD pointer.
+- `tinydng_writer_create(ctx, sink, meta /*data ignored*/, opts, tiling, &w)` / `tinydng_writer_write_tile(w, idx, pixels)` / `tinydng_writer_write_strip(w, idx, pixels)` / `tinydng_writer_finish(w)`: tiled (TileWidth/Length + TileOffsets/ByteCounts arrays in extras) or multi-strip; compression none/LZW/lossless-JPEG (16-bit, per-segment streams via the streaming encoder, straight to the sink). Edge tiles are padded to full tile dims (DNG requires full-size tile streams; the loader decodes tile_width x tile_length and blits only the valid region). The extras buffer is re-laid out in sorted-entry order at finish (`td_writer_relayout_extras`) so IFD running offsets match. `tinydng_write_memory/write_file` are thin wrappers (single strip + memory/file sink). Tests: `tests/v3_test/test_v3_streamwrite.c` + `fuzzer/fuzz-v3-streamwrite.c`.
+
 ### V2 Image Loading Behavior
 - Lossless JPEG: decoded into memory, DATA_OWNS_MEMORY flag set
 - Baseline JPEG (NOT_LOSSLESS): raw JPEG bytes copied to allocated memory, DATA_OWNS_MEMORY flag set (file buffer is freed after loading)

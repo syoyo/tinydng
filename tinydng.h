@@ -679,6 +679,85 @@ tinydng_status tinydng_write_file(tinydng_context *ctx, const char *path,
                                   tinydng_error *err);
 void tinydng_buffer_free(tinydng_context *ctx, uint8_t *buf);
 
+/* ------------------------------------------------------------------ */
+/* Streaming writer (tiled / multi-strip TIFF and DNG)                */
+/*                                                                     */
+/* Writes the pixel payloads incrementally as each tile/strip is       */
+/* encoded, keeping only the (small) offset/count table in memory.     */
+/* The image pixels are never buffered by the library.                 */
+/*                                                                     */
+/* The sink uses absolute-offset writes because TIFF requires          */
+/* patching the header's first-IFD pointer at finish: a seekable sink  */
+/* (file, memory) is required. tinydng_write_io_open_file/memory build */
+/* the two built-in backends.                                          */
+/* ------------------------------------------------------------------ */
+
+typedef struct tinydng_write_io tinydng_write_io;
+struct tinydng_write_io {
+  /* Write len bytes at absolute off. Returns bytes written; a return
+     < len is a sink failure (aborts the write). */
+  size_t (*write)(tinydng_write_io *io, uint64_t off, const void *data,
+                  size_t len);
+  /* Current stream size (end of written data). */
+  uint64_t (*size)(tinydng_write_io *io);
+  /* Release backend resources. May be NULL. */
+  void (*close)(tinydng_write_io *io);
+  void *backend;
+};
+
+tinydng_status tinydng_write_io_open_file(tinydng_context *ctx,
+                                          const char *path,
+                                          tinydng_write_io *out,
+                                          tinydng_error *err);
+tinydng_status tinydng_write_io_open_memory(tinydng_context *ctx,
+                                            tinydng_write_io *out,
+                                            tinydng_error *err);
+/* Detach the memory backend's buffer (owned by ctx; free with
+   tinydng_buffer_free). The io is still closed with io->close. */
+tinydng_status tinydng_write_io_memory_take(tinydng_context *ctx,
+                                            tinydng_write_io *io,
+                                            uint8_t **out_data,
+                                            size_t *out_size,
+                                            tinydng_error *err);
+
+typedef struct tinydng_tiling {
+  uint32_t tile_width;    /* >0 => tiled layout (TileWidth/TileLength) */
+  uint32_t tile_length;
+  uint32_t rows_per_strip; /* strips: >0 => multi-strip, 0 => whole image */
+} tinydng_tiling;
+
+typedef struct tinydng_writer tinydng_writer;
+
+/* Create a streaming writer. `meta` supplies the geometry + DNG metadata;
+   meta->data/data_size are ignored (pixels arrive per tile/strip). */
+tinydng_status tinydng_writer_create(tinydng_context *ctx,
+                                     tinydng_write_io sink,
+                                     const tinydng_write_image *meta,
+                                     const tinydng_write_options *opts,
+                                     const tinydng_tiling *tiling,
+                                     tinydng_writer **out,
+                                     tinydng_error *err);
+
+/* Encode + write one tile (tiled layout; row-major, chunky). `pixels`
+   holds w_tile*h_tile*spp*(bps/8) bytes in host byte order where w_tile/
+   h_tile are the edge-cropped tile dims (min(tile_width, width-x), ...).
+   Lossless JPEG requires bps == 16. */
+tinydng_status tinydng_writer_write_tile(tinydng_writer *w,
+                                         uint32_t tile_index,
+                                         const void *pixels,
+                                         tinydng_error *err);
+
+/* Encode + write one strip (striped layout). `pixels` holds
+   w*strip_h*spp*(bps/8) bytes (the last strip may be shorter). */
+tinydng_status tinydng_writer_write_strip(tinydng_writer *w,
+                                          uint32_t strip_index,
+                                          const void *pixels,
+                                          tinydng_error *err);
+
+/* Write the IFD + extras, patch the header, and release the writer.
+   The handle is invalid after this call. */
+tinydng_status tinydng_writer_finish(tinydng_writer *w, tinydng_error *err);
+
 #ifdef __cplusplus
 }
 #endif

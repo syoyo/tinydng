@@ -1,7 +1,19 @@
 /*
- * tinydng_write.c - uncompressed TIFF/DNG writer (single image).
+ * tinydng_write.c - uncompressed TIFF/DNG writer (single image) + the
+ * streaming/tiled writer (tinydng_writer_*).
  * SPDX-License-Identifier: MIT
  */
+/* Feature-test macros must precede all system includes so that POSIX
+   fseeko/ftello are visible even under a strict -std=c11 compile. */
+#if !defined(_WIN32)
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE 1
+#endif
+#endif
+
 #include "td_internal.h"
 #include "tiny_dng_ljpeg92_v2.h"
 
@@ -303,163 +315,998 @@ static long td_lzw_encode(const uint8_t *in, size_t in_len, uint8_t *out,
   return (long)op;
 }
 
-/* Produce the on-disk strip bytes for `img` honoring compression + endianness.
-   On success *out_strip is a ctx-owned buffer (free with td_ctx_free). */
-static tinydng_status td_prepare_strip(tinydng_context *ctx,
-                                       const tinydng_write_image *img, int be,
-                                       uint16_t spp, uint16_t bps, uint16_t comp,
-                                       size_t data_size, uint8_t **out_strip,
-                                       size_t *out_len, uint16_t *out_comp,
-                                       tinydng_error *err) {
-  size_t sb = (size_t)bps / 8u;
-  int need_swap = (sb > 1u) && (be != tdw_host_big());
-  size_t n_samples = (sb > 0u) ? (data_size / sb) : data_size;
+/* ------------------------------------------------------------------ */
+/* Write-io backends (file / memory)                                  */
+/* ------------------------------------------------------------------ */
 
-  *out_strip = NULL;
-  *out_len = 0;
-  *out_comp = comp ? comp : (uint16_t)TINYDNG_COMPRESSION_NONE;
-
-  if (comp == 0u || comp == TINYDNG_COMPRESSION_NONE) {
-    uint8_t *s = (uint8_t *)td_ctx_alloc(ctx, data_size, err);
-    if (!s) {
-      return TINYDNG_E_OOM;
-    }
-    if (need_swap) {
-      tdw_swap_copy(s, img->data, n_samples, sb);
-    } else {
-      memcpy(s, img->data, data_size);
-    }
-    *out_strip = s;
-    *out_len = data_size;
-    *out_comp = TINYDNG_COMPRESSION_NONE;
-    return TINYDNG_OK;
+static int td_wseek(FILE *fp, uint64_t off) {
+#if defined(_WIN32)
+  return _fseeki64(fp, (__int64)off, SEEK_SET);
+#elif defined(__unix__) || defined(__APPLE__) || defined(__linux__)
+  return fseeko(fp, (off_t)off, SEEK_SET);
+#else
+  if (off > (uint64_t)LONG_MAX) {
+    return -1;
   }
-
-  if (comp == TINYDNG_COMPRESSION_LZW) {
-    const uint8_t *src;
-    uint8_t *tmp = NULL;
-    uint8_t *enc;
-    int16_t *tbl;
-    size_t cap;
-    long n;
-    if (need_swap) {
-      tmp = (uint8_t *)td_ctx_alloc(ctx, data_size, err);
-      if (!tmp) {
-        return TINYDNG_E_OOM;
-      }
-      tdw_swap_copy(tmp, img->data, n_samples, sb);
-      src = tmp;
-    } else {
-      src = img->data;
-    }
-    cap = data_size + data_size / 2u + 1024u;
-    enc = (uint8_t *)td_ctx_alloc(ctx, cap, err);
-    tbl = (int16_t *)td_ctx_alloc(ctx, (size_t)4096u * 256u * sizeof(int16_t),
-                                  err);
-    if (!enc || !tbl) {
-      td_ctx_free(ctx, tmp);
-      td_ctx_free(ctx, enc);
-      td_ctx_free(ctx, tbl);
-      return TINYDNG_E_OOM;
-    }
-    n = td_lzw_encode(src, data_size, enc, cap, tbl);
-    td_ctx_free(ctx, tbl);
-    td_ctx_free(ctx, tmp);
-    if (n < 0) {
-      td_ctx_free(ctx, enc);
-      td_set_error(err, TINYDNG_E_INTERNAL, TINYDNG_STAGE_WRITE, 0, 0, 0,
-                   "LZW encode overflow");
-      return TINYDNG_E_INTERNAL;
-    }
-    *out_strip = enc;
-    *out_len = (size_t)n;
-    *out_comp = TINYDNG_COMPRESSION_LZW;
-    return TINYDNG_OK;
-  }
-
-  if (comp == TINYDNG_COMPRESSION_NEW_JPEG ||
-      comp == TINYDNG_COMPRESSION_OLD_JPEG) {
-    uint16_t *img16;
-    uint8_t *encoded = NULL;
-    int enclen = 0;
-    int rc;
-    uint8_t *out;
-    if (bps != 16u) {
-      td_set_error(err, TINYDNG_E_UNSUPPORTED, TINYDNG_STAGE_WRITE, 0, 0, 0,
-                   "lossless JPEG writer requires 16-bit samples");
-      return TINYDNG_E_UNSUPPORTED;
-    }
-    img16 = (uint16_t *)(void *)(uintptr_t)img->data; /* host-order uint16 */
-    rc = tdng_lj92_encode_ex(img16, (int)img->width, (int)img->height, 16,
-                             (int)spp, 1 /*predictor=left*/,
-                             (int)((size_t)img->width * spp), 0, NULL, 0,
-                             &encoded, &enclen);
-    if (rc != 0 || !encoded || enclen <= 0) {
-      if (encoded) {
-        free(encoded);
-      }
-      td_set_error(err, TINYDNG_E_INTERNAL, TINYDNG_STAGE_WRITE, 0, 0, 0,
-                   "tdng_lj92_encode_ex failed rc=%d", rc);
-      return TINYDNG_E_INTERNAL;
-    }
-    out = (uint8_t *)td_ctx_alloc(ctx, (size_t)enclen, err);
-    if (!out) {
-      free(encoded);
-      return TINYDNG_E_OOM;
-    }
-    memcpy(out, encoded, (size_t)enclen);
-    free(encoded);
-    *out_strip = out;
-    *out_len = (size_t)enclen;
-    *out_comp = TINYDNG_COMPRESSION_NEW_JPEG;
-    return TINYDNG_OK;
-  }
-
-  td_set_error(err, TINYDNG_E_UNSUPPORTED, TINYDNG_STAGE_WRITE, 0, 0, 0,
-               "unsupported writer compression %u", (unsigned)comp);
-  return TINYDNG_E_UNSUPPORTED;
+  return fseek(fp, (long)off, SEEK_SET);
+#endif
 }
 
-tinydng_status tinydng_write_memory(tinydng_context *ctx,
-                                    const tinydng_write_image *img,
-                                    const tinydng_write_options *opts,
-                                    uint8_t **out_data, size_t *out_size,
-                                    tinydng_error *err) {
-  td_writer w;
-  int be = opts ? (opts->big_endian != 0) : 0;
-  uint16_t spp, bps, sfmt, photo;
-  size_t data_size, strip_pad, strip_off, extras_base, ifd_off, total;
-  size_t expected;
-  size_t i, idx;
-  uint8_t *buf;
-  size_t ext_running;
-  uint8_t *strip_data = NULL;
-  size_t strip_len = 0;
-  uint16_t comp_value = TINYDNG_COMPRESSION_NONE;
+typedef struct td_wio_file {
+  tinydng_context *ctx;
+  FILE *fp;
+} td_wio_file;
 
-  tinydng_error_clear(err);
-  if (!ctx || !img || !out_data || !out_size || !img->data) {
+static size_t td_wio_file_write(tinydng_write_io *io, uint64_t off,
+                                const void *data, size_t len) {
+  td_wio_file *f = (td_wio_file *)io->backend;
+  if (td_wseek(f->fp, off) != 0) {
+    return 0;
+  }
+  return fwrite(data, 1, len, f->fp);
+}
+
+static uint64_t td_wio_file_size(tinydng_write_io *io) {
+  td_wio_file *f = (td_wio_file *)io->backend;
+  long cur, end;
+  cur = ftell(f->fp);
+  if (td_wseek(f->fp, 0) != 0) {
+    return 0;
+  }
+  if (td_wseek(f->fp, (uint64_t)-1) != 0 && fseek(f->fp, 0, SEEK_END) != 0) {
+    return 0;
+  }
+  end = ftell(f->fp);
+  if (cur >= 0) {
+    td_wseek(f->fp, (uint64_t)cur);
+  }
+  return (end < 0) ? 0u : (uint64_t)end;
+}
+
+static void td_wio_file_close(tinydng_write_io *io) {
+  td_wio_file *f = (td_wio_file *)io->backend;
+  if (f) {
+    if (f->fp) {
+      fclose(f->fp);
+    }
+    td_ctx_free(f->ctx, f);
+  }
+  io->backend = NULL;
+}
+
+tinydng_status tinydng_write_io_open_file(tinydng_context *ctx,
+                                          const char *path,
+                                          tinydng_write_io *out,
+                                          tinydng_error *err) {
+  td_wio_file *f;
+  if (!ctx || !path || !out) {
     td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_WRITE, 0, 0, 0,
-                 "null argument to tinydng_write_memory");
+                 "null argument to tinydng_write_io_open_file");
     return TINYDNG_E_INVALID_ARG;
   }
-  *out_data = NULL;
-  *out_size = 0;
+  f = (td_wio_file *)td_ctx_calloc(ctx, sizeof(*f), err);
+  if (!f) {
+    return TINYDNG_E_OOM;
+  }
+  f->ctx = ctx;
+  f->fp = fopen(path, "w+b");
+  if (!f->fp) {
+    td_ctx_free(ctx, f);
+    td_set_error(err, TINYDNG_E_IO, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                 "fopen('%s') for write failed", path);
+    return TINYDNG_E_IO;
+  }
+  memset(out, 0, sizeof(*out));
+  out->write = td_wio_file_write;
+  out->size = td_wio_file_size;
+  out->close = td_wio_file_close;
+  out->backend = f;
+  return TINYDNG_OK;
+}
 
-  spp = img->samples_per_pixel ? img->samples_per_pixel : 1u;
-  bps = img->bits_per_sample ? img->bits_per_sample : 8u;
-  sfmt = img->sample_format ? img->sample_format : TINYDNG_SAMPLEFORMAT_UINT;
+typedef struct td_wio_mem {
+  tinydng_context *ctx;
+  uint8_t *data;
+  size_t cap;
+  size_t size; /* high-water mark */
+  int detached;
+} td_wio_mem;
+
+static size_t td_wio_mem_write(tinydng_write_io *io, uint64_t off,
+                               const void *data, size_t len) {
+  td_wio_mem *m = (td_wio_mem *)io->backend;
+  uint64_t end = off + len;
+  if (end < off) {
+    return 0; /* u64 wrap */
+  }
+  if (end > (uint64_t)m->cap) {
+    size_t cap = m->cap ? m->cap : 4096u;
+    while (cap < end) {
+      if (cap > (size_t)-1 / 2u) {
+        cap = (size_t)end;
+        break;
+      }
+      cap *= 2u;
+    }
+    if (cap < end) {
+      return 0; /* offset does not fit size_t */
+    }
+    {
+      tinydng_error rerr;
+      uint8_t *nb = (uint8_t *)td_ctx_realloc(m->ctx, m->data, m->cap, cap,
+                                              &rerr);
+      if (!nb) {
+        return 0;
+      }
+      m->data = nb;
+      m->cap = cap;
+    }
+  }
+  if (off > (uint64_t)m->size) {
+    memset(m->data + m->size, 0, (size_t)(off - (uint64_t)m->size));
+  }
+  memcpy(m->data + (size_t)off, data, len);
+  if (end > (uint64_t)m->size) {
+    m->size = (size_t)end;
+  }
+  return len;
+}
+
+static uint64_t td_wio_mem_size(tinydng_write_io *io) {
+  return (uint64_t)((td_wio_mem *)io->backend)->size;
+}
+
+static void td_wio_mem_close(tinydng_write_io *io) {
+  td_wio_mem *m = (td_wio_mem *)io->backend;
+  if (m) {
+    if (!m->detached) {
+      td_ctx_free(m->ctx, m->data);
+    }
+    td_ctx_free(m->ctx, m);
+  }
+  io->backend = NULL;
+}
+
+tinydng_status tinydng_write_io_open_memory(tinydng_context *ctx,
+                                            tinydng_write_io *out,
+                                            tinydng_error *err) {
+  td_wio_mem *m;
+  if (!ctx || !out) {
+    td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                 "null argument to tinydng_write_io_open_memory");
+    return TINYDNG_E_INVALID_ARG;
+  }
+  m = (td_wio_mem *)td_ctx_calloc(ctx, sizeof(*m), err);
+  if (!m) {
+    return TINYDNG_E_OOM;
+  }
+  m->ctx = ctx;
+  memset(out, 0, sizeof(*out));
+  out->write = td_wio_mem_write;
+  out->size = td_wio_mem_size;
+  out->close = td_wio_mem_close;
+  out->backend = m;
+  return TINYDNG_OK;
+}
+
+tinydng_status tinydng_write_io_memory_take(tinydng_context *ctx,
+                                            tinydng_write_io *io,
+                                            uint8_t **out_data,
+                                            size_t *out_size,
+                                            tinydng_error *err) {
+  td_wio_mem *m;
+  if (!ctx || !io || !out_data || !out_size) {
+    td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                 "null argument to tinydng_write_io_memory_take");
+    return TINYDNG_E_INVALID_ARG;
+  }
+  m = (td_wio_mem *)io->backend;
+  if (!m || io->write != td_wio_mem_write || m->detached) {
+    td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                 "io is not a memory backend (or already taken)");
+    return TINYDNG_E_INVALID_ARG;
+  }
+  *out_data = m->data;
+  *out_size = m->size;
+  m->data = NULL;
+  m->cap = 0;
+  m->size = 0;
+  m->detached = 1;
+  return TINYDNG_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/* Streaming / tiled writer                                           */
+/* ------------------------------------------------------------------ */
+
+/* Reserve `len` zeroed bytes in the extras buffer (even-aligned like
+   td_extras_put); returns a writable pointer or NULL (w->failed set). */
+static uint8_t *td_reserve(td_writer *w, size_t len) {
+  size_t padded = (len + 1u) & ~(size_t)1u;
+  uint8_t *ret;
+  if (w->failed || w->extras_len + padded > w->extras_cap) {
+    w->failed = 1;
+    return NULL;
+  }
+  ret = w->extras + w->extras_len;
+  memset(ret, 0, padded);
+  w->extras_len += padded;
+  return ret;
+}
+
+/* Add a tag whose value already lives in a reserved extras region. */
+static void td_add_reserved(td_writer *w, uint16_t tag, uint16_t type,
+                            uint32_t count, uint8_t *ext, size_t ext_len) {
+  td_wentry *e;
+  if (w->failed || w->entry_count >= TD_WMAX_ENTRIES) {
+    w->failed = 1;
+    return;
+  }
+  e = &w->entries[w->entry_count++];
+  e->tag = tag;
+  e->type = type;
+  e->count = count;
+  e->ext_len = ext_len;
+  e->ext = ext;
+  memset(e->value, 0, 4);
+}
+
+typedef struct td_writer_seg {
+  uint64_t offset;   /* absolute payload offset in the stream */
+  uint32_t byte_count;
+} td_writer_seg;
+
+struct tinydng_writer {
+  tinydng_context *ctx;
+  tinydng_write_io sink;
+  int big_endian;
+  uint32_t width, height;
+  uint16_t spp, bps, sfmt, photo;
+  uint16_t compression; /* effective: NONE / LZW / NEW_JPEG */
+  int tiled;
+  uint32_t tile_width, tile_length;
+  uint32_t rows_per_strip;
+  uint32_t seg_count;
+  td_writer_seg *segs;
+  td_writer w;
+  uint64_t data_pos;
+  int finished;
+};
+
+static tinydng_status td_wio_err(tinydng_write_io *sink, uint64_t at,
+                                 tinydng_error *err) {
+  (void)sink;
+  td_set_error(err, TINYDNG_E_IO, TINYDNG_STAGE_WRITE, 0, 0, at,
+               "sink short write");
+  return TINYDNG_E_IO;
+}
+
+/* Adapter: route the LJPEG92 streaming encoder's output directly into the
+   write-io sink at a fixed absolute position. */
+typedef struct td_lj92_sink_ctx {
+  tinydng_write_io *sink;
+  uint64_t pos;     /* absolute write position */
+  uint64_t written; /* bytes written for this stream */
+  int failed;
+} td_lj92_sink_ctx;
+
+static size_t td_lj92_sink_write(void *user, const void *data, size_t len) {
+  td_lj92_sink_ctx *s = (td_lj92_sink_ctx *)user;
+  if (s->failed) {
+    return 0;
+  }
+  if (s->sink->write(s->sink, s->pos + s->written, data, len) != len) {
+    s->failed = 1;
+    return 0;
+  }
+  s->written += len;
+  return len;
+}
+
+/* Encode one tile/strip payload and write it at absolute `at`. Returns the
+   encoded length via *out_len. `pw`/`ph` are the (edge-cropped) payload
+   dims. */
+static tinydng_status td_writer_put_payload(tinydng_writer *w,
+                                            const uint8_t *pixels, uint32_t pw,
+                                            uint32_t ph, uint64_t at,
+                                            size_t *out_len,
+                                            tinydng_error *err) {
+  size_t sb = (size_t)w->bps / 8u;
+  size_t data_size = (size_t)pw * (size_t)ph * (size_t)w->spp * sb;
+  size_t n_samples = (sb > 0u) ? (data_size / sb) : data_size;
+  int need_swap = (sb > 1u) && (w->big_endian != tdw_host_big());
+
+  *out_len = 0;
+  switch (w->compression) {
+    case TINYDNG_COMPRESSION_NONE:
+      if (need_swap) {
+        uint8_t *tmp = (uint8_t *)td_ctx_alloc(w->ctx, data_size, err);
+        if (!tmp) {
+          return TINYDNG_E_OOM;
+        }
+        tdw_swap_copy(tmp, pixels, n_samples, sb);
+        if (w->sink.write(&w->sink, at, tmp, data_size) != data_size) {
+          td_ctx_free(w->ctx, tmp);
+          return td_wio_err(&w->sink, at, err);
+        }
+        td_ctx_free(w->ctx, tmp);
+      } else if (w->sink.write(&w->sink, at, pixels, data_size) != data_size) {
+        return td_wio_err(&w->sink, at, err);
+      }
+      *out_len = data_size;
+      return TINYDNG_OK;
+
+    case TINYDNG_COMPRESSION_LZW: {
+      const uint8_t *src = pixels;
+      uint8_t *tmp = NULL;
+      uint8_t *enc;
+      int16_t *tbl;
+      size_t cap;
+      long n;
+      if (need_swap) {
+        tmp = (uint8_t *)td_ctx_alloc(w->ctx, data_size, err);
+        if (!tmp) {
+          return TINYDNG_E_OOM;
+        }
+        tdw_swap_copy(tmp, pixels, n_samples, sb);
+        src = tmp;
+      }
+      cap = data_size + data_size / 2u + 1024u;
+      enc = (uint8_t *)td_ctx_alloc(w->ctx, cap, err);
+      tbl = (int16_t *)td_ctx_alloc(w->ctx, (size_t)4096u * 256u * sizeof(int16_t),
+                                    err);
+      if (!enc || !tbl) {
+        td_ctx_free(w->ctx, tmp);
+        td_ctx_free(w->ctx, enc);
+        td_ctx_free(w->ctx, tbl);
+        return TINYDNG_E_OOM;
+      }
+      n = td_lzw_encode(src, data_size, enc, cap, tbl);
+      td_ctx_free(w->ctx, tbl);
+      td_ctx_free(w->ctx, tmp);
+      if (n < 0) {
+        td_ctx_free(w->ctx, enc);
+        td_set_error(err, TINYDNG_E_INTERNAL, TINYDNG_STAGE_WRITE, 0, 0, at,
+                     "LZW encode overflow");
+        return TINYDNG_E_INTERNAL;
+      }
+      if (w->sink.write(&w->sink, at, enc, (size_t)n) != (size_t)n) {
+        td_ctx_free(w->ctx, enc);
+        return td_wio_err(&w->sink, at, err);
+      }
+      td_ctx_free(w->ctx, enc);
+      *out_len = (size_t)n;
+      return TINYDNG_OK;
+    }
+
+    case TINYDNG_COMPRESSION_NEW_JPEG: {
+      /* Lossless JPEG (predictor 1, 16-bit, host-order samples) streamed
+         straight to the sink — no intermediate encode buffer. */
+      td_lj92_sink_ctx sc;
+      tdng_lj92_enc lj = NULL;
+      const uint16_t *img16 = (const uint16_t *)(const void *)pixels;
+      int ret;
+      sc.sink = &w->sink;
+      sc.pos = at;
+      sc.written = 0;
+      sc.failed = 0;
+      ret = tdng_lj92_encode_open(&lj, (int)pw, (int)ph, (int)w->bps,
+                                  (int)w->spp, 1 /*predictor=left*/,
+                                  (int)((size_t)pw * w->spp), 0, &sc,
+                                  td_lj92_sink_write);
+      if (ret == TDNG_LJ92_ERROR_NONE) {
+        ret = tdng_lj92_encode_scan(lj, img16, NULL, 0);
+      }
+      if (ret == TDNG_LJ92_ERROR_NONE) {
+        ret = tdng_lj92_encode_begin(lj);
+      }
+      if (ret == TDNG_LJ92_ERROR_NONE) {
+        ret = tdng_lj92_encode_rows(lj, img16, 0, (int)ph);
+      }
+      if (ret == TDNG_LJ92_ERROR_NONE) {
+        ret = tdng_lj92_encode_finish(lj);
+      } else {
+        tdng_lj92_encode_finish(lj);
+      }
+      if (ret != TDNG_LJ92_ERROR_NONE || sc.failed) {
+        td_set_error(err, TINYDNG_E_INTERNAL, TINYDNG_STAGE_WRITE, 0, 0, at,
+                     "lossless JPEG payload encode failed rc=%d", ret);
+        return TINYDNG_E_INTERNAL;
+      }
+      *out_len = (size_t)sc.written;
+      return TINYDNG_OK;
+    }
+
+    default:
+      td_set_error(err, TINYDNG_E_UNSUPPORTED, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                   "unsupported writer compression %u",
+                   (unsigned)w->compression);
+      return TINYDNG_E_UNSUPPORTED;
+  }
+}
+
+/* Patch the tile/strip offset+count arrays (or inline values) with the
+   real positions once every segment has been written. */
+static void td_writer_patch_segs(tinydng_writer *w) {
+  uint16_t off_tag = w->tiled ? TD_TAG_TILE_OFFSETS : TD_TAG_STRIP_OFFSETS;
+  uint16_t cnt_tag = w->tiled ? TD_TAG_TILE_BYTE_COUNTS : TD_TAG_STRIP_BYTE_COUNTS;
+  size_t i;
+  for (i = 0; i < w->w.entry_count; i++) {
+    td_wentry *e = &w->w.entries[i];
+    if (e->tag == off_tag || e->tag == cnt_tag) {
+      uint32_t k;
+      for (k = 0; k < w->seg_count; k++) {
+        uint8_t b[4];
+        uint32_t v = (e->tag == off_tag)
+                         ? (uint32_t)w->segs[k].offset
+                         : w->segs[k].byte_count;
+        td_put32(b, v, w->big_endian);
+        if (e->ext_len > 0u) {
+          memcpy((uint8_t *)e->ext + (size_t)k * 4u, b, 4);
+        } else if (k == 0u) {
+          memcpy(e->value, b, 4);
+        }
+      }
+    }
+  }
+}
+
+/* Serialize the IFD (entries sorted by tag) at `ifd_off`, with out-of-line
+   values re-based to `extras_base`. */
+static tinydng_status td_writer_emit_ifd(const td_writer *w,
+                                         tinydng_write_io *sink,
+                                         uint64_t ifd_off,
+                                         uint64_t extras_base,
+                                         tinydng_error *err) {
+  uint8_t hdr[2u + TD_WMAX_ENTRIES * 12u + 4u];
+  size_t ext_running = 0;
+  size_t i;
+  size_t n = 2u + w->entry_count * 12u + 4u;
+  td_put16(hdr, (uint16_t)w->entry_count, w->big_endian);
+  for (i = 0; i < w->entry_count; i++) {
+    const td_wentry *e = &w->entries[i];
+    uint8_t *ep = hdr + 2u + i * 12u;
+    td_put16(ep, e->tag, w->big_endian);
+    td_put16(ep + 2, e->type, w->big_endian);
+    td_put32(ep + 4, e->count, w->big_endian);
+    if (e->ext_len > 0u) {
+      size_t padded = (e->ext_len + 1u) & ~(size_t)1u;
+      td_put32(ep + 8, (uint32_t)(extras_base + ext_running), w->big_endian);
+      ext_running += padded;
+    } else {
+      memcpy(ep + 8, e->value, 4);
+    }
+  }
+  td_put32(hdr + 2u + w->entry_count * 12u, 0u, w->big_endian);
+  if (sink->write(sink, ifd_off, hdr, n) != n) {
+    return td_wio_err(sink, ifd_off, err);
+  }
+  return TINYDNG_OK;
+}
+
+static tinydng_status td_writer_put_header(tinydng_write_io *sink, int be,
+                                           uint64_t ifd_off,
+                                           tinydng_error *err) {
+  uint8_t hdr[8];
+  hdr[0] = be ? 'M' : 'I';
+  hdr[1] = be ? 'M' : 'I';
+  td_put16(hdr + 2, 42u, be);
+  td_put32(hdr + 4, (uint32_t)ifd_off, be);
+  if (sink->write(sink, 0, hdr, 8) != 8u) {
+    return td_wio_err(sink, 0, err);
+  }
+  return TINYDNG_OK;
+}
+
+static uint32_t td_wceil(uint32_t a, uint32_t b) {
+  return (b == 0u) ? 0u : ((a + b - 1u) / b);
+}
+
+tinydng_status tinydng_writer_create(tinydng_context *ctx,
+                                     tinydng_write_io sink,
+                                     const tinydng_write_image *meta,
+                                     const tinydng_write_options *opts,
+                                     const tinydng_tiling *tiling,
+                                     tinydng_writer **out,
+                                     tinydng_error *err) {
+  tinydng_writer *w;
+  uint16_t spp, bps, sfmt, photo, comp;
+  uint32_t across = 1u, down = 1u;
+  uint32_t seg_count;
+  size_t seg_bytes;
+  int be;
+  tinydng_status st;
+
+  tinydng_error_clear(err);
+  if (!ctx || !meta || !out || !sink.write) {
+    td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                 "null argument to tinydng_writer_create");
+    return TINYDNG_E_INVALID_ARG;
+  }
+  *out = NULL;
+  spp = meta->samples_per_pixel ? meta->samples_per_pixel : 1u;
+  bps = meta->bits_per_sample ? meta->bits_per_sample : 8u;
+  sfmt = meta->sample_format ? meta->sample_format : TINYDNG_SAMPLEFORMAT_UINT;
   if (bps != 8u && bps != 16u && bps != 32u) {
     td_set_error(err, TINYDNG_E_UNSUPPORTED, TINYDNG_STAGE_WRITE, 0, 0, 0,
                  "writer supports 8/16/32-bit only (got %u)", (unsigned)bps);
     return TINYDNG_E_UNSUPPORTED;
   }
-  if (img->width == 0u || img->height == 0u || spp == 0u) {
+  if (meta->width == 0u || meta->height == 0u || spp == 0u) {
     td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_WRITE, 0, 0, 0,
                  "invalid image dimensions");
     return TINYDNG_E_INVALID_ARG;
   }
-  if (!td_safe_mul_size((size_t)img->width * img->height, (size_t)spp,
+  comp = opts ? opts->compression : 0u;
+  if (comp == 0u || comp == TINYDNG_COMPRESSION_NONE) {
+    comp = TINYDNG_COMPRESSION_NONE;
+  } else if (comp == TINYDNG_COMPRESSION_LZW) {
+    comp = TINYDNG_COMPRESSION_LZW;
+  } else if (comp == TINYDNG_COMPRESSION_NEW_JPEG ||
+             comp == TINYDNG_COMPRESSION_OLD_JPEG) {
+    if (bps != 16u) {
+      td_set_error(err, TINYDNG_E_UNSUPPORTED, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                   "lossless JPEG writer requires 16-bit samples");
+      return TINYDNG_E_UNSUPPORTED;
+    }
+    comp = TINYDNG_COMPRESSION_NEW_JPEG;
+  } else {
+    td_set_error(err, TINYDNG_E_UNSUPPORTED, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                 "unsupported writer compression %u", (unsigned)comp);
+    return TINYDNG_E_UNSUPPORTED;
+  }
+
+  photo = meta->photometric;
+  if (photo == 0u) {
+    if (opts && opts->as_dng && meta->cfa && meta->cfa->present) {
+      photo = TD_PHOTO_CFA;
+    } else if (spp >= 3u) {
+      photo = TD_PHOTO_RGB;
+    } else {
+      photo = TD_PHOTO_MINISBLACK;
+    }
+  }
+
+  w = (tinydng_writer *)td_ctx_calloc(ctx, sizeof(*w), err);
+  if (!w) {
+    return TINYDNG_E_OOM;
+  }
+  w->ctx = ctx;
+  w->sink = sink;
+  be = opts ? (opts->big_endian != 0) : 0;
+  w->big_endian = be;
+  w->width = meta->width;
+  w->height = meta->height;
+  w->spp = spp;
+  w->bps = bps;
+  w->sfmt = sfmt;
+  w->photo = photo;
+  w->compression = comp;
+
+  if (tiling && tiling->tile_width > 0u && tiling->tile_length > 0u) {
+    if (tiling->tile_width > 0xFFFFu || tiling->tile_length > 0xFFFFu) {
+      td_set_error(err, TINYDNG_E_UNSUPPORTED, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                   "tile dims must be <= 65535");
+      td_ctx_free(ctx, w);
+      return TINYDNG_E_UNSUPPORTED;
+    }
+    w->tiled = 1;
+    w->tile_width = tiling->tile_width;
+    w->tile_length = tiling->tile_length;
+    across = td_wceil(meta->width, tiling->tile_width);
+    down = td_wceil(meta->height, tiling->tile_length);
+  } else {
+    uint32_t rps = (tiling && tiling->rows_per_strip > 0u)
+                       ? tiling->rows_per_strip
+                       : meta->height;
+    w->rows_per_strip = rps;
+    down = td_wceil(meta->height, rps);
+  }
+  if ((uint64_t)across * (uint64_t)down > 0xFFFFFFu) {
+    td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                 "segment count too large (%u x %u)", across, down);
+    td_ctx_free(ctx, w);
+    return TINYDNG_E_BOUNDS;
+  }
+  seg_count = across * down;
+  w->seg_count = seg_count;
+  if (!td_safe_mul_size((size_t)seg_count, sizeof(td_writer_seg), &seg_bytes)) {
+    td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                 "segment table size overflow");
+    td_ctx_free(ctx, w);
+    return TINYDNG_E_BOUNDS;
+  }
+  w->segs = (td_writer_seg *)td_ctx_calloc(ctx, seg_bytes, err);
+  if (!w->segs) {
+    td_ctx_free(ctx, w);
+    return TINYDNG_E_OOM;
+  }
+
+  w->w.ctx = ctx;
+  w->w.big_endian = be;
+  w->w.extras_cap = TD_WMAX_EXTRAS;
+  w->w.extras = (uint8_t *)td_ctx_alloc(ctx, w->w.extras_cap, err);
+  if (!w->w.extras) {
+    td_ctx_free(ctx, w->segs);
+    td_ctx_free(ctx, w);
+    return TINYDNG_E_OOM;
+  }
+
+  /* --- core TIFF tags --- */
+  td_add_long(&w->w, TD_TAG_IMAGE_WIDTH, meta->width);
+  td_add_long(&w->w, TD_TAG_IMAGE_LENGTH, meta->height);
+  {
+    uint16_t bpsv[16];
+    uint16_t k;
+    for (k = 0; k < spp && k < 16u; k++) {
+      bpsv[k] = bps;
+    }
+    if (spp == 1u) {
+      td_add_short(&w->w, TD_TAG_BITS_PER_SAMPLE, bps);
+    } else {
+      td_add_shorts(&w->w, TD_TAG_BITS_PER_SAMPLE, bpsv, spp);
+    }
+  }
+  td_add_short(&w->w, TD_TAG_COMPRESSION, comp);
+  td_add_short(&w->w, TD_TAG_PHOTOMETRIC, photo);
+  td_add_short(&w->w, TD_TAG_SAMPLES_PER_PIXEL, spp);
+  {
+    uint16_t sfv[16];
+    uint16_t k;
+    for (k = 0; k < spp && k < 16u; k++) {
+      sfv[k] = sfmt;
+    }
+    if (spp == 1u) {
+      td_add_short(&w->w, TD_TAG_SAMPLE_FORMAT, sfmt);
+    } else {
+      td_add_shorts(&w->w, TD_TAG_SAMPLE_FORMAT, sfv, spp);
+    }
+  }
+
+  /* --- segment layout tags --- */
+  if (w->tiled) {
+    td_add_short(&w->w, TD_TAG_TILE_WIDTH, (uint16_t)tiling->tile_width);
+    td_add_short(&w->w, TD_TAG_TILE_LENGTH, (uint16_t)tiling->tile_length);
+    if (seg_count == 1u) {
+      td_add_long(&w->w, TD_TAG_TILE_OFFSETS, 0);
+      td_add_long(&w->w, TD_TAG_TILE_BYTE_COUNTS, 0);
+    } else {
+      uint8_t *offs = td_reserve(&w->w, (size_t)seg_count * 4u);
+      uint8_t *cnts = td_reserve(&w->w, (size_t)seg_count * 4u);
+      td_add_reserved(&w->w, TD_TAG_TILE_OFFSETS, TD_TYPE_LONG, seg_count,
+                      offs, (size_t)seg_count * 4u);
+      td_add_reserved(&w->w, TD_TAG_TILE_BYTE_COUNTS, TD_TYPE_LONG, seg_count,
+                      cnts, (size_t)seg_count * 4u);
+    }
+  } else {
+    if (seg_count == 1u) {
+      td_add_long(&w->w, TD_TAG_STRIP_OFFSETS, 0);
+      td_add_long(&w->w, TD_TAG_ROWS_PER_STRIP, meta->height);
+      td_add_long(&w->w, TD_TAG_STRIP_BYTE_COUNTS, 0);
+    } else {
+      uint8_t *offs = td_reserve(&w->w, (size_t)seg_count * 4u);
+      uint8_t *cnts = td_reserve(&w->w, (size_t)seg_count * 4u);
+      td_add_reserved(&w->w, TD_TAG_STRIP_OFFSETS, TD_TYPE_LONG, seg_count,
+                      offs, (size_t)seg_count * 4u);
+      td_add_long(&w->w, TD_TAG_ROWS_PER_STRIP, w->rows_per_strip);
+      td_add_reserved(&w->w, TD_TAG_STRIP_BYTE_COUNTS, TD_TYPE_LONG, seg_count,
+                      cnts, (size_t)seg_count * 4u);
+    }
+  }
+
+  /* --- optional DNG metadata --- */
+  if (opts && opts->as_dng) {
+    const tinydng_raw_info *raw = meta->raw;
+    const tinydng_cfa *cfa = meta->cfa;
+    td_add_short(&w->w, TD_TAG_NEW_SUBFILE_TYPE, 0);
+    if (cfa && cfa->present) {
+      uint16_t dim[2];
+      dim[0] = cfa->pattern_dim[0] ? cfa->pattern_dim[0] : 2u;
+      dim[1] = cfa->pattern_dim[1] ? cfa->pattern_dim[1] : 2u;
+      td_add_shorts(&w->w, TD_TAG_CFA_REPEAT_PATTERN_DIM, dim, 2);
+      if (cfa->pattern_size) {
+        td_add_bytes(&w->w, TD_TAG_CFA_PATTERN, cfa->pattern, cfa->pattern_size);
+      }
+      if (cfa->plane_color_count) {
+        td_add_bytes(&w->w, TD_TAG_CFA_PLANE_COLOR, cfa->plane_color,
+                     cfa->plane_color_count);
+      }
+    }
+    if (raw) {
+      if (raw->has_dng_version) {
+        td_add_bytes(&w->w, TD_TAG_DNG_VERSION, raw->dng_version, 4);
+      } else {
+        uint8_t ver[4] = {1u, 4u, 0u, 0u};
+        td_add_bytes(&w->w, TD_TAG_DNG_VERSION, ver, 4);
+      }
+      if (raw->black_level_present) {
+        uint32_t bl[4];
+        uint32_t k, n = (cfa && cfa->pattern_size) ? 1u : spp;
+        if (n > 4u) {
+          n = 4u;
+        }
+        for (k = 0; k < n; k++) {
+          bl[k] = (uint32_t)(raw->black_level[k] < 0 ? 0 : raw->black_level[k]);
+        }
+        td_add_longs(&w->w, TD_TAG_BLACK_LEVEL, bl, n);
+      }
+      if (raw->white_level_present) {
+        uint32_t wl = (uint32_t)(raw->white_level[0] < 0 ? 0
+                                                         : raw->white_level[0]);
+        td_add_long(&w->w, TD_TAG_WHITE_LEVEL, wl);
+      }
+      if (raw->color_matrix_present) {
+        td_add_srationals(&w->w, TD_TAG_COLOR_MATRIX1, raw->color_matrix1, 9);
+      }
+      if (raw->has_as_shot_neutral) {
+        td_add_rationals(&w->w, TD_TAG_AS_SHOT_NEUTRAL, raw->as_shot_neutral, 3);
+      }
+      if (raw->calibration_illuminant1) {
+        td_add_short(&w->w, TD_TAG_CALIBRATION_ILLUMINANT1,
+                     raw->calibration_illuminant1);
+      }
+    }
+  }
+
+  if (w->w.failed) {
+    td_set_error(err, TINYDNG_E_INTERNAL, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                 "writer ran out of tag/extras capacity");
+    td_ctx_free(ctx, w->w.extras);
+    td_ctx_free(ctx, w->segs);
+    td_ctx_free(ctx, w);
+    return TINYDNG_E_INTERNAL;
+  }
+
+  /* Sort entries by tag (TIFF requires ascending). */
+  qsort(w->w.entries, w->w.entry_count, sizeof(td_wentry), td_entry_cmp);
+
+  /* Header placeholder; the IFD offset is patched at finish. */
+  st = td_writer_put_header(&w->sink, be, 0, err);
+  if (st != TINYDNG_OK) {
+    td_ctx_free(ctx, w->w.extras);
+    td_ctx_free(ctx, w->segs);
+    td_ctx_free(ctx, w);
+    return st;
+  }
+  w->data_pos = 8u;
+  *out = w;
+  return TINYDNG_OK;
+}
+
+static tinydng_status td_writer_put_segment(tinydng_writer *w, uint32_t index,
+                                            const void *pixels, uint32_t pw,
+                                            uint32_t ph, tinydng_error *err) {
+  size_t len = 0;
+  tinydng_status st;
+  uint64_t at = w->data_pos;
+  if (!w || !pixels) {
+    td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                 "null argument to writer segment write");
+    return TINYDNG_E_INVALID_ARG;
+  }
+  if (w->finished) {
+    td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                 "writer already finished");
+    return TINYDNG_E_INVALID_ARG;
+  }
+  if (index >= w->seg_count) {
+    td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                 "segment index %u out of range (count %u)", index,
+                 w->seg_count);
+    return TINYDNG_E_INVALID_ARG;
+  }
+  if (w->segs[index].offset != 0u) {
+    td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                 "segment %u written twice", index);
+    return TINYDNG_E_INVALID_ARG;
+  }
+  st = td_writer_put_payload(w, (const uint8_t *)pixels, pw, ph, at, &len, err);
+  if (st != TINYDNG_OK) {
+    return st;
+  }
+  if (len > (size_t)UINT32_MAX) {
+    td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, 0, at,
+                 "payload too large for classic TIFF");
+    return TINYDNG_E_BOUNDS;
+  }
+  w->segs[index].offset = at;
+  w->segs[index].byte_count = (uint32_t)len;
+  w->data_pos = at + len;
+  if (w->data_pos & 1u) {
+    uint8_t zero = 0;
+    if (w->sink.write(&w->sink, w->data_pos, &zero, 1) != 1u) {
+      return td_wio_err(&w->sink, w->data_pos, err);
+    }
+    w->data_pos++;
+  }
+  return TINYDNG_OK;
+}
+
+tinydng_status tinydng_writer_write_tile(tinydng_writer *w, uint32_t tile_index,
+                                         const void *pixels,
+                                         tinydng_error *err) {
+  uint32_t across, x, y, pw, ph;
+  uint8_t *padded = NULL;
+  const uint8_t *src = (const uint8_t *)pixels;
+  tinydng_status st;
+  if (!w) {
+    td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                 "null writer");
+    return TINYDNG_E_INVALID_ARG;
+  }
+  if (!w->tiled) {
+    td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                 "writer is not tiled (use tinydng_writer_write_strip)");
+    return TINYDNG_E_INVALID_ARG;
+  }
+  across = td_wceil(w->width, w->tile_width);
+  x = (tile_index % across) * w->tile_width;
+  y = (tile_index / across) * w->tile_length;
+  pw = w->tile_width;
+  ph = w->tile_length;
+  if (x + pw > w->width) {
+    pw = w->width - x;
+  }
+  if (y + ph > w->height) {
+    ph = w->height - y;
+  }
+  /* DNG requires every tile stream to carry the FULL tile dims (the loader
+     decodes tile_width x tile_length and blits only the valid region), so
+     edge tiles are padded to the full tile size before encoding. */
+  if (pw != w->tile_width || ph != w->tile_length) {
+    size_t sb = (size_t)w->bps / 8u;
+    size_t full_row = (size_t)w->tile_width * (size_t)w->spp * sb;
+    size_t src_row = (size_t)pw * (size_t)w->spp * sb;
+    size_t pad_bytes;
+    uint32_t r;
+    if (!td_safe_mul_size((size_t)w->tile_width, (size_t)w->tile_length,
+                          &pad_bytes) ||
+        !td_safe_mul_size(pad_bytes, (size_t)w->spp, &pad_bytes) ||
+        !td_safe_mul_size(pad_bytes, sb, &pad_bytes)) {
+      td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                   "padded tile size overflow");
+      return TINYDNG_E_BOUNDS;
+    }
+    padded = (uint8_t *)td_ctx_calloc(w->ctx, pad_bytes, err);
+    if (!padded) {
+      return TINYDNG_E_OOM;
+    }
+    for (r = 0; r < ph; r++) {
+      memcpy(padded + (size_t)r * full_row, src + (size_t)r * src_row,
+             src_row);
+    }
+    src = padded;
+  }
+  st = td_writer_put_segment(w, tile_index, src, w->tile_width,
+                             w->tile_length, err);
+  if (padded) {
+    td_ctx_free(w->ctx, padded);
+  }
+  return st;
+}
+
+tinydng_status tinydng_writer_write_strip(tinydng_writer *w,
+                                          uint32_t strip_index,
+                                          const void *pixels,
+                                          tinydng_error *err) {
+  uint32_t y, ph;
+  if (!w) {
+    td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                 "null writer");
+    return TINYDNG_E_INVALID_ARG;
+  }
+  if (w->tiled) {
+    td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                 "writer is tiled (use tinydng_writer_write_tile)");
+    return TINYDNG_E_INVALID_ARG;
+  }
+  y = strip_index * w->rows_per_strip;
+  ph = w->rows_per_strip;
+  if (y + ph > w->height) {
+    ph = w->height - y;
+  }
+  return td_writer_put_segment(w, strip_index, pixels, w->width, ph, err);
+}
+
+/* The extras buffer is laid out in entry-ADD order, but the IFD's running
+   offsets walk the SORTED entries. After patching, rebuild the buffer in
+   sorted-entry order (and fix the entry pointers) so the two agree. */
+static tinydng_status td_writer_relayout_extras(tinydng_writer *w,
+                                                tinydng_error *err) {
+  size_t running = 0;
+  size_t i;
+  uint8_t *nb = (uint8_t *)td_ctx_alloc(w->ctx, w->w.extras_cap, err);
+  if (!nb) {
+    return TINYDNG_E_OOM;
+  }
+  for (i = 0; i < w->w.entry_count; i++) {
+    td_wentry *e = &w->w.entries[i];
+    if (e->ext_len > 0u) {
+      size_t padded = (e->ext_len + 1u) & ~(size_t)1u;
+      memcpy(nb + running, e->ext, e->ext_len);
+      if (padded > e->ext_len) {
+        nb[running + e->ext_len] = 0;
+      }
+      e->ext = nb + running;
+      running += padded;
+    }
+  }
+  td_ctx_free(w->ctx, w->w.extras);
+  w->w.extras = nb;
+  w->w.extras_len = running;
+  return TINYDNG_OK;
+}
+
+tinydng_status tinydng_writer_finish(tinydng_writer *w, tinydng_error *err) {
+  uint64_t extras_base, ifd_off;
+  tinydng_status st = TINYDNG_OK;
+  uint32_t i;
+
+  tinydng_error_clear(err);
+  if (!w) {
+    return TINYDNG_E_INVALID_ARG;
+  }
+  if (w->finished) {
+    td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                 "writer already finished");
+    return TINYDNG_E_INVALID_ARG;
+  }
+  for (i = 0; i < w->seg_count; i++) {
+    if (w->segs[i].offset == 0u) {
+      td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                   "segment %u was never written", i);
+      st = TINYDNG_E_INVALID_ARG;
+      goto cleanup;
+    }
+  }
+  td_writer_patch_segs(w);
+  if (w->w.failed) {
+    td_set_error(err, TINYDNG_E_INTERNAL, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                 "writer ran out of extras capacity");
+    st = TINYDNG_E_INTERNAL;
+    goto cleanup;
+  }
+  st = td_writer_relayout_extras(w, err);
+  if (st != TINYDNG_OK) {
+    goto cleanup;
+  }
+
+  extras_base = w->data_pos; /* already even-aligned */
+  if (w->w.extras_len > 0u) {
+    if (w->sink.write(&w->sink, extras_base, w->w.extras, w->w.extras_len) !=
+        w->w.extras_len) {
+      st = td_wio_err(&w->sink, extras_base, err);
+      goto cleanup;
+    }
+  }
+  ifd_off = extras_base + w->w.extras_len;
+  if (ifd_off > (uint64_t)UINT32_MAX) {
+    td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, 0, ifd_off,
+                 "classic TIFF offset limit exceeded");
+    st = TINYDNG_E_BOUNDS;
+    goto cleanup;
+  }
+  st = td_writer_emit_ifd(&w->w, &w->sink, ifd_off, extras_base, err);
+  if (st == TINYDNG_OK) {
+    st = td_writer_put_header(&w->sink, w->big_endian, ifd_off, err);
+  }
+
+cleanup:
+  td_ctx_free(w->ctx, w->w.extras);
+  td_ctx_free(w->ctx, w->segs);
+  w->finished = 1;
+  td_ctx_free(w->ctx, w);
+  return st;
+}
+
+/* Validate img->data_size against the geometry (parity with the
+   pre-writer behavior). */
+static tinydng_status td_write_check_data(const tinydng_write_image *img,
+                                          tinydng_error *err) {
+  uint16_t spp = img->samples_per_pixel ? img->samples_per_pixel : 1u;
+  uint16_t bps = img->bits_per_sample ? img->bits_per_sample : 8u;
+  size_t expected;
+  if (!td_safe_mul_size((size_t)img->width * (size_t)img->height, (size_t)spp,
                         &expected) ||
       !td_safe_mul_size(expected, (size_t)bps / 8u, &expected)) {
     td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, 0, 0,
@@ -471,197 +1318,53 @@ tinydng_status tinydng_write_memory(tinydng_context *ctx,
                  "data_size %zu < required %zu", img->data_size, expected);
     return TINYDNG_E_INVALID_ARG;
   }
-  data_size = expected;
-
-  photo = img->photometric;
-  if (photo == 0u) {
-    if (opts && opts->as_dng && img->cfa && img->cfa->present) {
-      photo = TD_PHOTO_CFA;
-    } else if (spp >= 3u) {
-      photo = TD_PHOTO_RGB;
-    } else {
-      photo = TD_PHOTO_MINISBLACK;
-    }
-  }
-
-  memset(&w, 0, sizeof(w));
-  w.ctx = ctx;
-  w.big_endian = be;
-  w.extras_cap = TD_WMAX_EXTRAS;
-  w.extras = (uint8_t *)td_ctx_alloc(ctx, w.extras_cap, err);
-  if (!w.extras) {
-    return TINYDNG_E_OOM;
-  }
-
-  {
-    uint16_t comp = opts ? opts->compression : 0u;
-    tinydng_status pst = td_prepare_strip(ctx, img, be, spp, bps, comp,
-                                          data_size, &strip_data, &strip_len,
-                                          &comp_value, err);
-    if (pst != TINYDNG_OK) {
-      td_ctx_free(ctx, w.extras);
-      return pst;
-    }
-  }
-
-  strip_off = 8u;
-  strip_pad = strip_len & 1u; /* pad strip to even */
-
-  /* --- core TIFF tags (ascending order enforced by sort below) --- */
-  td_add_long(&w, TD_TAG_IMAGE_WIDTH, img->width);
-  td_add_long(&w, TD_TAG_IMAGE_LENGTH, img->height);
-  {
-    uint16_t bpsv[16];
-    uint16_t k;
-    for (k = 0; k < spp && k < 16u; k++) {
-      bpsv[k] = bps;
-    }
-    if (spp == 1u) {
-      td_add_short(&w, TD_TAG_BITS_PER_SAMPLE, bps);
-    } else {
-      td_add_shorts(&w, TD_TAG_BITS_PER_SAMPLE, bpsv, spp);
-    }
-  }
-  td_add_short(&w, TD_TAG_COMPRESSION, comp_value);
-  td_add_short(&w, TD_TAG_PHOTOMETRIC, photo);
-  td_add_long(&w, TD_TAG_STRIP_OFFSETS, (uint32_t)strip_off);
-  td_add_short(&w, TD_TAG_SAMPLES_PER_PIXEL, spp);
-  td_add_long(&w, TD_TAG_ROWS_PER_STRIP, img->height);
-  td_add_long(&w, TD_TAG_STRIP_BYTE_COUNTS, (uint32_t)strip_len);
-  {
-    uint16_t sfv[16];
-    uint16_t k;
-    for (k = 0; k < spp && k < 16u; k++) {
-      sfv[k] = sfmt;
-    }
-    if (spp == 1u) {
-      td_add_short(&w, TD_TAG_SAMPLE_FORMAT, sfmt);
-    } else {
-      td_add_shorts(&w, TD_TAG_SAMPLE_FORMAT, sfv, spp);
-    }
-  }
-
-  /* --- optional DNG metadata --- */
-  if (opts && opts->as_dng) {
-    const tinydng_raw_info *raw = img->raw;
-    const tinydng_cfa *cfa = img->cfa;
-    td_add_short(&w, TD_TAG_NEW_SUBFILE_TYPE, 0);
-    if (cfa && cfa->present) {
-      uint16_t dim[2];
-      dim[0] = cfa->pattern_dim[0] ? cfa->pattern_dim[0] : 2u;
-      dim[1] = cfa->pattern_dim[1] ? cfa->pattern_dim[1] : 2u;
-      td_add_shorts(&w, TD_TAG_CFA_REPEAT_PATTERN_DIM, dim, 2);
-      if (cfa->pattern_size) {
-        td_add_bytes(&w, TD_TAG_CFA_PATTERN, cfa->pattern, cfa->pattern_size);
-      }
-      if (cfa->plane_color_count) {
-        td_add_bytes(&w, TD_TAG_CFA_PLANE_COLOR, cfa->plane_color,
-                     cfa->plane_color_count);
-      }
-    }
-    if (raw) {
-      if (raw->has_dng_version) {
-        td_add_bytes(&w, TD_TAG_DNG_VERSION, raw->dng_version, 4);
-      } else {
-        uint8_t ver[4] = {1u, 4u, 0u, 0u};
-        td_add_bytes(&w, TD_TAG_DNG_VERSION, ver, 4);
-      }
-      if (raw->black_level_present) {
-        uint32_t bl[4];
-        uint32_t k, n = (cfa && cfa->pattern_size) ? 1u : spp;
-        if (n > 4u) {
-          n = 4u;
-        }
-        for (k = 0; k < n; k++) {
-          bl[k] = (uint32_t)(raw->black_level[k] < 0 ? 0 : raw->black_level[k]);
-        }
-        td_add_longs(&w, TD_TAG_BLACK_LEVEL, bl, n);
-      }
-      if (raw->white_level_present) {
-        uint32_t wl = (uint32_t)(raw->white_level[0] < 0 ? 0
-                                                         : raw->white_level[0]);
-        td_add_long(&w, TD_TAG_WHITE_LEVEL, wl);
-      }
-      if (raw->color_matrix_present) {
-        td_add_srationals(&w, TD_TAG_COLOR_MATRIX1, raw->color_matrix1, 9);
-      }
-      if (raw->has_as_shot_neutral) {
-        td_add_rationals(&w, TD_TAG_AS_SHOT_NEUTRAL, raw->as_shot_neutral, 3);
-      }
-      if (raw->calibration_illuminant1) {
-        td_add_short(&w, TD_TAG_CALIBRATION_ILLUMINANT1,
-                     raw->calibration_illuminant1);
-      }
-    }
-  }
-
-  if (w.failed) {
-    td_ctx_free(ctx, w.extras);
-    td_ctx_free(ctx, strip_data);
-    td_set_error(err, TINYDNG_E_INTERNAL, TINYDNG_STAGE_WRITE, 0, 0, 0,
-                 "writer ran out of tag/extras capacity");
-    return TINYDNG_E_INTERNAL;
-  }
-
-  /* Sort entries by tag (TIFF requires ascending). */
-  qsort(w.entries, w.entry_count, sizeof(td_wentry), td_entry_cmp);
-
-  extras_base = strip_off + strip_len + strip_pad;
-  ifd_off = extras_base + w.extras_len;
-  total = ifd_off + 2u + w.entry_count * 12u + 4u;
-
-  buf = (uint8_t *)td_ctx_alloc(ctx, total, err);
-  if (!buf) {
-    td_ctx_free(ctx, w.extras);
-    td_ctx_free(ctx, strip_data);
-    return TINYDNG_E_OOM;
-  }
-  memset(buf, 0, total);
-
-  /* Header */
-  if (be) {
-    buf[0] = 'M';
-    buf[1] = 'M';
-  } else {
-    buf[0] = 'I';
-    buf[1] = 'I';
-  }
-  td_put16(buf + 2, 42u, be);
-  td_put32(buf + 4, (uint32_t)ifd_off, be);
-
-  /* Strip data (already compressed / endian-adjusted) */
-  memcpy(buf + strip_off, strip_data, strip_len);
-
-  /* Extras (out-of-line tag values), re-based to absolute offsets. */
-  if (w.extras_len) {
-    memcpy(buf + extras_base, w.extras, w.extras_len);
-  }
-
-  /* IFD */
-  td_put16(buf + ifd_off, (uint16_t)w.entry_count, be);
-  ext_running = 0;
-  for (i = 0; i < w.entry_count; i++) {
-    td_wentry *e = &w.entries[i];
-    uint8_t *ep = buf + ifd_off + 2u + i * 12u;
-    td_put16(ep, e->tag, be);
-    td_put16(ep + 2, e->type, be);
-    td_put32(ep + 4, e->count, be);
-    if (e->ext_len > 0u) {
-      size_t padded = (e->ext_len + 1u) & ~(size_t)1u;
-      td_put32(ep + 8, (uint32_t)(extras_base + ext_running), be);
-      ext_running += padded;
-    } else {
-      memcpy(ep + 8, e->value, 4);
-    }
-  }
-  idx = ifd_off + 2u + w.entry_count * 12u;
-  td_put32(buf + idx, 0u, be); /* next IFD = 0 */
-
-  td_ctx_free(ctx, w.extras);
-  td_ctx_free(ctx, strip_data);
-  *out_data = buf;
-  *out_size = total;
   return TINYDNG_OK;
+}
+
+tinydng_status tinydng_write_memory(tinydng_context *ctx,
+                                    const tinydng_write_image *img,
+                                    const tinydng_write_options *opts,
+                                    uint8_t **out_data, size_t *out_size,
+                                    tinydng_error *err) {
+  tinydng_writer *w = NULL;
+  tinydng_write_io io;
+  tinydng_status st;
+
+  tinydng_error_clear(err);
+  if (!ctx || !img || !out_data || !out_size || !img->data) {
+    td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                 "null argument to tinydng_write_memory");
+    return TINYDNG_E_INVALID_ARG;
+  }
+  *out_data = NULL;
+  *out_size = 0;
+  st = td_write_check_data(img, err);
+  if (st != TINYDNG_OK) {
+    return st;
+  }
+  st = tinydng_write_io_open_memory(ctx, &io, err);
+  if (st != TINYDNG_OK) {
+    return st;
+  }
+  st = tinydng_writer_create(ctx, io, img, opts, NULL, &w, err);
+  if (st != TINYDNG_OK) {
+    io.close(&io);
+    return st;
+  }
+  st = tinydng_writer_write_strip(w, 0, img->data, err);
+  if (st != TINYDNG_OK) {
+    tinydng_writer_finish(w, err); /* releases writer state */
+    io.close(&io);
+    return st;
+  }
+  st = tinydng_writer_finish(w, err);
+  if (st != TINYDNG_OK) {
+    io.close(&io);
+    return st;
+  }
+  st = tinydng_write_io_memory_take(ctx, &io, out_data, out_size, err);
+  io.close(&io);
+  return st;
 }
 
 void tinydng_buffer_free(tinydng_context *ctx, uint8_t *buf) {
@@ -672,35 +1375,36 @@ tinydng_status tinydng_write_file(tinydng_context *ctx, const char *path,
                                   const tinydng_write_image *img,
                                   const tinydng_write_options *opts,
                                   tinydng_error *err) {
-  uint8_t *buf = NULL;
-  size_t size = 0;
+  tinydng_writer *w = NULL;
+  tinydng_write_io io;
   tinydng_status st;
-  FILE *fp;
 
-  if (!ctx || !path || !img) {
+  tinydng_error_clear(err);
+  if (!ctx || !path || !img || !img->data) {
     td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_WRITE, 0, 0, 0,
                  "null argument to tinydng_write_file");
     return TINYDNG_E_INVALID_ARG;
   }
-  st = tinydng_write_memory(ctx, img, opts, &buf, &size, err);
+  st = td_write_check_data(img, err);
   if (st != TINYDNG_OK) {
     return st;
   }
-  fp = fopen(path, "wb");
-  if (!fp) {
-    td_ctx_free(ctx, buf);
-    td_set_error(err, TINYDNG_E_IO, TINYDNG_STAGE_WRITE, 0, 0, 0,
-                 "fopen('%s') for write failed", path);
-    return TINYDNG_E_IO;
+  st = tinydng_write_io_open_file(ctx, path, &io, err);
+  if (st != TINYDNG_OK) {
+    return st;
   }
-  if (fwrite(buf, 1, size, fp) != size) {
-    fclose(fp);
-    td_ctx_free(ctx, buf);
-    td_set_error(err, TINYDNG_E_IO, TINYDNG_STAGE_WRITE, 0, 0, 0,
-                 "short write to '%s'", path);
-    return TINYDNG_E_IO;
+  st = tinydng_writer_create(ctx, io, img, opts, NULL, &w, err);
+  if (st != TINYDNG_OK) {
+    io.close(&io);
+    return st;
   }
-  fclose(fp);
-  td_ctx_free(ctx, buf);
-  return TINYDNG_OK;
+  st = tinydng_writer_write_strip(w, 0, img->data, err);
+  if (st != TINYDNG_OK) {
+    tinydng_writer_finish(w, err); /* releases writer state */
+    io.close(&io);
+    return st;
+  }
+  st = tinydng_writer_finish(w, err);
+  io.close(&io);
+  return st;
 }

@@ -65,6 +65,10 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/sandbox/lj92/testdata")
            COMMAND test_v2_streaming "${CMAKE_SOURCE_DIR}/sandbox/lj92/testdata")
 endif()
 
+add_executable(test_v2_streamencode tests/v2_test/test_v2_streamencode.c)
+target_link_libraries(test_v2_streamencode PRIVATE tinydng_v2)
+add_test(NAME v2_streamencode COMMAND test_v2_streamencode)
+
 # ----------------------------------------------------------------------
 # tinydng v3 (clean-room pure C11 loader)
 # ----------------------------------------------------------------------
@@ -124,7 +128,7 @@ enable_testing()
 
 # v3 unit tests (link the tinydng library; honor sanitizer options).
 set(TINYDNG_V3_TESTS test_v3_roundtrip test_v3_decode test_v3_metadata
-                     test_v3_mt test_v3_psd)
+                     test_v3_mt test_v3_psd test_v3_streamwrite)
 foreach(t ${TINYDNG_V3_TESTS})
   add_executable(${t} tests/v3_test/${t}.c)
   target_link_libraries(${t} PRIVATE tinydng)
@@ -136,6 +140,7 @@ add_test(NAME v3_decode COMMAND test_v3_decode "${CMAKE_SOURCE_DIR}")
 add_test(NAME v3_metadata COMMAND test_v3_metadata "${CMAKE_SOURCE_DIR}")
 add_test(NAME v3_mt COMMAND test_v3_mt "${CMAKE_SOURCE_DIR}")
 add_test(NAME v3_psd COMMAND test_v3_psd)
+add_test(NAME v3_streamwrite COMMAND test_v3_streamwrite)
 
 if (TINYDNG_WITH_PYTHON)
   # pybind11 method:

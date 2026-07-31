@@ -1057,8 +1057,7 @@ void tdng_lj92_close(tdng_lj92 lj) {
 
 #define LJ92_MAX_SSSS     17   // SSSS values 0..16 plus spec sentinel.
 
-typedef struct {
-  uint16_t* image;
+typedef struct _lje {
   int width;
   int height;
   int bitdepth;
@@ -1066,12 +1065,16 @@ typedef struct {
   int predictor;
   int readLength;
   int skipLength;
-  uint16_t* delinearize;
+  const uint16_t* delinearize;
   int delinearizeLength;
 
-  uint8_t* encoded;
-  int encodedCap;
-  int encodedWritten;
+  // Streaming output: the encoded stream goes to the sink in staged chunks
+  // instead of a full growable buffer.
+  void* sink_user;
+  tdng_lj92_write_fn sink_write;
+  uint8_t obuf[4096];
+  int obuf_len;
+  int sink_failed;
 
   // Frequency of SSSS symbols (0..16) across all components.
   int hist[LJ92_MAX_SSSS];
@@ -1085,6 +1088,18 @@ typedef struct {
   // Bit-output accumulator: bits packed MSB-first into the top of bitbuf.
   uint32_t bitbuf;
   int nbits;
+
+  // Phase: 0=open, 1=scanned, 2=begin'd, 3=finished.
+  int phase;
+
+  // Two-pass state shared across encode_rows calls.
+  const uint16_t* image;   // base pointer (frame-relative)
+  const uint16_t* pix;     // current read pointer (pass 2)
+  int scan_remain;         // samples left before the next skip
+  int next_row;            // next row encode_rows must deliver
+  uint16_t* rc;            // row cache (2 * width * components)
+  uint16_t* thisrow;
+  uint16_t* lastrow;
 } lje;
 
 static int clz32(unsigned int x) {
@@ -1121,34 +1136,30 @@ static int enc_ssss(int diff) {
   return a == 0 ? 0 : (32 - clz32((unsigned int)a));
 }
 
-static int enc_reserve(lje* self, size_t extra) {
-  size_t need = (size_t)self->encodedWritten + extra;
-  if (need <= (size_t)self->encodedCap) return TDNG_LJ92_ERROR_NONE;
-  size_t cap = self->encodedCap ? (size_t)self->encodedCap : 4096u;
-  while (cap < need) {
-    if (cap > (size_t)INT_MAX / 2) { cap = need; break; }
-    cap *= 2;
+// Flush the staged output bytes to the sink. Marks sink_failed on a short
+// write; subsequent emit calls become no-ops.
+static void enc_stage_flush(lje* self) {
+  if (self->sink_failed || self->obuf_len == 0) return;
+  if (self->sink_write(self->sink_user, self->obuf, (size_t)self->obuf_len) !=
+      (size_t)self->obuf_len) {
+    self->sink_failed = 1;
   }
-  if (cap > (size_t)INT_MAX) return TDNG_LJ92_ERROR_TOO_WIDE;
-  uint8_t* nb = (uint8_t*)realloc(self->encoded, cap);
-  if (!nb) return TDNG_LJ92_ERROR_NO_MEMORY;
-  self->encoded = nb;
-  self->encodedCap = (int)cap;
-  return TDNG_LJ92_ERROR_NONE;
+  self->obuf_len = 0;
 }
 
 static void enc_put_u8(lje* self, uint8_t b) {
-  self->encoded[self->encodedWritten++] = b;
+  if (self->sink_failed) return;
+  if (self->obuf_len >= (int)sizeof(self->obuf)) enc_stage_flush(self);
+  self->obuf[self->obuf_len++] = b;
 }
 
-// Emit one entropy-coded byte with 0xFF 0x00 stuffing.
+// Emit one byte with 0xFF 0x00 stuffing.
 static void enc_put_stuffed(lje* self, uint8_t b) {
-  self->encoded[self->encodedWritten++] = b;
-  if (b == 0xFF) self->encoded[self->encodedWritten++] = 0x00;
+  enc_put_u8(self, b);
+  if (b == 0xFF) enc_put_u8(self, 0x00);
 }
 
 // Emit `nbits` bits from the low bits of `v` into the bit stream.
-// Caller must have reserved space for up to (nbits/8 + 2) bytes.
 static void enc_put_bits(lje* self, uint32_t v, int nbits) {
   self->bitbuf |= (v & ((1u << nbits) - 1u)) << (32 - self->nbits - nbits);
   self->nbits += nbits;
@@ -1173,17 +1184,14 @@ static void enc_flush_bits(lje* self) {
 
 // Single-pass histogram scan using the configured predictor. Caches two
 // reconstructed rows worth of raw samples so the predictor sees the same
-// values the decoder will.
+// values the decoder will. Uses the persistent row cache and read pointer.
 static int enc_frequency_scan(lje* self) {
   const int W = self->width, H = self->height, NC = self->components;
   const int initpx = 1 << (self->bitdepth - 1);
   const int maxval = 1 << self->bitdepth;
 
-  size_t row_slots = (size_t)W * (size_t)NC;
-  uint16_t* rc = (uint16_t*)calloc(row_slots * 2, sizeof(uint16_t));
-  if (!rc) return TDNG_LJ92_ERROR_NO_MEMORY;
-  uint16_t* thisrow = rc;
-  uint16_t* lastrow = rc + row_slots;
+  uint16_t* thisrow = self->thisrow;
+  uint16_t* lastrow = self->lastrow;
 
   const uint16_t* pix = self->image;
   int scan = self->readLength;
@@ -1193,10 +1201,10 @@ static int enc_frequency_scan(lje* self) {
       for (int c = 0; c < NC; c++) {
         uint16_t p = *pix++;
         if (self->delinearize) {
-          if (p >= self->delinearizeLength) { free(rc); return TDNG_LJ92_ERROR_TOO_WIDE; }
+          if (p >= self->delinearizeLength) return TDNG_LJ92_ERROR_TOO_WIDE;
           p = self->delinearize[p];
         }
-        if (p >= maxval) { free(rc); return TDNG_LJ92_ERROR_TOO_WIDE; }
+        if (p >= maxval) return TDNG_LJ92_ERROR_TOO_WIDE;
 
         int base = col * NC;
         int prv  = base - NC;
@@ -1219,7 +1227,6 @@ static int enc_frequency_scan(lje* self) {
     }
     uint16_t* t = lastrow; lastrow = thisrow; thisrow = t;
   }
-  free(rc);
   return TDNG_LJ92_ERROR_NONE;
 }
 
@@ -1316,11 +1323,6 @@ static void enc_build_huffman_table(lje* self) {
 
 static int enc_write_header(lje* self) {
   const int NC = self->components;
-  size_t need = 2 + 2 + 2 + 6 + 3 * NC;      // SOI + SOF3 + frame
-  need += 2 + 2 + 1 + 16 + (size_t)self->huffval_count; // DHT
-  need += 2 + 2 + 1 + 2 * NC + 3;            // SOS
-  int ret = enc_reserve(self, need);
-  if (ret != TDNG_LJ92_ERROR_NONE) return ret;
 
   enc_put_u8(self, 0xFF); enc_put_u8(self, 0xD8);  // SOI
   enc_put_u8(self, 0xFF); enc_put_u8(self, 0xC3);  // SOF3
@@ -1359,41 +1361,29 @@ static int enc_write_header(lje* self) {
   enc_put_u8(self, (uint8_t)self->predictor);  // Ss = predictor
   enc_put_u8(self, 0);                         // Se = 0
   enc_put_u8(self, 0);                         // Ah=0, Al=0 (point transform)
-  return TDNG_LJ92_ERROR_NONE;
+  return self->sink_failed ? TDNG_LJ92_ERROR_IO : TDNG_LJ92_ERROR_NONE;
 }
 
-static int enc_write_body(lje* self) {
-  const int W = self->width, H = self->height, NC = self->components;
+// Emit the entropy-coded scan for rows [row0, row0+row_count). The caller
+// must deliver rows sequentially (encode_rows enforces row0 == next_row).
+// The predictor row cache, read pointer and skip counter persist in `self`,
+// so the output is identical to encoding the whole image in one call.
+static int enc_write_rows(lje* self, int row0, int row_count) {
+  const int W = self->width, NC = self->components;
   const int initpx = 1 << (self->bitdepth - 1);
 
-  size_t row_slots = (size_t)W * (size_t)NC;
-  uint16_t* rc = (uint16_t*)calloc(row_slots * 2, sizeof(uint16_t));
-  if (!rc) return TDNG_LJ92_ERROR_NO_MEMORY;
-  uint16_t* thisrow = rc;
-  uint16_t* lastrow = rc + row_slots;
+  uint16_t* thisrow = self->thisrow;
+  uint16_t* lastrow = self->lastrow;
 
-  const uint16_t* pix = self->image;
-  int scan = self->readLength;
-  self->bitbuf = 0;
-  self->nbits = 0;
-
-  // A6: upper bound on entropy-coded bytes. Per sample: up to 16 bits of
-  // Huffman code + 16 bits of residual = 32 bits = 4 bytes, doubled to 8 to
-  // account for worst-case 0xFF -> 0xFF 0x00 byte stuffing. Use size_t so
-  // large tiles cannot overflow.
-  size_t worst = (size_t)W * (size_t)H * (size_t)NC * 8u + 64u;
-  int ret = enc_reserve(self, worst);
-  if (ret != TDNG_LJ92_ERROR_NONE) { free(rc); return ret; }
-
-  for (int row = 0; row < H; row++) {
+  for (int row = row0; row < row0 + row_count; row++) {
     for (int col = 0; col < W; col++) {
       for (int c = 0; c < NC; c++) {
-        uint16_t p = *pix++;
+        uint16_t p = *self->pix++;
         if (self->delinearize) {
           // Hardening: defense in depth. enc_frequency_scan validates the
           // same indices first, so a mismatch here indicates a tampered
           // input array between the two passes.
-          if (p >= self->delinearizeLength) { free(rc); return TDNG_LJ92_ERROR_TOO_WIDE; }
+          if (p >= self->delinearizeLength) return TDNG_LJ92_ERROR_TOO_WIDE;
           p = self->delinearize[p];
         }
         int base = col * NC;
@@ -1410,7 +1400,7 @@ static int enc_write_body(lje* self) {
         // Hardening: a symbol with no Huffman code would silently emit zero
         // bits and desynchronise the stream. Since frequency_scan ran first,
         // this cannot happen with well-formed input — treat as corruption.
-        if (self->huffbits[ssss] == 0) { free(rc); return TDNG_LJ92_ERROR_CORRUPT; }
+        if (self->huffbits[ssss] == 0) return TDNG_LJ92_ERROR_CORRUPT;
         enc_put_bits(self, self->huffenc[ssss], self->huffbits[ssss]);
         if (ssss > 0) {
           // Map negative diffs into JPEG extend form:
@@ -1423,45 +1413,59 @@ static int enc_write_body(lje* self) {
           enc_put_bits(self, bits_val, ssss);
         }
 
-        if (--scan == 0) {
-          pix += self->skipLength;
-          scan = self->readLength;
+        if (--self->scan_remain == 0) {
+          self->pix += self->skipLength;
+          self->scan_remain = self->readLength;
         }
       }
     }
     uint16_t* t = lastrow; lastrow = thisrow; thisrow = t;
   }
-
-  enc_flush_bits(self);
-  free(rc);
+  self->thisrow = thisrow;
+  self->lastrow = lastrow;
+  if (self->sink_failed) return TDNG_LJ92_ERROR_IO;
   return TDNG_LJ92_ERROR_NONE;
 }
 
 static int enc_write_eoi(lje* self) {
-  int ret = enc_reserve(self, 2);
-  if (ret != TDNG_LJ92_ERROR_NONE) return ret;
   enc_put_u8(self, 0xFF);
   enc_put_u8(self, 0xD9);
-  return TDNG_LJ92_ERROR_NONE;
+  return self->sink_failed ? TDNG_LJ92_ERROR_IO : TDNG_LJ92_ERROR_NONE;
 }
 
-int tdng_lj92_encode_ex(uint16_t* image, int width, int height, int bitdepth,
-                        int components, int predictor, int readLength,
-                        int skipLength, uint16_t* delinearize,
-                        int delinearizeLength, uint8_t** encoded,
-                        int* encodedLength) {
-  if (!image || !encoded || !encodedLength) return TDNG_LJ92_ERROR_BAD_HANDLE;
+/* ------------------------------------------------------------------ */
+/* Streaming encoder                                                  */
+/*                                                                     */
+/* Two-pass by design (Huffman needs the SSSS histogram before the     */
+/* header can be emitted): tdng_lj92_encode_scan reads the whole       */
+/* image once, tdng_lj92_encode_begin emits SOI..SOS to the sink, and  */
+/* tdng_lj92_encode_rows feeds the entropy pass incrementally in row   */
+/* bands (the predictor row cache persists across calls). Output is    */
+/* staged in 4KB chunks and never materialized as a whole.             */
+/* ------------------------------------------------------------------ */
+
+int tdng_lj92_encode_open(tdng_lj92_enc* lj, int width, int height,
+                          int bitdepth, int components, int predictor,
+                          int readLength, int skipLength, void* user,
+                          tdng_lj92_write_fn write_fn) {
+  size_t row_slots;
+  lje* self;
+  if (!lj || !write_fn) return TDNG_LJ92_ERROR_BAD_HANDLE;
+  *lj = NULL;
   if (width <= 0 || width > 0xFFFF) return TDNG_LJ92_ERROR_BAD_HANDLE;
   if (height <= 0 || height > 0xFFFF) return TDNG_LJ92_ERROR_BAD_HANDLE;
   if (bitdepth < 2 || bitdepth > 16) return TDNG_LJ92_ERROR_BAD_HANDLE;
   if (components < 1 || components > 4) return TDNG_LJ92_ERROR_BAD_HANDLE;
   if (predictor < 1 || predictor > 7) return TDNG_LJ92_ERROR_BAD_HANDLE;
   if (readLength < 0 || skipLength < 0) return TDNG_LJ92_ERROR_BAD_HANDLE;
-  if (delinearize && delinearizeLength <= 0) return TDNG_LJ92_ERROR_BAD_HANDLE;
-
-  lje* self = (lje*)calloc(1, sizeof(lje));
+  self = (lje*)calloc(1, sizeof(lje));
   if (!self) return TDNG_LJ92_ERROR_NO_MEMORY;
-  self->image = image;
+  row_slots = (size_t)width * (size_t)components;
+  self->rc = (uint16_t*)calloc(row_slots * 2, sizeof(uint16_t));
+  if (!self->rc) {
+    free(self);
+    return TDNG_LJ92_ERROR_NO_MEMORY;
+  }
   self->width = width;
   self->height = height;
   self->bitdepth = bitdepth;
@@ -1469,31 +1473,159 @@ int tdng_lj92_encode_ex(uint16_t* image, int width, int height, int bitdepth,
   self->predictor = predictor;
   self->readLength = readLength > 0 ? readLength : width * components;
   self->skipLength = skipLength;
+  self->sink_user = user;
+  self->sink_write = write_fn;
+  self->thisrow = self->rc;
+  self->lastrow = self->rc + row_slots;
+  *lj = self;
+  return TDNG_LJ92_ERROR_NONE;
+}
+
+/* Pass 1: read the whole image and build the SSSS histogram. `image` is
+   the base pointer for all later tdng_lj92_encode_rows calls. */
+int tdng_lj92_encode_scan(tdng_lj92_enc lj, const uint16_t* image,
+                          const uint16_t* delinearize, int delinearizeLength) {
+  lje* self = lj;
+  int ret;
+  if (!self || !image) return TDNG_LJ92_ERROR_BAD_HANDLE;
+  if (delinearize && delinearizeLength <= 0) return TDNG_LJ92_ERROR_BAD_HANDLE;
+  if (self->phase != 0) return TDNG_LJ92_ERROR_BAD_HANDLE;
+  self->image = image;
   self->delinearize = delinearize;
   self->delinearizeLength = delinearizeLength;
+  ret = enc_frequency_scan(self);
+  if (ret != TDNG_LJ92_ERROR_NONE) return ret;
+  self->phase = 1;
+  return TDNG_LJ92_ERROR_NONE;
+}
 
-  int ret = enc_frequency_scan(self);
-  if (ret != TDNG_LJ92_ERROR_NONE) goto done;
+/* Emit SOI / SOF3 / DHT / SOS to the sink. Resets the pass-2 predictor
+   state so tdng_lj92_encode_rows can start at row 0. */
+int tdng_lj92_encode_begin(tdng_lj92_enc lj) {
+  lje* self = lj;
+  int ret;
+  size_t row_slots;
+  if (!self) return TDNG_LJ92_ERROR_BAD_HANDLE;
+  if (self->phase != 1) return TDNG_LJ92_ERROR_BAD_HANDLE;
   enc_build_huffman_table(self);
   ret = enc_write_header(self);
-  if (ret != TDNG_LJ92_ERROR_NONE) goto done;
-  ret = enc_write_body(self);
-  if (ret != TDNG_LJ92_ERROR_NONE) goto done;
-  ret = enc_write_eoi(self);
-  if (ret != TDNG_LJ92_ERROR_NONE) goto done;
+  if (ret != TDNG_LJ92_ERROR_NONE) return ret;
+  enc_stage_flush(self);
+  if (self->sink_failed) return TDNG_LJ92_ERROR_IO;
+  row_slots = (size_t)self->width * (size_t)self->components;
+  memset(self->rc, 0, row_slots * 2 * sizeof(uint16_t));
+  self->thisrow = self->rc;
+  self->lastrow = self->rc + row_slots;
+  self->pix = self->image;
+  self->scan_remain = self->readLength;
+  self->next_row = 0;
+  self->bitbuf = 0;
+  self->nbits = 0;
+  self->phase = 2;
+  return TDNG_LJ92_ERROR_NONE;
+}
 
-  {
-    uint8_t* shrunk = (uint8_t*)realloc(self->encoded, (size_t)self->encodedWritten);
-    if (shrunk) { self->encoded = shrunk; self->encodedCap = self->encodedWritten; }
+/* Pass 2, incremental: emit the entropy-coded scan for rows
+   [row0, row0+row_count). Must be called strictly in row order with the
+   same `image` base pointer passed to tdng_lj92_encode_scan. */
+int tdng_lj92_encode_rows(tdng_lj92_enc lj, const uint16_t* image, int row0,
+                          int row_count) {
+  lje* self = lj;
+  int ret;
+  if (!self || !image) return TDNG_LJ92_ERROR_BAD_HANDLE;
+  if (self->phase != 2) return TDNG_LJ92_ERROR_BAD_HANDLE;
+  if (row0 < 0 || row_count <= 0 || row0 != self->next_row ||
+      row0 + row_count > self->height) {
+    return TDNG_LJ92_ERROR_BAD_HANDLE;
   }
-  *encoded = self->encoded;
-  *encodedLength = self->encodedWritten;
-  self->encoded = NULL;  // ownership transferred
+  if (image != self->image) return TDNG_LJ92_ERROR_BAD_HANDLE;
+  ret = enc_write_rows(self, row0, row_count);
+  if (ret != TDNG_LJ92_ERROR_NONE) return ret;
+  enc_stage_flush(self);
+  if (self->sink_failed) return TDNG_LJ92_ERROR_IO;
+  self->next_row = row0 + row_count;
+  return TDNG_LJ92_ERROR_NONE;
+}
 
-done:
-  free(self->encoded);
+/* Flush the final bits, emit EOI and release the encoder. The handle is
+   invalid after this call; the return value is the final encode status. */
+int tdng_lj92_encode_finish(tdng_lj92_enc lj) {
+  lje* self = lj;
+  int ret = TDNG_LJ92_ERROR_NONE;
+  if (!self) return TDNG_LJ92_ERROR_BAD_HANDLE;
+  if (self->phase != 2) {
+    ret = TDNG_LJ92_ERROR_BAD_HANDLE;  // begin never ran
+  } else {
+    enc_flush_bits(self);
+    ret = enc_write_eoi(self);
+    enc_stage_flush(self);
+    if (self->sink_failed) ret = TDNG_LJ92_ERROR_IO;
+  }
+  free(self->rc);
   free(self);
   return ret;
+}
+
+/* Growable-buffer sink used by the one-shot tdng_lj92_encode_ex. */
+typedef struct lj92_membuf {
+  uint8_t* buf;
+  size_t cap;
+  size_t len;
+} lj92_membuf;
+
+static size_t lj92_membuf_write(void* user, const void* data, size_t len) {
+  lj92_membuf* m = (lj92_membuf*)user;
+  size_t need = m->len + len;
+  if (need < m->len) return 0;  /* size_t wrap */
+  if (need > m->cap) {
+    size_t cap = m->cap ? m->cap : 4096u;
+    while (cap < need) {
+      if (cap > (size_t)INT_MAX / 2) { cap = need; break; }
+      cap *= 2;
+    }
+    if (cap > (size_t)INT_MAX) return 0;
+    {
+      uint8_t* nb = (uint8_t*)realloc(m->buf, cap);
+      if (!nb) return 0;
+      m->buf = nb;
+      m->cap = cap;
+    }
+  }
+  memcpy(m->buf + m->len, data, len);
+  m->len += len;
+  return len;
+}
+
+int tdng_lj92_encode_ex(uint16_t* image, int width, int height, int bitdepth,
+                        int components, int predictor, int readLength,
+                        int skipLength, uint16_t* delinearize,
+                        int delinearizeLength, uint8_t** encoded,
+                        int* encodedLength) {
+  lj92_membuf mb;
+  tdng_lj92_enc lj = NULL;
+  int ret;
+
+  if (!image || !encoded || !encodedLength) return TDNG_LJ92_ERROR_BAD_HANDLE;
+  *encoded = NULL;
+  *encodedLength = 0;
+  memset(&mb, 0, sizeof(mb));
+  ret = tdng_lj92_encode_open(&lj, width, height, bitdepth, components,
+                              predictor, readLength, skipLength, &mb,
+                              lj92_membuf_write);
+  if (ret != TDNG_LJ92_ERROR_NONE) return ret;
+  ret = tdng_lj92_encode_scan(lj, image, delinearize, delinearizeLength);
+  if (ret == TDNG_LJ92_ERROR_NONE) ret = tdng_lj92_encode_begin(lj);
+  if (ret == TDNG_LJ92_ERROR_NONE) {
+    ret = tdng_lj92_encode_rows(lj, image, 0, height);
+  }
+  tdng_lj92_encode_finish(lj);  /* always frees the encoder */
+  if (ret != TDNG_LJ92_ERROR_NONE) {
+    free(mb.buf);
+    return ret;
+  }
+  *encoded = mb.buf;
+  *encodedLength = (int)mb.len;
+  return TDNG_LJ92_ERROR_NONE;
 }
 
 int tdng_lj92_encode(uint16_t* image, int width, int height, int bitdepth,
