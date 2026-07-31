@@ -112,6 +112,41 @@ static int test_bigtiff(tinydng_context *ctx) {
     CHECK(0, "bigtiff open/decode: %s", err.message);
     rc = 1;
   }
+
+  /* The stdio backend materializes the bulk IFD window in a scratch buffer.
+   * Keep this fixture exactly sized so a short next-IFD reservation cannot be
+   * masked by unrelated bytes after the file. */
+  {
+    const char *path = "test_v3_bigtiff_stdio.tif";
+    FILE *fp = fopen(path, "wb");
+    tinydng_document *file_doc = NULL;
+    tinydng_status st = TINYDNG_E_IO;
+    if (fp) {
+      if (fwrite(buf, 1, total, fp) == total && fclose(fp) == 0) {
+        fp = NULL;
+        st = tinydng_open_file(ctx, path, NULL, &file_doc, &err);
+      } else {
+        fclose(fp);
+        fp = NULL;
+      }
+    }
+    CHECK(st == TINYDNG_OK, "bigtiff stdio open: %s", err.message);
+    if (st == TINYDNG_OK) {
+      tinydng_pixels fpx;
+      tinydng_status dst = tinydng_decode_image(ctx, file_doc, 0, NULL,
+                                                &fpx, &err);
+      CHECK(dst == TINYDNG_OK, "bigtiff stdio decode: %s", err.message);
+      if (dst == TINYDNG_OK) {
+        CHECK(fpx.width == w && fpx.height == h && fpx.size == strip_len,
+              "bigtiff stdio dims");
+        CHECK(memcmp(fpx.data, img, strip_len) == 0,
+              "bigtiff stdio pixels");
+        tinydng_pixels_free(ctx, &fpx);
+      }
+      tinydng_document_destroy(ctx, file_doc);
+    }
+    remove(path);
+  }
   free(buf);
   free(img);
   return rc;

@@ -298,6 +298,26 @@ static void test_errors(void) {
   check(ret == TDNG_LJ92_ERROR_NONE, "rows: second chunk");
   ret = tdng_lj92_encode_finish(lj);
   check(ret == TDNG_LJ92_ERROR_NONE && out.len > 0u, "finish ok");
+  free(out.data);
+  memset(&out, 0, sizeof(out));
+
+  /* finish must reject a stream that did not receive every row. */
+  ret = tdng_lj92_encode_open(&lj, 8, 8, 8, 1, 1, 8, 0, &out, mbuf_write);
+  if (ret == TDNG_LJ92_ERROR_NONE) {
+    ret = tdng_lj92_encode_scan(lj, img, NULL, 0);
+    if (ret == TDNG_LJ92_ERROR_NONE) ret = tdng_lj92_encode_begin(lj);
+    if (ret == TDNG_LJ92_ERROR_NONE) {
+      ret = tdng_lj92_encode_rows(lj, img, 0, 4);
+    }
+    if (ret == TDNG_LJ92_ERROR_NONE) {
+      ret = tdng_lj92_encode_finish(lj);
+    } else {
+      tdng_lj92_encode_finish(lj);
+    }
+  }
+  check(ret == TDNG_LJ92_ERROR_BAD_HANDLE,
+        "finish: incomplete rows rejected");
+  free(out.data);
 
   /* short sink => IO */
   f.limit = 20;

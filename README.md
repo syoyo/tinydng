@@ -384,6 +384,21 @@ When TinyDNG is installed from pip, CLI command `tinydng` is available.
 $ tinydng input.dng
 ```
 
+### WebAssembly demo
+
+The maintained browser build lives in [web](web/). It uses the v3 pure C API
+to decode DNG/TIFF files in WebAssembly and includes a metadata/raw-development
+demo with a WebGL2 tiled GPU path. Build it with an Emscripten environment:
+
+```bash
+emcmake cmake -S web -B web/build -DCMAKE_BUILD_TYPE=Release
+cmake --build web/build
+python3 -m http.server 8000
+```
+
+Open <http://localhost:8000/web/js/>. The former
+[experimental/emscripten](experimental/emscripten) project is deprecated.
+
 ## Fuzzing test
 
 * [fuzzer](fuzzer/) Fuzzing test.

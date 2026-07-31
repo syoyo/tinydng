@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>TinyDNG WebAssembly Demo</title>
+    <style>
+      :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+      body { margin: 0; background: #17191c; color: #e8eaed; }
+      main { max-width: 1100px; margin: 0 auto; padding: 24px; }
+      header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+      h1 { margin: 0; font-size: 1.5rem; }
+      #status { color: #9aa4af; min-height: 1.4em; }
+      .controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 20px 0; }
+      select, input { font: inherit; }
+      .layout { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 20px; align-items: start; }
+      .viewer { min-height: 300px; display: grid; place-items: center; background: #0d0f11; border: 1px solid #30343a; overflow: auto; }
+      canvas { max-width: 100%; height: auto; image-rendering: auto; }
+      dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 8px 12px; }
+      dt { color: #9aa4af; }
+      dd { margin: 0; overflow-wrap: anywhere; }
+      .hint { color: #9aa4af; font-size: .9rem; }
+      @media (max-width: 760px) { .layout { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>TinyDNG WebAssembly Demo</h1>
+        <span id="status">Loading decoder…</span>
+      </header>
+      <div class="controls">
+        <label>Open DNG/TIFF <input id="file" type="file" accept=".dng,.tif,.tiff,image/tiff,application/octet-stream"></label>
+        <label>Image/IFD <select id="image" disabled></select></label>
+      </div>
+      <div class="controls">
+        <label>Exposure <input id="exposure" type="range" min="-4" max="4" step="0.1" value="0"> <output id="exposureValue">0 EV</output></label>
+        <label>Shadows <input id="shadow" type="range" min="0" max="1" step="0.01" value="0.25"> <output id="shadowValue">25%</output></label>
+        <label>Highlights <input id="highlight" type="range" min="0" max="1" step="0.01" value="0.35"> <output id="highlightValue">35%</output></label>
+        <label><input id="colorCorrection" type="checkbox" checked> DNG color correction</label>
+      </div>
+      <p class="hint">WebGL2 develops raw images with tiled 3×3 CFA demosaicing, exposure, shadow lift, highlight rolloff, and optional DNG color-matrix correction. Canvas2D fallback is a normalized preview.</p>
+      <section class="layout">
+        <div class="viewer"><canvas id="canvas" hidden></canvas><canvas id="fallbackCanvas" hidden></canvas></div>
+        <aside>
+          <dl id="metadata"></dl>
+        </aside>
+      </section>
+    </main>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

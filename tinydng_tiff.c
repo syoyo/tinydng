@@ -349,8 +349,8 @@ static int td_parse_entry_row(const td_reader *r, const uint8_t *row,
   return 1;
 }
 
-/* Read the whole IFD entry table [entries_start, + n*stride + 4 bytes for
-   the next-IFD pointer) in ONE IO call, zero-copy when the backend can map
+/* Read the whole IFD entry table [entries_start, + n*stride + next-pointer
+   bytes) in ONE IO call, zero-copy when the backend can map
    it. When it can't, allocates `*owned` (caller must free). Returns NULL on
    overflow / out-of-range, with `err` unset (caller reports). */
 static const uint8_t *td_entries_bulk(tinydng_context *ctx, const td_reader *r,
@@ -358,10 +358,12 @@ static const uint8_t *td_entries_bulk(tinydng_context *ctx, const td_reader *r,
                                       uint64_t stride, uint8_t **owned,
                                       tinydng_error *err) {
   uint64_t table_len;
+  uint64_t next_ptr_size = r->bigtiff ? 8u : 4u;
   const uint8_t *p;
   *owned = NULL;
   if (!td_safe_mul_u64(n, stride, &table_len) ||
-      !td_safe_add_u64(table_len, 4u, &table_len)) {
+      !td_safe_add_u64(table_len, next_ptr_size, &table_len) ||
+      table_len > (uint64_t)SIZE_MAX) {
     return NULL;
   }
   if (table_len > r->size || entries_start > r->size - table_len) {

@@ -91,6 +91,7 @@ typedef struct tdng_lj92_stream {
   u8* buf;            /* chunk cache */
   uint64_t buf_off;   /* absolute offset of buf[0] */
   size_t buf_len;     /* valid bytes in buf */
+  size_t buf_cap;     /* allocated capacity of buf */
 } tdng_lj92_stream;
 
 /* Ensure `buf` covers [off, off+need). Returns 1 on success. */
@@ -105,7 +106,8 @@ static int srefill(tdng_lj92_stream* s, uint64_t off, size_t need) {
     }
   }
   {
-    uint64_t want = need;
+    uint64_t want = (s->size == UINT64_MAX) ? (uint64_t)need
+                                           : TDNG_LJ92_STREAM_CHUNK;
     if (s->size != UINT64_MAX) {
       if (off >= s->size) {
         s->buf_off = off;
@@ -115,12 +117,7 @@ static int srefill(tdng_lj92_stream* s, uint64_t off, size_t need) {
       if (want > s->size - off) want = s->size - off;
     }
     if (want > TDNG_LJ92_STREAM_CHUNK) want = TDNG_LJ92_STREAM_CHUNK;
-    if (want < need) {
-      size_t got = s->read_fn(s->user, off, s->buf, (size_t)want);
-      s->buf_off = off;
-      s->buf_len = got;
-      return 0;
-    }
+    if (want > s->buf_cap) want = s->buf_cap;
     size_t got = s->read_fn(s->user, off, s->buf, (size_t)want);
     s->buf_off = off;
     s->buf_len = got;
@@ -814,6 +811,46 @@ static int parse_sos_payload(const u8* payload, int payload_len,
   return TDNG_LJ92_ERROR_NONE;
 }
 
+/* Allocate only the decode scratch required by the selected scan path. The
+ * common non-linearized mono/RGB predictor paths reconstruct directly into
+ * the caller's output and need neither rowcache nor diffcache. */
+static int ensure_decode_scratch(ljp* self, int pred) {
+  const int nc = self->components;
+  int need_rows = self->linearize != NULL;
+  int need_diff = (nc == 1 && pred == 1);
+  size_t row_slots;
+
+  if (!need_rows) {
+    if (nc == 1) {
+      need_rows = pred != 7;
+    } else if (nc == 3) {
+      need_rows = pred != 1 && pred != 7;
+    } else {
+      need_rows = 1;
+    }
+  }
+  if (!need_rows && !need_diff) return TDNG_LJ92_ERROR_NONE;
+
+  row_slots = (size_t)self->x * (size_t)nc;
+  if (need_rows && !self->rowcache) {
+    if (row_slots > SIZE_MAX / (2u * sizeof(u16))) {
+      return TDNG_LJ92_ERROR_NO_MEMORY;
+    }
+    self->rowcache = (u16*)calloc(row_slots * 2u, sizeof(u16));
+    if (!self->rowcache) return TDNG_LJ92_ERROR_NO_MEMORY;
+    self->outrow[0] = self->rowcache;
+    self->outrow[1] = self->rowcache + row_slots;
+  }
+  if (need_diff && !self->diffcache) {
+    if (row_slots > SIZE_MAX / sizeof(u16)) {
+      return TDNG_LJ92_ERROR_NO_MEMORY;
+    }
+    self->diffcache = (u16*)calloc(row_slots, sizeof(u16));
+    if (!self->diffcache) return TDNG_LJ92_ERROR_NO_MEMORY;
+  }
+  return TDNG_LJ92_ERROR_NONE;
+}
+
 // Dispatch to the specialized scan runner for (pred, components, linearize).
 // `bio` must be initialized over the destuffed entropy buffer.
 static int parseScanDispatch(ljp* self, bitio_t* bio, int pred) {
@@ -859,6 +896,9 @@ static int parseScan(ljp* self) {
   if (self->x <= 0 || self->y <= 0 || self->components <= 0) {
     return TDNG_LJ92_ERROR_NONE;
   }
+
+  ret = ensure_decode_scratch(self, pred);
+  if (ret != TDNG_LJ92_ERROR_NONE) return ret;
 
   // Destuff the entropy-coded payload into self->ebuf so the inner loops
   // can use bulk 8-byte loads without per-byte 0xFF checks.
@@ -993,16 +1033,6 @@ int tdng_lj92_open(tdng_lj92* lj, const uint8_t* data, int datalen, int* width,
     // fields ever widen.
     if (self->x > 0xFFFF || self->components > LJ92_MAX_COMPONENTS) {
       ret = TDNG_LJ92_ERROR_CORRUPT;
-    } else {
-      size_t row_slots = (size_t)self->x * (size_t)self->components;
-      self->rowcache  = (u16*)calloc(row_slots * 2, sizeof(u16));
-      self->diffcache = (u16*)calloc(row_slots,     sizeof(u16));
-      if (!self->rowcache || !self->diffcache) {
-        ret = TDNG_LJ92_ERROR_NO_MEMORY;
-      } else {
-        self->outrow[0] = self->rowcache;
-        self->outrow[1] = self->rowcache + row_slots;
-      }
     }
   }
 
@@ -1113,8 +1143,10 @@ static int clz32(unsigned int x) {
 #endif
 }
 
-static int enc_px_from_neighbors(int pred, int left, int above, int abovel,
-                                 int initpx, int row, int col) {
+static TDNG_ALWAYS_INLINE int enc_px_from_neighbors(int pred, int left,
+                                                    int above, int abovel,
+                                                    int initpx, int row,
+                                                    int col) {
   if (row == 0 && col == 0) return initpx;
   if (row == 0)             return left;     // left predictor
   if (col == 0)             return above;    // above predictor
@@ -1129,7 +1161,7 @@ static int enc_px_from_neighbors(int pred, int left, int above, int abovel,
   }
 }
 
-static int enc_ssss(int diff) {
+static TDNG_ALWAYS_INLINE int enc_ssss(int diff) {
   // DNG allows diff in (-32768, 32767]; the "modulo 65536" rule is folded
   // into diff by the caller so diff here fits in int range.
   int a = diff < 0 ? -diff : diff;
@@ -1171,6 +1203,20 @@ static void enc_put_bits(lje* self, uint32_t v, int nbits) {
   }
 }
 
+static TDNG_ALWAYS_INLINE int enc_emit_diff(lje* self, int diff) {
+  int ssss = enc_ssss(diff);
+  /* A symbol with no Huffman code would silently desynchronise the stream. */
+  if (self->huffbits[ssss] == 0) return TDNG_LJ92_ERROR_CORRUPT;
+  enc_put_bits(self, self->huffenc[ssss], self->huffbits[ssss]);
+  if (ssss > 0) {
+    uint32_t bits_val;
+    if (diff < 0) bits_val = (uint32_t)(diff + (1 << ssss) - 1);
+    else          bits_val = (uint32_t)diff;
+    enc_put_bits(self, bits_val, ssss);
+  }
+  return TDNG_LJ92_ERROR_NONE;
+}
+
 // Pad the remaining bits with 1s per JPEG spec and flush.
 static void enc_flush_bits(lje* self) {
   if (self->nbits > 0) {
@@ -1180,6 +1226,66 @@ static void enc_flush_bits(lje* self) {
     self->bitbuf = 0;
     self->nbits = 0;
   }
+}
+
+// Fast histogram scan for the predictor used by the writer. The first NC
+// samples in a row use the initial/above predictor; all remaining samples
+// use the immediately preceding reconstructed sample. Splitting those cases
+// removes row/column and predictor branches from the hot loop.
+static int enc_frequency_scan_pred1(lje* self) {
+  const int H = self->height, NC = self->components;
+  const int initpx = 1 << (self->bitdepth - 1);
+  const int maxval = 1 << self->bitdepth;
+  const size_t row_slots = (size_t)self->width * (size_t)NC;
+  uint16_t* thisrow = self->thisrow;
+  uint16_t* lastrow = self->lastrow;
+  const uint16_t* pix = self->image;
+  int scan = self->readLength;
+  int row;
+
+  for (row = 0; row < H; row++) {
+    size_t i;
+    for (i = 0; i < (size_t)NC; i++) {
+      uint16_t p = *pix++;
+      if (self->delinearize) {
+        if (p >= self->delinearizeLength) return TDNG_LJ92_ERROR_TOO_WIDE;
+        p = self->delinearize[p];
+      }
+      if (p >= maxval) return TDNG_LJ92_ERROR_TOO_WIDE;
+      {
+        int diff = (int16_t)((int)p - (row > 0 ? lastrow[i] : initpx));
+        self->hist[enc_ssss(diff)]++;
+      }
+      thisrow[i] = p;
+      if (--scan == 0) {
+        pix += self->skipLength;
+        scan = self->readLength;
+      }
+    }
+    for (i = (size_t)NC; i < row_slots; i++) {
+      uint16_t p = *pix++;
+      if (self->delinearize) {
+        if (p >= self->delinearizeLength) return TDNG_LJ92_ERROR_TOO_WIDE;
+        p = self->delinearize[p];
+      }
+      if (p >= maxval) return TDNG_LJ92_ERROR_TOO_WIDE;
+      {
+        int diff = (int16_t)((int)p - thisrow[i - (size_t)NC]);
+        self->hist[enc_ssss(diff)]++;
+      }
+      thisrow[i] = p;
+      if (--scan == 0) {
+        pix += self->skipLength;
+        scan = self->readLength;
+      }
+    }
+    {
+      uint16_t* t = lastrow;
+      lastrow = thisrow;
+      thisrow = t;
+    }
+  }
+  return TDNG_LJ92_ERROR_NONE;
 }
 
 // Single-pass histogram scan using the configured predictor. Caches two
@@ -1193,11 +1299,15 @@ static int enc_frequency_scan(lje* self) {
   uint16_t* thisrow = self->thisrow;
   uint16_t* lastrow = self->lastrow;
 
+  if (self->predictor == 1) return enc_frequency_scan_pred1(self);
+
   const uint16_t* pix = self->image;
   int scan = self->readLength;
 
   for (int row = 0; row < H; row++) {
     for (int col = 0; col < W; col++) {
+      int base = col * NC;
+      int prv = base - NC;
       for (int c = 0; c < NC; c++) {
         uint16_t p = *pix++;
         if (self->delinearize) {
@@ -1206,8 +1316,6 @@ static int enc_frequency_scan(lje* self) {
         }
         if (p >= maxval) return TDNG_LJ92_ERROR_TOO_WIDE;
 
-        int base = col * NC;
-        int prv  = base - NC;
         int left   = (col > 0) ? thisrow[prv + c] : 0;
         int above  = (row > 0) ? lastrow[base + c] : 0;
         int abovel = (row > 0 && col > 0) ? lastrow[prv + c] : 0;
@@ -1368,15 +1476,75 @@ static int enc_write_header(lje* self) {
 // must deliver rows sequentially (encode_rows enforces row0 == next_row).
 // The predictor row cache, read pointer and skip counter persist in `self`,
 // so the output is identical to encoding the whole image in one call.
+static int enc_write_rows_pred1(lje* self, int row0, int row_count) {
+  const int NC = self->components;
+  const int initpx = 1 << (self->bitdepth - 1);
+  const size_t row_slots = (size_t)self->width * (size_t)NC;
+  uint16_t* thisrow = self->thisrow;
+  uint16_t* lastrow = self->lastrow;
+  int row;
+
+  for (row = row0; row < row0 + row_count; row++) {
+    size_t i;
+    for (i = 0; i < (size_t)NC; i++) {
+      uint16_t p = *self->pix++;
+      if (self->delinearize) {
+        if (p >= self->delinearizeLength) return TDNG_LJ92_ERROR_TOO_WIDE;
+        p = self->delinearize[p];
+      }
+      {
+        int diff = (int16_t)((int)p - (row > 0 ? lastrow[i] : initpx));
+        int ret = enc_emit_diff(self, diff);
+        if (ret != TDNG_LJ92_ERROR_NONE) return ret;
+      }
+      thisrow[i] = p;
+      if (--self->scan_remain == 0) {
+        self->pix += self->skipLength;
+        self->scan_remain = self->readLength;
+      }
+    }
+    for (i = (size_t)NC; i < row_slots; i++) {
+      uint16_t p = *self->pix++;
+      if (self->delinearize) {
+        if (p >= self->delinearizeLength) return TDNG_LJ92_ERROR_TOO_WIDE;
+        p = self->delinearize[p];
+      }
+      {
+        int diff = (int16_t)((int)p - thisrow[i - (size_t)NC]);
+        int ret = enc_emit_diff(self, diff);
+        if (ret != TDNG_LJ92_ERROR_NONE) return ret;
+      }
+      thisrow[i] = p;
+      if (--self->scan_remain == 0) {
+        self->pix += self->skipLength;
+        self->scan_remain = self->readLength;
+      }
+    }
+    {
+      uint16_t* t = lastrow;
+      lastrow = thisrow;
+      thisrow = t;
+    }
+  }
+  self->thisrow = thisrow;
+  self->lastrow = lastrow;
+  if (self->sink_failed) return TDNG_LJ92_ERROR_IO;
+  return TDNG_LJ92_ERROR_NONE;
+}
+
 static int enc_write_rows(lje* self, int row0, int row_count) {
   const int W = self->width, NC = self->components;
   const int initpx = 1 << (self->bitdepth - 1);
+
+  if (self->predictor == 1) return enc_write_rows_pred1(self, row0, row_count);
 
   uint16_t* thisrow = self->thisrow;
   uint16_t* lastrow = self->lastrow;
 
   for (int row = row0; row < row0 + row_count; row++) {
     for (int col = 0; col < W; col++) {
+      int base = col * NC;
+      int prv  = base - NC;
       for (int c = 0; c < NC; c++) {
         uint16_t p = *self->pix++;
         if (self->delinearize) {
@@ -1386,8 +1554,6 @@ static int enc_write_rows(lje* self, int row0, int row_count) {
           if (p >= self->delinearizeLength) return TDNG_LJ92_ERROR_TOO_WIDE;
           p = self->delinearize[p];
         }
-        int base = col * NC;
-        int prv  = base - NC;
         int left   = (col > 0) ? thisrow[prv + c] : 0;
         int above  = (row > 0) ? lastrow[base + c] : 0;
         int abovel = (row > 0 && col > 0) ? lastrow[prv + c] : 0;
@@ -1555,6 +1721,8 @@ int tdng_lj92_encode_finish(tdng_lj92_enc lj) {
   if (!self) return TDNG_LJ92_ERROR_BAD_HANDLE;
   if (self->phase != 2) {
     ret = TDNG_LJ92_ERROR_BAD_HANDLE;  // begin never ran
+  } else if (self->next_row != self->height) {
+    ret = TDNG_LJ92_ERROR_BAD_HANDLE;  // all rows must be supplied
   } else {
     enc_flush_bits(self);
     ret = enc_write_eoi(self);
@@ -1833,6 +2001,9 @@ static int parseScanStreaming(ljp* self) {
     return TDNG_LJ92_ERROR_NONE;
   }
 
+  ret = ensure_decode_scratch(self, pred);
+  if (ret != TDNG_LJ92_ERROR_NONE) return ret;
+
   ret = stream_destuff_entropy(self, so + (uint64_t)sos_len);
   if (ret != TDNG_LJ92_ERROR_NONE) return ret;
 
@@ -1857,16 +2028,21 @@ int tdng_lj92_open_streaming(tdng_lj92* lj, void* user,
   if (!self) return TDNG_LJ92_ERROR_NO_MEMORY;
   sctx = (tdng_lj92_stream*)calloc(1, sizeof(*sctx));
   if (!sctx) { free(self); return TDNG_LJ92_ERROR_NO_MEMORY; }
-  sctx->buf = (u8*)malloc(TDNG_LJ92_STREAM_CHUNK);
+  sctx->user = user;
+  sctx->read_fn = read_fn;
+  sctx->size_fn = size_fn;
+  sctx->size = size_fn ? size_fn(user) : UINT64_MAX;
+  sctx->buf_cap = TDNG_LJ92_STREAM_CHUNK;
+  if (sctx->size != UINT64_MAX && sctx->size < (uint64_t)sctx->buf_cap) {
+    sctx->buf_cap = (size_t)sctx->size;
+  }
+  if (sctx->buf_cap == 0u) sctx->buf_cap = 1u;
+  sctx->buf = (u8*)malloc(sctx->buf_cap);
   if (!sctx->buf) {
     free(sctx);
     free(self);
     return TDNG_LJ92_ERROR_NO_MEMORY;
   }
-  sctx->user = user;
-  sctx->read_fn = read_fn;
-  sctx->size_fn = size_fn;
-  sctx->size = size_fn ? size_fn(user) : UINT64_MAX;
   self->stream_user = sctx;
   self->is_streaming = 1;
   self->stream_size = sctx->size;
@@ -1891,17 +2067,6 @@ int tdng_lj92_open_streaming(tdng_lj92* lj, void* user,
   if (self->x > 0xFFFF || self->components > LJ92_MAX_COMPONENTS) {
     ret = TDNG_LJ92_ERROR_CORRUPT;
     goto fail;
-  }
-  {
-    size_t row_slots = (size_t)self->x * (size_t)self->components;
-    self->rowcache = (u16*)calloc(row_slots * 2, sizeof(u16));
-    self->diffcache = (u16*)calloc(row_slots, sizeof(u16));
-    if (!self->rowcache || !self->diffcache) {
-      ret = TDNG_LJ92_ERROR_NO_MEMORY;
-      goto fail;
-    }
-    self->outrow[0] = self->rowcache;
-    self->outrow[1] = self->rowcache + row_slots;
   }
   *width = self->x;
   *height = self->y;

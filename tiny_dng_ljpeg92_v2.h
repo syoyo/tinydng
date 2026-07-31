@@ -68,8 +68,9 @@ int tdng_lj92_open_streaming(tdng_lj92* lj, void* user,
  * return is a sink failure (TDNG_LJ92_ERROR_IO). `image` is the base
  * pointer for the source frame (readLength/skipLength follow the DNG tiled
  * layout) and must be the same pointer in scan() and every rows() call.
- * rows() must be called strictly in row order. Output is staged in 4KB
- * chunks and never materialized as a whole. */
+ * rows() must be called strictly in row order, and all image rows must be
+ * supplied before finish(). Output is staged in 4KB chunks and never
+ * materialized as a whole. */
 typedef size_t (*tdng_lj92_write_fn)(void* user, const void* data, size_t len);
 int tdng_lj92_encode_open(tdng_lj92_enc* lj, int width, int height,
                           int bitdepth, int components, int predictor,

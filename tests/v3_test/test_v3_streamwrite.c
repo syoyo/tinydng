@@ -389,6 +389,7 @@ static size_t fail_sink_write(tinydng_write_io *io, uint64_t off,
 
 static void test_errors(void) {
   tinydng_write_image meta;
+  tinydng_write_image bad_meta;
   tinydng_write_options opts;
   tinydng_tiling tiling;
   tinydng_write_io io;
@@ -412,6 +413,33 @@ static void test_errors(void) {
   memset(&tiling, 0, sizeof(tiling));
   tiling.tile_width = 16;
   tiling.tile_length = 16;
+
+  /* Fixed-size metadata arrays must not be indexed by an unsupported spp. */
+  bad_meta = meta;
+  bad_meta.samples_per_pixel = 17;
+  memset(&opts, 0, sizeof(opts));
+  if (tinydng_write_io_open_memory(g_ctx, &io, &g_err) == TINYDNG_OK) {
+    st = tinydng_writer_create(g_ctx, io, &bad_meta, &opts, NULL, &w, &g_err);
+    CHECK(st == TINYDNG_E_UNSUPPORTED, "samples_per_pixel > 16 rejected");
+    if (st == TINYDNG_OK) tinydng_writer_finish(w, &g_err);
+    io.close(&io);
+  }
+
+  /* The wrapper's geometry check must multiply each factor separately. */
+  bad_meta = meta;
+  bad_meta.width = UINT32_MAX;
+  bad_meta.height = UINT32_MAX;
+  bad_meta.samples_per_pixel = 16;
+  bad_meta.bits_per_sample = 32;
+  bad_meta.data = px;
+  bad_meta.data_size = SIZE_MAX;
+  {
+    uint8_t *out = NULL;
+    size_t out_size = 0;
+    st = tinydng_write_memory(g_ctx, &bad_meta, NULL, &out, &out_size, &g_err);
+    CHECK(st == TINYDNG_E_BOUNDS, "image geometry overflow rejected");
+    if (out) tinydng_buffer_free(g_ctx, out);
+  }
 
   /* LJPEG with bps != 16 */
   opts.compression = TINYDNG_COMPRESSION_NEW_JPEG;
