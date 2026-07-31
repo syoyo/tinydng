@@ -82,6 +82,8 @@ extern "C" {
 #include <string>
 #include <vector>
 
+#include <chrono>
+
 #include "imgui.h"
 #include "imgui_impl_btgui.h"
 
@@ -659,8 +661,16 @@ int main(int argc, char** argv) {
     std::vector<tinydng::DNGImage> images;
     std::vector<tinydng::FieldInfo> custom_fields;
 
+    auto start_t = std::chrono::system_clock::now();
+
     bool ret =
         tinydng::LoadDNG(input_filename.c_str(), custom_fields, &images, &warn, &err);
+
+    auto end_t = std::chrono::system_clock::now();
+
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_t - start_t);
+
+    std::cout << "elapsed = " << elapsed.count() << " [ms]\n";
 
     if (!warn.empty()) {
       std::cout << "WARN: " << warn << std::endl;

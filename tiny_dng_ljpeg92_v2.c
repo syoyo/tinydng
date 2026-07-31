@@ -51,10 +51,11 @@ typedef struct _ljp {
   u16* linearize;  // Linearization table (or NULL)
   int linlen;
 
-  // Per-component Huffman lookup tables. Entry = (symbol << 8) | bitsused.
+  // Per-component Huffman lookup tables. Entry = (ssss << 8) | total.
   u16* hufflut[LJ92_MAX_COMPONENTS];
   int  huffbits[LJ92_MAX_COMPONENTS];
   int  num_huff_idx;
+  int  huff_maxbits;  // uniform peek width after expand_luts_uniform
 
   u16* image;       // Output target for current decode.
   u16* rowcache;    // outrow[0..1] backing storage.
@@ -67,7 +68,75 @@ typedef struct _ljp {
   u8* ebuf;
   int ebuf_len;
   int ebuf_cap;
+
+  // Streaming state (used when opened via tdng_lj92_open_streaming).
+  int is_streaming;
+  void* stream_user;
+  uint64_t stream_size;
+  uint64_t stream_soi_off;    // offset of SOI within the stream
+  uint64_t stream_scanstart;  // absolute stream offset of the SOS header (Ls field)
 } ljp;
+
+/* ------------------------------------------------------------------ */
+/* Streaming reader: chunk-cached random access over a read callback  */
+/* ------------------------------------------------------------------ */
+
+#define TDNG_LJ92_STREAM_CHUNK (64 * 1024)
+
+typedef struct tdng_lj92_stream {
+  void* user;
+  tdng_lj92_read_fn read_fn;
+  tdng_lj92_size_fn size_fn;
+  uint64_t size;      /* total stream size, or UINT64_MAX if unknown */
+  u8* buf;            /* chunk cache */
+  uint64_t buf_off;   /* absolute offset of buf[0] */
+  size_t buf_len;     /* valid bytes in buf */
+} tdng_lj92_stream;
+
+/* Ensure `buf` covers [off, off+need). Returns 1 on success. */
+static int srefill(tdng_lj92_stream* s, uint64_t off, size_t need) {
+  if (need == 0) return 1;
+  if (need > TDNG_LJ92_STREAM_CHUNK) need = TDNG_LJ92_STREAM_CHUNK;
+  if (off >= s->buf_off) {
+    uint64_t rel = off - s->buf_off;
+    if (rel <= (uint64_t)s->buf_len &&
+        (uint64_t)(s->buf_len - (size_t)rel) >= (uint64_t)need) {
+      return 1; /* already covered */
+    }
+  }
+  {
+    uint64_t want = need;
+    if (s->size != UINT64_MAX) {
+      if (off >= s->size) {
+        s->buf_off = off;
+        s->buf_len = 0;
+        return 0;
+      }
+      if (want > s->size - off) want = s->size - off;
+    }
+    if (want > TDNG_LJ92_STREAM_CHUNK) want = TDNG_LJ92_STREAM_CHUNK;
+    if (want < need) {
+      size_t got = s->read_fn(s->user, off, s->buf, (size_t)want);
+      s->buf_off = off;
+      s->buf_len = got;
+      return 0;
+    }
+    size_t got = s->read_fn(s->user, off, s->buf, (size_t)want);
+    s->buf_off = off;
+    s->buf_len = got;
+    return got >= need;
+  }
+}
+
+/* Read exactly len bytes at absolute off. Returns 1 on success. */
+static int sread(tdng_lj92_stream* s, uint64_t off, void* dst, size_t len) {
+  if (!srefill(s, off, len)) return 0;
+  memcpy(dst, s->buf + (size_t)(off - s->buf_off), len);
+  return 1;
+}
+
+/* Forward declaration: streaming scan entry used by tdng_lj92_decode. */
+static int parseScanStreaming(ljp* self);
 
 // Left-aligned 64-bit bit buffer. `bb` holds the next up-to-`nbits` bits in
 // the high bits; peeking N bits is `(u32)(bb >> (64 - N))`.
@@ -120,9 +189,10 @@ static inline void bitio_refill(bitio_t* bio) {
       ((x & 0x00000000000000ffULL) << 56);
 #endif
   bio->bb |= x >> bio->nbits;
-  int consumed = (64 - bio->nbits) >> 3;
-  bio->p += consumed;
-  bio->nbits += consumed << 3;
+  // nbits < 32 here, so `(63 - nbits) >> 3` advances in whole bytes and
+  // `nbits |= 56` is exactly nbits + 56 without the add (see sandbox/lj92).
+  bio->p += (63 - bio->nbits) >> 3;
+  bio->nbits |= 56;
 }
 
 static inline int bitio_check_overrun(const bitio_t* bio) {
@@ -133,25 +203,24 @@ static inline int bitio_check_overrun(const bitio_t* bio) {
 }
 
 // Fused Huffman + ssss-value decode with branchless sign-extension.
-// Assumes bitbuf already refilled to nbits >= 32 and maxbits <= 16.
-// ssss + maxbits <= 32 in the worst case so no second refill is needed.
+// The LUT entry packs (ssss << 8) | total, where total = code_length + ssss,
+// so ONE shift of the accumulator consumes the code and its residual
+// together; the residual mask is 0 for ssss == 0 with no special case.
+// Assumes nbits >= 32 (caller refilled) and maxbits <= 16 (total <= 32 fits
+// the pre-refill bits; the single `bb <<= total` is defined for total < 64).
 static inline int bitio_decode_diff(bitio_t* bio, const u16* hufflut,
                                     int maxbits) {
   uint32_t idx = (uint32_t)(bio->bb >> (64 - maxbits));
   uint16_t e = hufflut[idx];
-  int used = e & 0xff;
-  int ssss = e >> 8;
-  bio->bb <<= used;
-  bio->nbits -= used;
-  if (ssss == 0) return 0;
-  uint32_t v = (uint32_t)(bio->bb >> (64 - ssss));
-  bio->bb <<= ssss;
-  bio->nbits -= ssss;
+  uint32_t total = e & 0xff;
+  uint32_t ssss = e >> 8;
+  uint32_t resid = (uint32_t)(bio->bb >> (64 - total)) & ((1u << ssss) - 1u);
+  bio->bb <<= total;
+  bio->nbits -= (int)total;
   int m = 1 << ssss;
   int half = m >> 1;
-  int sign = ((int)v - half) >> 31;     // 0 or -1
-  int diff = (int)v + (sign & (1 - m)); // sign-extend JPEG-style
-  return diff;
+  int sign = ((int)resid - half) >> 31;     // 0 or -1
+  return (int)resid + (sign & (1 - m));     // sign-extend JPEG-style
 }
 
 static int find(ljp* self) {
@@ -172,32 +241,29 @@ static int find(ljp* self) {
 // swap endian
 #define BEH(ptr) ((((int)(*&ptr)) << 8) | (*(&ptr + 1)))
 
-// Parse DHT: build a direct LUT of 2^maxbits entries, each holding
-// (symbol << 8) | code_length. The caller peeks maxbits of the bit stream
-// and indexes in to recover the decoded Huffman symbol plus the number of
-// bits actually consumed. All reads past the marker header are bounds
-// checked against datalen, and every symbol is validated to be <= 16 so
-// that `1 << ssss` in the decode path cannot overflow.
-static int parseHuff(ljp* self) {
+// Build a direct-lookup Huffman table from a DHT payload whose Lh length
+// field sits at `huffhead[0]` with `avail` bytes available. On success
+// allocates *lut_out (caller owns; 2^maxbits entries) and reports the
+// segment length *hufflen_out. Shared by the memory and streaming paths.
+static int build_huff_lut(const u8* huffhead, int avail, int* hufflen_out,
+                          u16** lut_out, int* maxbits_out) {
   // A2: need at least 2 bytes for Lh.
-  if (self->ix + 2 > self->datalen) return TDNG_LJ92_ERROR_CORRUPT;
-  u8* huffhead = &self->data[self->ix];
+  if (avail < 2) return TDNG_LJ92_ERROR_CORRUPT;
   int hufflen = BEH(huffhead[0]);
   // A5: DHT payload is Lh + Tc/Th(1) + L[1..16] + V[]; need at least 19
   // bytes and must not run off the end.
   u8 bits[17];  // local copy so we never mutate the (possibly read-only) input
   int L;
   if (hufflen < 19) return TDNG_LJ92_ERROR_CORRUPT;
-  if (self->ix + hufflen > self->datalen) return TDNG_LJ92_ERROR_CORRUPT;
-  if (self->num_huff_idx >= LJ92_MAX_COMPONENTS) return TDNG_LJ92_ERROR_CORRUPT;
+  if (hufflen > avail) return TDNG_LJ92_ERROR_CORRUPT;
   // bits[0] is the length-0 sentinel (no codes); bits[1..16] are the DHT
   // code-length counts L1..L16 at huffhead[3..18].
   bits[0] = 0;
   for (L = 1; L <= 16; L++) bits[L] = huffhead[2 + L];
 
-  u8* huffvals = &self->data[self->ix + 19];
+  const u8* huffvals = huffhead + 19;
   int total_codes = 0;
-  for (int L = 1; L <= 16; L++) total_codes += bits[L];
+  for (L = 1; L <= 16; L++) total_codes += bits[L];
   // Allow hufflen >= 19 + total_codes to tolerate trailing padding some
   // encoders emit; reject only if the declared length is too short.
   if (hufflen - 19 < total_codes) return TDNG_LJ92_ERROR_CORRUPT;
@@ -205,8 +271,7 @@ static int parseHuff(ljp* self) {
   // `ssss` used by bitio_decode_diff, where `1 << ssss` and the `64 - ssss` /
   // `bb <<= ssss` shifts are undefined for ssss >= 17/31/64. Such a table is
   // not valid lossless JPEG (it would be a baseline DC/AC table) -- reject it
-  // here rather than decoding it. (huffvals[0..total_codes) is in bounds:
-  // ix+19+total_codes <= ix+hufflen <= datalen, checked above.)
+  // here rather than decoding it.
   for (int v = 0; v < total_codes; v++) {
     if (huffvals[v] > 16) return TDNG_LJ92_ERROR_NOT_LOSSLESS;
   }
@@ -214,12 +279,10 @@ static int parseHuff(ljp* self) {
   int maxbits = 16;
   while (maxbits > 0 && !bits[maxbits]) maxbits--;
   if (maxbits <= 0) return TDNG_LJ92_ERROR_CORRUPT;
-  self->huffbits[self->num_huff_idx] = maxbits;
 
   size_t lut_entries = (size_t)1 << maxbits;
   u16* hufflut = (u16*)malloc(lut_entries * sizeof(u16));
   if (!hufflut) return TDNG_LJ92_ERROR_NO_MEMORY;
-  self->hufflut[self->num_huff_idx] = hufflut;
   // Hardening: DHTs in real LJPEG streams may be Kraft-incomplete (some
   // prefixes have no assigned code). Pre-fill every slot with a safe
   // sentinel (ssss=0, used=1) so that if a corrupt bit stream peeks one of
@@ -234,9 +297,32 @@ static int parseHuff(ljp* self) {
     if (bitsused > maxbits) break;
     if (vl >= bits[bitsused]) { bitsused++; vl = 0; continue; }
     if (rv == (1 << (maxbits - bitsused))) { rv = 0; vl++; hv++; continue; }
-    hufflut[i++] = (u16)((huffvals[hv] << 8) | bitsused);
+    // Entry packs (ssss << 8) | total with total = code_length + ssss so the
+    // entropy loop consumes code + residual with a single shift (max 32 bits).
+    hufflut[i++] = (u16)((huffvals[hv] << 8) | (bitsused + huffvals[hv]));
     rv++;
   }
+  *hufflen_out = hufflen;
+  *lut_out = hufflut;
+  *maxbits_out = maxbits;
+  return TDNG_LJ92_ERROR_NONE;
+}
+
+// Parse DHT: build a direct LUT of 2^maxbits entries, each holding
+// (symbol << 8) | code_length. The caller peeks maxbits of the bit stream
+// and indexes in to recover the decoded Huffman symbol plus the number of
+// bits actually consumed. All reads past the marker header are bounds
+// checked against datalen, and every symbol is validated to be <= 16 so
+// that `1 << ssss` in the decode path cannot overflow.
+static int parseHuff(ljp* self) {
+  if (self->num_huff_idx >= LJ92_MAX_COMPONENTS) return TDNG_LJ92_ERROR_CORRUPT;
+  int hufflen = 0, maxbits = 0;
+  u16* lut = NULL;
+  int ret = build_huff_lut(&self->data[self->ix], self->datalen - self->ix,
+                           &hufflen, &lut, &maxbits);
+  if (ret != TDNG_LJ92_ERROR_NONE) return ret;
+  self->hufflut[self->num_huff_idx] = lut;
+  self->huffbits[self->num_huff_idx] = maxbits;
   self->num_huff_idx++;
   self->ix += hufflen;
   return TDNG_LJ92_ERROR_NONE;
@@ -699,25 +785,71 @@ static int parseScanPred1MonoFast(ljp* self, bitio_t* bio) {
   return TDNG_LJ92_ERROR_NONE;
 }
 
-static int parseScan(ljp* self) {
-  self->ix = self->scanstart;
+// Parse a SOS payload (first byte is the Ls length field). `payload_len` is
+// the number of available bytes. Fills *comps_out (Ns) and *pred_out (Ss).
+// Shared by the memory and streaming paths.
+static int parse_sos_payload(const u8* payload, int payload_len,
+                             int expected_comps, int* comps_out,
+                             int* pred_out, int* sos_len_out) {
   // Hardening: SOS = Ls(2) Ns(1) [Cs Td/Ta]*Ns Ss Se Ah/Al.
   // Need at least 3 bytes to read Ls and Ns.
-  if (self->ix + 3 > self->datalen) return TDNG_LJ92_ERROR_CORRUPT;
-  int Ls = BEH(self->data[self->ix]);
-  int compcount = self->data[self->ix + 2];
-  if (Ls < 6 + 2 * compcount || self->ix + Ls > self->datalen) {
+  if (payload_len < 3) return TDNG_LJ92_ERROR_CORRUPT;
+  int Ls = BEH(payload[0]);
+  int compcount = payload[2];
+  if (Ls < 6 + 2 * compcount || Ls > payload_len) {
     return TDNG_LJ92_ERROR_CORRUPT;
   }
   if (compcount < 1 || compcount > LJ92_MAX_COMPONENTS) {
     return TDNG_LJ92_ERROR_CORRUPT;
   }
   // If SOF3 has been seen, SOS must name the same number of components.
-  if (self->components > 0 && compcount != self->components) {
+  if (expected_comps > 0 && compcount != expected_comps) {
     return TDNG_LJ92_ERROR_CORRUPT;
   }
-  int pred = self->data[self->ix + 3 + 2 * compcount];
+  int pred = payload[3 + 2 * compcount];
   if (pred < 0 || pred > 7) return TDNG_LJ92_ERROR_CORRUPT;
+  *comps_out = compcount;
+  *pred_out = pred;
+  *sos_len_out = Ls;
+  return TDNG_LJ92_ERROR_NONE;
+}
+
+// Dispatch to the specialized scan runner for (pred, components, linearize).
+// `bio` must be initialized over the destuffed entropy buffer.
+static int parseScanDispatch(ljp* self, bitio_t* bio, int pred) {
+  const int NC = self->components;
+  const int LIN = (self->linearize != NULL) ? 1 : 0;
+
+  // Mono predictor-1 keeps its dedicated path so the SIMD prefix-sum
+  // (SSE2/AVX2 builds) still kicks in. LIN is handled inside that path.
+  if (pred == 1 && NC == 1) {
+    return parseScanPred1MonoFast(self, bio);
+  }
+
+  // Common interleaved combinations get compile-time-specialized inline
+  // runners via always_inline + constant propagation.
+  if (NC == 1) {
+    if (pred == 7) return LIN ? parseScan_p7_n1_lin(self, bio)
+                              : parseScan_p7_n1_nolin(self, bio);
+  } else if (NC == 3) {
+    if (pred == 1) return LIN ? parseScan_p1_n3_lin(self, bio)
+                              : parseScan_p1_n3_nolin(self, bio);
+    if (pred == 7) return LIN ? parseScan_p7_n3_lin(self, bio)
+                              : parseScan_p7_n3_nolin(self, bio);
+  }
+
+  // Generic fallback: runtime pred & NC, still uses the new bit-IO.
+  return parseScanGeneric(self, bio, pred);
+}
+
+static int parseScan(ljp* self) {
+  self->ix = self->scanstart;
+  // Hardening: SOS = Ls(2) Ns(1) [Cs Td/Ta]*Ns Ss Se Ah/Al.
+  int compcount = 0, pred = 0, Ls = 0;
+  int ret = parse_sos_payload(self->data + self->ix,
+                              self->datalen - self->ix, self->components,
+                              &compcount, &pred, &Ls);
+  if (ret != TDNG_LJ92_ERROR_NONE) return ret;
 
   self->ix += Ls;
 
@@ -730,35 +862,12 @@ static int parseScan(ljp* self) {
 
   // Destuff the entropy-coded payload into self->ebuf so the inner loops
   // can use bulk 8-byte loads without per-byte 0xFF checks.
-  int ret = destuff_entropy_stream(self, self->ix);
+  ret = destuff_entropy_stream(self, self->ix);
   if (ret != TDNG_LJ92_ERROR_NONE) return ret;
 
   bitio_t bio;
   bitio_init(&bio, self->ebuf, self->ebuf + self->ebuf_len);
-
-  const int NC = self->components;
-  const int LIN = (self->linearize != NULL) ? 1 : 0;
-
-  // Mono predictor-1 keeps its dedicated path so the SIMD prefix-sum
-  // (SSE2/AVX2 builds) still kicks in. LIN is handled inside that path.
-  if (pred == 1 && NC == 1) {
-    return parseScanPred1MonoFast(self, &bio);
-  }
-
-  // Common interleaved combinations get compile-time-specialized inline
-  // runners via always_inline + constant propagation.
-  if (NC == 1) {
-    if (pred == 7) return LIN ? parseScan_p7_n1_lin(self, &bio)
-                              : parseScan_p7_n1_nolin(self, &bio);
-  } else if (NC == 3) {
-    if (pred == 1) return LIN ? parseScan_p1_n3_lin(self, &bio)
-                              : parseScan_p1_n3_nolin(self, &bio);
-    if (pred == 7) return LIN ? parseScan_p7_n3_lin(self, &bio)
-                              : parseScan_p7_n3_nolin(self, &bio);
-  }
-
-  // Generic fallback: runtime pred & NC, still uses the new bit-IO.
-  return parseScanGeneric(self, &bio, pred);
+  return parseScanDispatch(self, &bio, pred);
 }
 
 static int parseImage(ljp* self) {
@@ -799,6 +908,36 @@ static int parseImage(ljp* self) {
   return ret;
 }
 
+// Expand every Huffman LUT to the widest table's index width so the entropy
+// loop peeks with one shift width across components. A direct LUT of m bits
+// expands to M bits by replicating each entry 2^(M-m) times (the M-bit
+// index's top m bits select the original entry). No-op when no tables were
+// parsed (the scan runners reject that case).
+static int expand_luts_uniform(ljp* self) {
+  int M = 0;
+  if (self->num_huff_idx < 1) return TDNG_LJ92_ERROR_NONE;
+  for (int i = 0; i < self->num_huff_idx; i++) {
+    if (self->huffbits[i] > M) M = self->huffbits[i];
+  }
+  self->huff_maxbits = M;
+  for (int i = 0; i < self->num_huff_idx; i++) {
+    int m = self->huffbits[i];
+    if (m == M) continue;
+    size_t oldn = (size_t)1 << m;
+    int step = 1 << (M - m);
+    u16* nl = (u16*)malloc(((size_t)1 << M) * sizeof(u16));
+    if (!nl) return TDNG_LJ92_ERROR_NO_MEMORY;
+    const u16* ol = self->hufflut[i];
+    for (size_t j = 0; j < oldn; j++) {
+      for (int k = 0; k < step; k++) nl[j * (size_t)step + (size_t)k] = ol[j];
+    }
+    free(self->hufflut[i]);
+    self->hufflut[i] = nl;
+    self->huffbits[i] = M;
+  }
+  return TDNG_LJ92_ERROR_NONE;
+}
+
 static int findSoI(ljp* self) {
   int ret = TDNG_LJ92_ERROR_CORRUPT;
   if (find(self) == 0xd8) {
@@ -812,6 +951,9 @@ static int findSoI(ljp* self) {
     // SOF2 (0xC2) = progressive - none of these are lossless.
     if (ret == TDNG_LJ92_ERROR_NONE && self->sof_marker != 0xC3) {
       return TDNG_LJ92_ERROR_NOT_LOSSLESS;
+    }
+    if (ret == TDNG_LJ92_ERROR_NONE) {
+      ret = expand_luts_uniform(self);
     }
   } else {
     TINY_DNG_DPRINTF("findSoI: corrupt\n");
@@ -888,12 +1030,20 @@ int tdng_lj92_decode(tdng_lj92 lj, uint16_t* target, int writeLength,
   self->skiplen = skipLength;
   self->linearize = linearize;
   self->linlen = linearizeLength;
+  if (self->is_streaming) return parseScanStreaming(self);
   return parseScan(self);
 }
 
 void tdng_lj92_close(tdng_lj92 lj) {
   ljp* self = lj;
-  if (self != NULL) free_memory(self);
+  if (self == NULL) return;
+  if (self->stream_user) {
+    tdng_lj92_stream* sctx = (tdng_lj92_stream*)self->stream_user;
+    free(sctx->buf);
+    free(sctx);
+    self->stream_user = NULL;
+  }
+  free_memory(self);
   free(self);
 }
 
@@ -1357,4 +1507,282 @@ int tdng_lj92_encode(uint16_t* image, int width, int height, int bitdepth,
 }
 
 
+
+/* ------------------------------------------------------------------ */
+/* Streaming decoder                                                  */
+/*                                                                     */
+/* Same decode semantics as the memory path (tdng_lj92_open), but the  */
+/* stream is never materialized: headers are parsed and the entropy    */
+/* payload is destuffed straight out of the read callback into the     */
+/* internal ebuf, which is the only full-size buffer (the entropy scan */
+/* is a serial bit stream, so it must be resident while decoding).     */
+/*                                                                     */
+/* The tdng_lj92_stream chunk cache lives at the top of this file so   */
+/* tdng_lj92_close can release it.                                     */
+/* ------------------------------------------------------------------ */
+
+// Scan for the next marker (0xFF followed by a byte other than 0xFF/0x00)
+// starting at absolute `off`. Returns the marker code and stores the
+// absolute offset of the 0xFF byte in *marker_off, or -1 if no marker is
+// found before the end of the search range.
+static int stream_find_marker(ljp* self, uint64_t off, uint64_t* marker_off) {
+  tdng_lj92_stream* s = (tdng_lj92_stream*)self->stream_user;
+  uint64_t end = (self->stream_size != UINT64_MAX)
+                     ? self->stream_size
+                     : off + 65536;
+  uint64_t pos = off;
+  while (pos + 1 < end) {
+    if (!srefill(s, pos, 2)) break;
+    u8 b0 = s->buf[(size_t)(pos - s->buf_off)];
+    if (b0 == 0xFF) {
+      u8 b1;
+      if (!sread(s, pos + 1, &b1, 1)) break;
+      if (b1 != 0xFF && b1 != 0x00) {
+        *marker_off = pos;
+        return b1;
+      }
+    }
+    pos++;
+  }
+  return -1;
+}
+
+// Destuff the entropy-coded payload starting at absolute `stream_pos` into
+// self->ebuf, collapsing 0xFF 0x00 byte stuffing into a plain 0xFF and
+// stopping at the first non-entropy marker (0xFF xx with xx in [01..FE]
+// except 0xFF). Appends LJ92_ENTROPY_PAD bytes of zero padding so that the
+// bit reader's unconditional 8-byte loads are always safe. Byte-for-byte
+// equivalent to destuff_entropy_stream() over the equivalent memory range.
+static int stream_destuff_entropy(ljp* self, uint64_t stream_pos) {
+  tdng_lj92_stream* s = (tdng_lj92_stream*)self->stream_user;
+  uint64_t sz = self->stream_size;
+  uint64_t end = (sz != UINT64_MAX) ? sz : stream_pos + 64ULL * 1024 * 1024;
+  if (end < stream_pos) return TDNG_LJ92_ERROR_CORRUPT;
+  // Hardening: cap_needed would overflow `int` for huge streams.
+  uint64_t remain = end - stream_pos;
+  if (remain > (uint64_t)(INT_MAX - LJ92_ENTROPY_ALLOC_PAD)) {
+    remain = (uint64_t)(INT_MAX - LJ92_ENTROPY_ALLOC_PAD);
+  }
+  int need = (int)remain + LJ92_ENTROPY_ALLOC_PAD;
+  if (self->ebuf_cap < need) {
+    u8* nb = (u8*)realloc(self->ebuf, (size_t)need);
+    if (!nb) return TDNG_LJ92_ERROR_NO_MEMORY;
+    self->ebuf = nb;
+    self->ebuf_cap = need;
+  }
+  u8* dst = self->ebuf;
+  uint64_t pos = stream_pos;
+  while (pos < end) {
+    if (!srefill(s, pos, 1)) break;
+    u8 b = s->buf[(size_t)(pos - s->buf_off)];
+    pos++;
+    *dst++ = b;
+    if (b != 0xFF) continue;
+    // b == 0xFF: peek the next byte.
+    if (pos >= end) break;
+    if (!srefill(s, pos, 1)) break;
+    u8 c2 = s->buf[(size_t)(pos - s->buf_off)];
+    if (c2 == 0x00) { pos++; continue; }  // stuffed zero
+    if (c2 == 0xFF) continue;             // fill byte — next iter re-checks
+    dst--;                                // real marker; drop the FF
+    break;
+  }
+  self->ebuf_len = (int)(dst - self->ebuf);
+  // A1: zero the full safe-overshoot + 8-byte-read window.
+  memset(dst, 0, (size_t)LJ92_ENTROPY_ALLOC_PAD);
+  return TDNG_LJ92_ERROR_NONE;
+}
+
+// Walk the markers of a stream starting right after its SOI. Parses DHT
+// (Huffman) tables and SOF frames exactly like the memory path (parseImage),
+// skipping all other segments, until the SOS is found. On success sets
+// self->stream_scanstart to the absolute offset of the entropy payload.
+static int stream_parse_headers(ljp* self, uint64_t soi_off) {
+  tdng_lj92_stream* s = (tdng_lj92_stream*)self->stream_user;
+  uint64_t pos = soi_off + 2;
+  u8 scratch[65536];
+  self->x = 0;
+  self->y = 0;
+  self->components = 0;
+  self->bits = 0;
+  self->sof_marker = 0;
+  for (;;) {
+    uint64_t mo = 0;
+    int m = stream_find_marker(self, pos, &mo);
+    if (m < 0) return TDNG_LJ92_ERROR_CORRUPT;
+    if (m == 0xD8) { pos = mo + 2; continue; }
+    if (m == 0xD9) return TDNG_LJ92_ERROR_CORRUPT;  // EOI before SOS
+    uint16_t segsize = 0;
+    if (!sread(s, mo + 2, &segsize, 2)) return TDNG_LJ92_ERROR_CORRUPT;
+    segsize = (uint16_t)((segsize >> 8) | (segsize << 8));
+    if (segsize < 2) return TDNG_LJ92_ERROR_CORRUPT;
+    uint64_t sd = mo + 2;  // start of the segment (its Ln length field)
+    uint64_t se = sd + (uint64_t)segsize;
+    if (se < sd) return TDNG_LJ92_ERROR_CORRUPT;  // u64 wrap
+    size_t payload_len = (size_t)segsize;
+    if (payload_len > sizeof(scratch)) return TDNG_LJ92_ERROR_CORRUPT;
+
+    if (m == 0xDA) {  // SOS: parse and record the SOS header offset
+      if (!sread(s, sd, scratch, payload_len)) return TDNG_LJ92_ERROR_CORRUPT;
+      int compcount = 0, pred = 0, Ls = 0;
+      int ret = parse_sos_payload(scratch, (int)payload_len, self->components,
+                                  &compcount, &pred, &Ls);
+      if (ret != TDNG_LJ92_ERROR_NONE) return ret;
+      self->stream_scanstart = sd;  // the entropy data starts at sd + Ls
+      return expand_luts_uniform(self);
+    }
+    if (m >= 0xC0 && m <= 0xCF && m != 0xC4) {  // SOF frames
+      // Lf P Y X Nf layout; Lf >= 8 (see parseSof3).
+      if (segsize < 8) return TDNG_LJ92_ERROR_CORRUPT;
+      u8 precision, nf;
+      uint16_t yh, xh;
+      if (!sread(s, sd + 2, &precision, 1)) return TDNG_LJ92_ERROR_CORRUPT;
+      if (!sread(s, sd + 3, &yh, 2)) return TDNG_LJ92_ERROR_CORRUPT;
+      if (!sread(s, sd + 5, &xh, 2)) return TDNG_LJ92_ERROR_CORRUPT;
+      if (!sread(s, sd + 7, &nf, 1)) return TDNG_LJ92_ERROR_CORRUPT;
+      yh = (uint16_t)((yh >> 8) | (yh << 8));
+      xh = (uint16_t)((xh >> 8) | (xh << 8));
+      self->sof_marker = (uint8_t)m;
+      self->bits = precision;
+      self->y = (int)yh;
+      self->x = (int)xh;
+      self->components = nf;
+      // A4: bitdepth must be in [2,16] so that 1 << (bits-1) is defined.
+      if (self->bits < 2 || self->bits > 16) return TDNG_LJ92_ERROR_CORRUPT;
+      // A3: accept up to LJ92_MAX_COMPONENTS.
+      if (self->components < 1 || self->components > LJ92_MAX_COMPONENTS) {
+        return TDNG_LJ92_ERROR_CORRUPT;
+      }
+      pos = se;
+      continue;
+    }
+    if (m == 0xC4) {  // DHT: build a Huffman LUT
+      if (!sread(s, sd, scratch, payload_len)) return TDNG_LJ92_ERROR_CORRUPT;
+      if (self->num_huff_idx >= LJ92_MAX_COMPONENTS) {
+        return TDNG_LJ92_ERROR_CORRUPT;
+      }
+      int hufflen = 0, maxbits = 0;
+      u16* lut = NULL;
+      int ret = build_huff_lut(scratch, (int)payload_len, &hufflen, &lut,
+                               &maxbits);
+      if (ret != TDNG_LJ92_ERROR_NONE) return ret;
+      self->hufflut[self->num_huff_idx] = lut;
+      self->huffbits[self->num_huff_idx] = maxbits;
+      self->num_huff_idx++;
+      pos = se;
+      continue;
+    }
+    // APPn, COM, DQT, DRI, ...: skip the segment.
+    pos = se;
+  }
+}
+
+// Streaming scan: re-read the SOS payload from the stream, destuff the
+// entropy payload from the stream into ebuf, then run the same specialized
+// scan runners as the memory path.
+static int parseScanStreaming(ljp* self) {
+  tdng_lj92_stream* s = (tdng_lj92_stream*)self->stream_user;
+  uint64_t so = self->stream_scanstart;  // SOS Ls field offset
+  u8 payload[64];  // SOS payload is at most 6 + 2*16 + 2 = 40 bytes
+  uint16_t ls16 = 0;
+  if (!sread(s, so, &ls16, 2)) return TDNG_LJ92_ERROR_CORRUPT;
+  int Ls = (int)(((ls16 >> 8) | (ls16 << 8)) & 0xFFFFu);
+  if (Ls < 3 || Ls > (int)sizeof(payload)) return TDNG_LJ92_ERROR_CORRUPT;
+  if (!sread(s, so, payload, (size_t)Ls)) return TDNG_LJ92_ERROR_CORRUPT;
+  int compcount = 0, pred = 0, sos_len = 0;
+  int ret = parse_sos_payload(payload, Ls, self->components, &compcount,
+                              &pred, &sos_len);
+  if (ret != TDNG_LJ92_ERROR_NONE) return ret;
+
+  // Degenerate scan (no SOF3, zero dims): preserve legacy "silent success"
+  // behavior so callers probing format support get TDNG_LJ92_ERROR_NONE with
+  // no output written.
+  if (self->x <= 0 || self->y <= 0 || self->components <= 0) {
+    return TDNG_LJ92_ERROR_NONE;
+  }
+
+  ret = stream_destuff_entropy(self, so + (uint64_t)sos_len);
+  if (ret != TDNG_LJ92_ERROR_NONE) return ret;
+
+  bitio_t bio;
+  bitio_init(&bio, self->ebuf, self->ebuf + self->ebuf_len);
+  return parseScanDispatch(self, &bio, pred);
+}
+
+int tdng_lj92_open_streaming(tdng_lj92* lj, void* user,
+                             tdng_lj92_read_fn read_fn,
+                             tdng_lj92_size_fn size_fn,
+                             int* width, int* height, int* bitdepth,
+                             int* components) {
+  ljp* self;
+  tdng_lj92_stream* sctx;
+  int ret;
+  uint64_t mo = 0;
+
+  if (!lj || !read_fn) return TDNG_LJ92_ERROR_BAD_HANDLE;
+  *lj = NULL;
+  self = (ljp*)calloc(sizeof(ljp), 1);
+  if (!self) return TDNG_LJ92_ERROR_NO_MEMORY;
+  sctx = (tdng_lj92_stream*)calloc(1, sizeof(*sctx));
+  if (!sctx) { free(self); return TDNG_LJ92_ERROR_NO_MEMORY; }
+  sctx->buf = (u8*)malloc(TDNG_LJ92_STREAM_CHUNK);
+  if (!sctx->buf) {
+    free(sctx);
+    free(self);
+    return TDNG_LJ92_ERROR_NO_MEMORY;
+  }
+  sctx->user = user;
+  sctx->read_fn = read_fn;
+  sctx->size_fn = size_fn;
+  sctx->size = size_fn ? size_fn(user) : UINT64_MAX;
+  self->stream_user = sctx;
+  self->is_streaming = 1;
+  self->stream_size = sctx->size;
+
+  // Find the SOI: the first marker in the stream must be SOI (parity with
+  // the memory path's findSoI).
+  ret = stream_find_marker(self, 0, &mo);
+  if (ret != 0xD8) {
+    ret = TDNG_LJ92_ERROR_CORRUPT;
+    goto fail;
+  }
+  self->stream_soi_off = mo;
+  ret = stream_parse_headers(self, mo);
+  if (ret != TDNG_LJ92_ERROR_NONE) goto fail;
+  // Check if this is a lossless JPEG (SOF3) or a non-lossless type.
+  if (self->x <= 0 || self->components <= 0 || self->sof_marker != 0xC3) {
+    ret = TDNG_LJ92_ERROR_NOT_LOSSLESS;
+    goto fail;
+  }
+  // Hardening: SOF3 width/height are 16-bit so x,y <= 65535 and components
+  // <= LJ92_MAX_COMPONENTS; guard the multiplication anyway.
+  if (self->x > 0xFFFF || self->components > LJ92_MAX_COMPONENTS) {
+    ret = TDNG_LJ92_ERROR_CORRUPT;
+    goto fail;
+  }
+  {
+    size_t row_slots = (size_t)self->x * (size_t)self->components;
+    self->rowcache = (u16*)calloc(row_slots * 2, sizeof(u16));
+    self->diffcache = (u16*)calloc(row_slots, sizeof(u16));
+    if (!self->rowcache || !self->diffcache) {
+      ret = TDNG_LJ92_ERROR_NO_MEMORY;
+      goto fail;
+    }
+    self->outrow[0] = self->rowcache;
+    self->outrow[1] = self->rowcache + row_slots;
+  }
+  *width = self->x;
+  *height = self->y;
+  *bitdepth = self->bits;
+  *components = self->components;
+  *lj = self;
+  return TDNG_LJ92_ERROR_NONE;
+
+fail:
+  free_memory(self);  // releases Huffman LUTs / rowcache / ebuf if allocated
+  free(sctx->buf);
+  free(sctx);
+  free(self);
+  return ret;
+}
 // End liblj92 ---------------------------------------------------------

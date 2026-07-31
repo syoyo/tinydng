@@ -2243,46 +2243,67 @@ tinydng_status tinydng_psd_decode_thumbnail(tinydng_context *ctx,
 /* Smart objects                                                      */
 /* ------------------------------------------------------------------ */
 
-/* Owned-memory io backend: like the public memory backend but frees the
-   payload copy on close, so a recursively opened document is
-   self-contained. */
-typedef struct td_psd_ownmem {
+/* Sub-range io backend: a [base, base+size) window over the parent
+   document's io, so embedded smart-object payloads are parsed and decoded
+   without copying the bytes. The recursively opened document ALIASES the
+   parent io: it must be destroyed before the parent document, and reads on
+   the two documents must not interleave on a seek-based (stdio) parent
+   backend. */
+typedef struct td_psd_subio {
   tinydng_context *ctx;
-  uint8_t *data;
-  size_t size;
-} td_psd_ownmem;
+  tinydng_io *parent; /* aliased, never closed */
+  uint64_t base;
+  uint64_t size;
+} td_psd_subio;
 
-static size_t td_psd_ownmem_read(tinydng_io *io, uint64_t off, void *dst,
-                                 size_t len) {
-  td_psd_ownmem *m = (td_psd_ownmem *)io->backend;
-  if (off > m->size || (uint64_t)len > (m->size - off)) {
+static size_t td_psd_subio_read(tinydng_io *io, uint64_t off, void *dst,
+                                size_t len) {
+  td_psd_subio *s = (td_psd_subio *)io->backend;
+  if (off > s->size || (uint64_t)len > (s->size - off)) {
     return 0;
   }
-  memcpy(dst, m->data + (size_t)off, len);
-  return len;
+  return s->parent->read(s->parent, s->base + off, dst, len);
 }
 
-static uint64_t td_psd_ownmem_size(tinydng_io *io) {
-  td_psd_ownmem *m = (td_psd_ownmem *)io->backend;
-  return (uint64_t)m->size;
+static uint64_t td_psd_subio_size(tinydng_io *io) {
+  td_psd_subio *s = (td_psd_subio *)io->backend;
+  return s->size;
 }
 
-static const uint8_t *td_psd_ownmem_map(tinydng_io *io, uint64_t off,
-                                        size_t len) {
-  td_psd_ownmem *m = (td_psd_ownmem *)io->backend;
-  if (off > m->size || (uint64_t)len > (m->size - off)) {
+static const uint8_t *td_psd_subio_map(tinydng_io *io, uint64_t off,
+                                       size_t len) {
+  td_psd_subio *s = (td_psd_subio *)io->backend;
+  if (!s->parent->map) {
     return NULL;
   }
-  return m->data + (size_t)off;
+  if (off > s->size || (uint64_t)len > (s->size - off)) {
+    return NULL;
+  }
+  return s->parent->map(s->parent, s->base + off, len);
 }
 
-static void td_psd_ownmem_close(tinydng_io *io) {
-  td_psd_ownmem *m = (td_psd_ownmem *)io->backend;
-  if (m) {
-    td_ctx_free(m->ctx, m->data);
-    td_ctx_free(m->ctx, m);
+static void td_psd_subio_close(tinydng_io *io) {
+  td_psd_subio *s = (td_psd_subio *)io->backend;
+  if (s) {
+    td_ctx_free(s->ctx, s);
   }
   io->backend = NULL;
+}
+
+/* Resolve a sub-range chain down to the root io: nested smart objects view
+   the root document's io with a cumulative absolute offset, so destroying
+   intermediate documents (the walk-down pattern) never dangles. */
+static void td_psd_resolve_subio(const tinydng_document *doc, uint64_t offset,
+                                 tinydng_io **root_io, uint64_t *root_off) {
+  tinydng_io *io = (tinydng_io *)&doc->io;
+  uint64_t off = offset;
+  while (io->map == td_psd_subio_map) {
+    td_psd_subio *s = (td_psd_subio *)io->backend;
+    off = s->base + off;
+    io = s->parent;
+  }
+  *root_io = io;
+  *root_off = off;
 }
 
 static const tinydng_psd_smart_object *td_psd_get_so(
@@ -2303,9 +2324,7 @@ tinydng_status tinydng_psd_smart_object_open(tinydng_context *ctx,
                                              tinydng_document **out,
                                              tinydng_error *err) {
   const tinydng_psd_smart_object *so;
-  uint8_t *payload = NULL;
-  size_t payload_size = 0;
-  td_psd_ownmem *mem;
+  td_psd_subio *mem;
   tinydng_io io;
   tinydng_status st;
 
@@ -2323,30 +2342,34 @@ tinydng_status tinydng_psd_smart_object_open(tinydng_context *ctx,
                  "PSD: smart object has no embedded payload");
     return TINYDNG_E_UNSUPPORTED;
   }
+  if (so->data_offset > doc->io_size ||
+      so->data_length > (doc->io_size - so->data_offset)) {
+    td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_METADATA, 0, 0,
+                 so->data_offset, "PSD: smart object payload out of range");
+    return TINYDNG_E_BOUNDS;
+  }
   if (doc->embed_depth + 1u > ctx->max_embed_depth) {
     td_set_error(err, TINYDNG_E_UNSUPPORTED, TINYDNG_STAGE_METADATA, 0, 0, 0,
                  "PSD: smart object nesting exceeds max_embed_depth (%u)",
                  ctx->max_embed_depth);
     return TINYDNG_E_UNSUPPORTED;
   }
-  st = tinydng_psd_read_block(ctx, doc, so->data_offset, so->data_length,
-                              &payload, &payload_size, err);
-  if (st != TINYDNG_OK) {
-    return st;
-  }
-  mem = (td_psd_ownmem *)td_ctx_calloc(ctx, sizeof(*mem), err);
+  /* Window over the root io: no payload copy. The child document must be
+     destroyed before the ROOT document (`doc` or its outermost ancestor),
+     and must not be read concurrently with it on a seek-based parent
+     backend (see td_psd_subio). */
+  mem = (td_psd_subio *)td_ctx_calloc(ctx, sizeof(*mem), err);
   if (!mem) {
-    td_ctx_free(ctx, payload);
     return TINYDNG_E_OOM;
   }
   mem->ctx = ctx;
-  mem->data = payload;
-  mem->size = payload_size;
+  td_psd_resolve_subio(doc, so->data_offset, &mem->parent, &mem->base);
+  mem->size = so->data_length;
   memset(&io, 0, sizeof(io));
-  io.read = td_psd_ownmem_read;
-  io.size = td_psd_ownmem_size;
-  io.map = td_psd_ownmem_map;
-  io.close = td_psd_ownmem_close;
+  io.read = td_psd_subio_read;
+  io.size = td_psd_subio_size;
+  io.map = td_psd_subio_map;
+  io.close = td_psd_subio_close;
   io.backend = mem;
 
   st = tinydng_open_io(ctx, io, opts, out, err);

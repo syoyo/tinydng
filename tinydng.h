@@ -576,7 +576,10 @@ tinydng_status tinydng_psd_decode_thumbnail(tinydng_context *ctx,
                                             tinydng_error *err);
 
 /* Open an embedded smart-object payload (PSD/PSB/TIFF/DNG) as a new
-   document on the same context. Depth-limited by max_embed_depth. */
+   document on the same context. Depth-limited by max_embed_depth. The new
+   document views the payload in place (no copy): it aliases the parent
+   document's io, so destroy the child before the parent and avoid
+   concurrent reads of both on a seek-based (stdio) backend. */
 tinydng_status tinydng_psd_smart_object_open(tinydng_context *ctx,
                                              const tinydng_document *doc,
                                              size_t so_idx,

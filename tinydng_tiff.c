@@ -78,6 +78,65 @@ int td_r_i32(const td_reader *r, uint64_t at, int32_t *out) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Buffer-based value reads (for bulk-parsed regions)                 */
+/* ------------------------------------------------------------------ */
+
+static uint16_t td_u16_from_buf(const uint8_t *p, int big_endian) {
+  return big_endian ? (uint16_t)(((uint16_t)p[0] << 8) | (uint16_t)p[1])
+                    : (uint16_t)(((uint16_t)p[1] << 8) | (uint16_t)p[0]);
+}
+
+static uint32_t td_u32_from_buf(const uint8_t *p, int big_endian) {
+  if (big_endian) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+  }
+  return ((uint32_t)p[3] << 24) | ((uint32_t)p[2] << 16) |
+         ((uint32_t)p[1] << 8) | (uint32_t)p[0];
+}
+
+static uint64_t td_u64_from_buf(const uint8_t *p, int big_endian) {
+  uint64_t v = 0;
+  int i;
+  if (big_endian) {
+    for (i = 0; i < 8; i++) {
+      v = (v << 8) | (uint64_t)p[i];
+    }
+  } else {
+    for (i = 7; i >= 0; i--) {
+      v = (v << 8) | (uint64_t)p[i];
+    }
+  }
+  return v;
+}
+
+/* Widen a TIFF-typed element at `p` (file byte order) to u64, mirroring
+   td_r_val_uint's semantics for the unsigned array types. */
+static int td_val_uint_from_buf(const uint8_t *p, uint16_t type,
+                                int big_endian, uint64_t *out) {
+  switch (type) {
+    case TD_TYPE_BYTE:
+    case TD_TYPE_ASCII:
+    case TD_TYPE_UNDEFINED:
+      *out = (uint64_t)p[0];
+      return 1;
+    case TD_TYPE_SHORT:
+      *out = (uint64_t)td_u16_from_buf(p, big_endian);
+      return 1;
+    case TD_TYPE_LONG:
+    case TD_TYPE_IFD:
+      *out = (uint64_t)td_u32_from_buf(p, big_endian);
+      return 1;
+    case TD_TYPE_LONG8:
+    case TD_TYPE_IFD8:
+      *out = td_u64_from_buf(p, big_endian);
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* TIFF type sizes + typed value reads                                */
 /* ------------------------------------------------------------------ */
 
@@ -256,58 +315,76 @@ typedef struct td_entry {
   uint64_t data_off; /* absolute offset of element 0 */
 } td_entry;
 
-static int td_read_entry(const td_reader *r, uint64_t entry_pos,
-                         td_entry *out) {
-  uint64_t value_field;
-  uint64_t data_bytes = 0;
+/* Decode one IFD entry row (12 bytes classic / 20 bytes BigTIFF, in file
+   byte order) into `out`. `entry_pos` is the absolute offset of the row
+   (used for the inline value field). */
+static int td_parse_entry_row(const td_reader *r, const uint8_t *row,
+                              uint64_t entry_pos, td_entry *out) {
+  uint64_t data_bytes;
   uint64_t inline_cap;
-
-  if (!td_r_u16(r, entry_pos, &out->tag) ||
-      !td_r_u16(r, entry_pos + 2u, &out->type)) {
-    return 0;
-  }
+  out->tag = td_u16_from_buf(row, r->big_endian);
+  out->type = td_u16_from_buf(row + 2u, r->big_endian);
   if (r->bigtiff) {
-    if (!td_r_u64(r, entry_pos + 4u, &out->count)) {
-      return 0;
-    }
-    value_field = entry_pos + 12u;
+    out->count = td_u64_from_buf(row + 4u, r->big_endian);
     inline_cap = 8u;
   } else {
-    uint32_t c;
-    if (!td_r_u32(r, entry_pos + 4u, &c)) {
-      return 0;
-    }
-    out->count = (uint64_t)c;
-    value_field = entry_pos + 8u;
+    out->count = (uint64_t)td_u32_from_buf(row + 4u, r->big_endian);
     inline_cap = 4u;
   }
-
   out->type_size = td_tiff_type_size(out->type);
   if (out->type_size == 0u) {
-    out->data_off = value_field; /* unknown type: caller skips */
+    out->data_off = entry_pos + (r->bigtiff ? 12u : 8u); /* caller skips */
     return 1;
   }
   if (!td_safe_mul_u64((uint64_t)out->type_size, out->count, &data_bytes)) {
     return 0;
   }
   if (data_bytes <= inline_cap) {
-    out->data_off = value_field;
+    out->data_off = entry_pos + (r->bigtiff ? 12u : 8u);
+  } else if (r->bigtiff) {
+    out->data_off = td_u64_from_buf(row + 12u, r->big_endian);
   } else {
-    uint64_t off;
-    if (r->bigtiff) {
-      if (!td_r_u64(r, value_field, &off)) {
-        return 0;
-      }
-    } else {
-      uint32_t o;
-      if (!td_r_u32(r, value_field, &o)) {
-        return 0;
-      }
-      off = (uint64_t)o;
-    }
-    out->data_off = off;
+    out->data_off = (uint64_t)td_u32_from_buf(row + 8u, r->big_endian);
   }
   return 1;
+}
+
+/* Read the whole IFD entry table [entries_start, + n*stride + 4 bytes for
+   the next-IFD pointer) in ONE IO call, zero-copy when the backend can map
+   it. When it can't, allocates `*owned` (caller must free). Returns NULL on
+   overflow / out-of-range, with `err` unset (caller reports). */
+static const uint8_t *td_entries_bulk(tinydng_context *ctx, const td_reader *r,
+                                      uint64_t entries_start, uint64_t n,
+                                      uint64_t stride, uint8_t **owned,
+                                      tinydng_error *err) {
+  uint64_t table_len;
+  const uint8_t *p;
+  *owned = NULL;
+  if (!td_safe_mul_u64(n, stride, &table_len) ||
+      !td_safe_add_u64(table_len, 4u, &table_len)) {
+    return NULL;
+  }
+  if (table_len > r->size || entries_start > r->size - table_len) {
+    return NULL;
+  }
+  p = td_io_view(r->io, r->size, entries_start, (size_t)table_len, NULL, 0);
+  if (p) {
+    return p;
+  }
+  {
+    uint8_t *buf = (uint8_t *)td_ctx_alloc(ctx, (size_t)table_len, err);
+    if (!buf) {
+      return NULL;
+    }
+    p = td_io_view(r->io, r->size, entries_start, (size_t)table_len, buf,
+                   (size_t)table_len);
+    if (!p) {
+      td_ctx_free(ctx, buf);
+      return NULL;
+    }
+    *owned = buf;
+    return p;
+  }
 }
 
 /* Read a uint array (offsets/counts/sub-ifds) into a context-owned u64[]. */
@@ -353,16 +430,43 @@ static int td_read_u64_array(tinydng_context *ctx, const td_reader *r,
   if (!arr) {
     return 0;
   }
-  for (i = 0; i < n; i++) {
-    uint64_t v;
-    uint64_t at = e->data_off + (uint64_t)i * (uint64_t)e->type_size;
-    if (!td_r_val_uint(r, e->type, at, &v)) {
+  /* Bulk-read the whole array in one IO call instead of one read per
+     element: on the stdio backend each per-element read is a seek+fread. */
+  {
+    uint8_t *scratch = NULL;
+    const uint8_t *src;
+    size_t span = (size_t)e->count * e->type_size;
+    src = td_io_view(r->io, r->size, e->data_off, span, NULL, 0);
+    if (!src) {
+      scratch = (uint8_t *)td_ctx_alloc(ctx, span, err);
+      if (!scratch) {
+        td_ctx_free(ctx, arr);
+        return 0;
+      }
+      src = td_io_view(r->io, r->size, e->data_off, span, scratch, span);
+    }
+    if (!src) {
+      td_ctx_free(ctx, scratch);
       td_ctx_free(ctx, arr);
       td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_IFD, ifd_index, e->tag,
-                   at, "failed reading array element %zu", i);
+                   e->data_off, "failed reading array range (count %llu)",
+                   (unsigned long long)e->count);
       return 0;
     }
-    arr[i] = v;
+    for (i = 0; i < n; i++) {
+      uint64_t v;
+      if (!td_val_uint_from_buf(src + (size_t)i * e->type_size, e->type,
+                                r->big_endian, &v)) {
+        td_ctx_free(ctx, scratch);
+        td_ctx_free(ctx, arr);
+        td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_IFD, ifd_index,
+                     e->tag, e->data_off, "failed reading array element %zu",
+                     i);
+        return 0;
+      }
+      arr[i] = v;
+    }
+    td_ctx_free(ctx, scratch);
   }
   *out_arr = arr;
   *out_count = n;
@@ -436,18 +540,28 @@ static void td_parse_metadata_ifd(tinydng_context *ctx, const td_reader *r,
   if (num_entries > (uint64_t)ctx->max_ifd_entries) {
     return;
   }
-  for (i = 0; i < num_entries; i++) {
-    td_entry e;
-    uint64_t pos = entries_start + i * entry_stride;
-    if (!td_read_entry(r, pos, &e) || e.type_size == 0u) {
-      continue;
+  {
+    uint8_t *owned = NULL;
+    const uint8_t *tbl = td_entries_bulk(ctx, r, entries_start, num_entries,
+                                         entry_stride, &owned, err);
+    if (!tbl) {
+      return;
     }
-    /* Don't follow nested IFD pointers from here (avoid recursion). */
-    if (e.tag == TD_TAG_EXIF_IFD || e.tag == TD_TAG_SUB_IFDS) {
-      continue;
+    for (i = 0; i < num_entries; i++) {
+      td_entry e;
+      uint64_t pos = entries_start + i * entry_stride;
+      if (!td_parse_entry_row(r, tbl + i * entry_stride, pos, &e) ||
+          e.type_size == 0u) {
+        continue;
+      }
+      /* Don't follow nested IFD pointers from here (avoid recursion). */
+      if (e.tag == TD_TAG_EXIF_IFD || e.tag == TD_TAG_SUB_IFDS) {
+        continue;
+      }
+      (void)td_dng_handle_tag(ctx, r, img, ifd_index, e.tag, e.type, e.count,
+                              e.data_off, err);
     }
-    (void)td_dng_handle_tag(ctx, r, img, ifd_index, e.tag, e.type, e.count,
-                            e.data_off, err);
+    td_ctx_free(ctx, owned);
   }
 }
 
@@ -504,20 +618,32 @@ static tinydng_status td_parse_ifd(tinydng_context *ctx, const td_reader *r,
     return TINYDNG_E_UNSUPPORTED;
   }
 
-  for (i = 0; i < num_entries; i++) {
-    td_entry e;
-    uint64_t pos = entries_start + i * entry_stride;
-    uint32_t sv;
-    if (!td_read_entry(r, pos, &e)) {
-      td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_IFD, ifd_index, 0, pos,
-                   "failed reading IFD entry %llu", (unsigned long long)i);
+  /* Read the whole entry table (+ next-IFD pointer) in one IO call: on the
+     stdio backend this replaces 3 seeks+freads per entry. */
+  {
+    uint8_t *owned = NULL;
+    const uint8_t *tbl = td_entries_bulk(ctx, r, entries_start, num_entries,
+                                         entry_stride, &owned, err);
+    if (!tbl) {
+      td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_IFD, ifd_index, 0,
+                   entries_start, "IFD entry table out of range");
       return TINYDNG_E_BOUNDS;
     }
-    if (e.type_size == 0u) {
-      continue; /* unknown type: skip defensively */
-    }
 
-    switch (e.tag) {
+    for (i = 0; i < num_entries; i++) {
+      td_entry e;
+      uint64_t pos = entries_start + i * entry_stride;
+      uint32_t sv;
+      if (!td_parse_entry_row(r, tbl + i * entry_stride, pos, &e)) {
+        td_ctx_free(ctx, owned);
+        td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_IFD, ifd_index, 0, pos,
+                     "failed reading IFD entry %llu", (unsigned long long)i);
+        return TINYDNG_E_BOUNDS;
+      }
+      if (e.type_size == 0u) {
+        continue; /* unknown type: skip defensively */
+      }
+      switch (e.tag) {
       case TD_TAG_IMAGE_WIDTH:
         if (td_read_scalar_uint(r, &e, &b->width)) {
           b->has_width = 1;
@@ -600,52 +726,58 @@ static tinydng_status td_parse_ifd(tinydng_context *ctx, const td_reader *r,
       case TD_TAG_STRIP_OFFSETS:
         if (!td_read_u64_array(ctx, r, &e, 1u << 24, &b->strip_offsets,
                                &b->strip_offset_count, ifd_index, err)) {
+          td_ctx_free(ctx, owned);
           return err->status;
         }
         break;
       case TD_TAG_STRIP_BYTE_COUNTS:
         if (!td_read_u64_array(ctx, r, &e, 1u << 24, &b->strip_byte_counts,
                                &b->strip_byte_count_count, ifd_index, err)) {
+          td_ctx_free(ctx, owned);
           return err->status;
         }
         break;
       case TD_TAG_TILE_OFFSETS:
         if (!td_read_u64_array(ctx, r, &e, 1u << 24, &b->tile_offsets,
                                &b->tile_offset_count, ifd_index, err)) {
+          td_ctx_free(ctx, owned);
           return err->status;
         }
         break;
       case TD_TAG_TILE_BYTE_COUNTS:
         if (!td_read_u64_array(ctx, r, &e, 1u << 24, &b->tile_byte_counts,
                                &b->tile_byte_count_count, ifd_index, err)) {
+          td_ctx_free(ctx, owned);
           return err->status;
         }
         break;
       case TD_TAG_SUB_IFDS:
         if (!td_read_u64_array(ctx, r, &e, 4096u, &b->sub_ifds,
                                &b->sub_ifd_count, ifd_index, err)) {
+          td_ctx_free(ctx, owned);
           return err->status;
         }
         break;
       default:
         if (!td_dng_handle_tag(ctx, r, img, ifd_index, e.tag, e.type, e.count,
                                e.data_off, err)) {
+          td_ctx_free(ctx, owned);
           return err->status ? err->status : TINYDNG_E_PARSE;
         }
         break;
+      }
     }
-  }
 
-  /* Next-IFD pointer follows the entries. */
-  {
-    uint64_t np = entries_start + num_entries * entry_stride;
-    if (r->bigtiff) {
-      (void)td_r_u64(r, np, next_ifd_out);
-    } else {
-      uint32_t n32 = 0;
-      (void)td_r_u32(r, np, &n32);
-      *next_ifd_out = (uint64_t)n32;
+    /* Next-IFD pointer follows the entries (part of the bulk read). */
+    {
+      const uint8_t *np = tbl + num_entries * entry_stride;
+      if (r->bigtiff) {
+        *next_ifd_out = td_u64_from_buf(np, r->big_endian);
+      } else {
+        *next_ifd_out = (uint64_t)td_u32_from_buf(np, r->big_endian);
+      }
     }
+    td_ctx_free(ctx, owned);
   }
   return TINYDNG_OK;
 }
@@ -793,7 +925,18 @@ static tinydng_status td_build_segments(tinydng_context *ctx, const td_reader *r
   } else if (b->strip_offset_count == 0u && b->jpeg_if_offset != 0u) {
     uint64_t off = b->jpeg_if_offset;
     uint64_t bc = b->jpeg_if_byte_count;
-    if (off > r->size || bc > (r->size - off)) {
+    if (off > r->size) {
+      td_ctx_free(ctx, segs);
+      td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_GEOMETRY, ifd_index,
+                   TD_TAG_JPEG_IF_OFFSET, off, "jpeg interchange out of range");
+      return TINYDNG_E_BOUNDS;
+    }
+    if (bc == 0u || bc > (r->size - off)) {
+      /* Byte count 0 or extending past EOF: clamp to the end of the file
+         (the fuzzer hit a crash decoding a 0-byte JPEG interchange). */
+      bc = r->size - off;
+    }
+    if (bc == 0u) {
       td_ctx_free(ctx, segs);
       td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_GEOMETRY, ifd_index,
                    TD_TAG_JPEG_IF_OFFSET, off, "jpeg interchange out of range");

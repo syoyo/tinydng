@@ -323,6 +323,100 @@ static void case_ljpeg_ssss(void) {
   free(buf);
 }
 
+/* H: JPEGInterchangeFormat byte-count clamp (tiff.c td_build_segments).
+ * A 0 byte count (or one extending past EOF) used to reach the baseline
+ * JPEG decoder with an empty input (fuzzer crash); it must now be clamped
+ * to the end of the file, and an out-of-range offset must fail cleanly. */
+static uint8_t *build_jpeg_if_tiff(uint32_t jpeg_off, uint32_t jpeg_count,
+                                   size_t *total_out) {
+  /* minimal classic TIFF: no strip tags, Compression=7, JPEG IF tags */
+  const int NENT = 8;
+  size_t ifd_off = 16;
+  size_t total = ifd_off + 2u + (size_t)NENT * 12u + 4u;
+  uint8_t *buf = (uint8_t *)calloc(1, total);
+  uint8_t *e;
+  int i = 0;
+  if (!buf) return NULL;
+  buf[0] = 'I'; buf[1] = 'I';
+  tdt_pu16(buf + 2, 42, 0);
+  tdt_pu32(buf + 4, (uint32_t)ifd_off, 0);
+  buf[8] = 0x47; buf[9] = 0x50; /* garbage "JPEG" bytes at offset 8 */
+  tdt_pu16(buf + ifd_off, (uint16_t)NENT, 0);
+  e = buf + ifd_off + 2u;
+#define J(t, ty, c, v)                             \
+  do {                                             \
+    tdt_pu16(e + i * 12, (uint16_t)(t), 0);        \
+    tdt_pu16(e + i * 12 + 2, (uint16_t)(ty), 0);   \
+    tdt_pu32(e + i * 12 + 4, (uint32_t)(c), 0);    \
+    tdt_pu32(e + i * 12 + 8, (uint32_t)(v), 0);    \
+    i++;                                           \
+  } while (0)
+  J(256, 4, 1, 2); J(257, 4, 1, 2); J(258, 3, 1, 8); J(259, 3, 1, 7);
+  J(262, 3, 1, 1); J(277, 3, 1, 1); J(513, 4, 1, jpeg_off);
+  J(514, 4, 1, jpeg_count);
+#undef J
+  tdt_pu32(e + (size_t)NENT * 12u, 0, 0);
+  *total_out = total;
+  return buf;
+}
+
+static void case_jpeg_if_clamp(void) {
+  tinydng_error err;
+  uint8_t *buf;
+  size_t total;
+
+  /* byte count 0 at a valid offset: clamped to EOF, decode fails cleanly
+     (no empty-input crash in the baseline JPEG path). */
+  buf = build_jpeg_if_tiff(8, 0, &total);
+  if (buf) {
+    tinydng_context *ctx = tinydng_context_create(NULL, NULL);
+    tinydng_document *doc = NULL;
+    tinydng_status st = tinydng_open_memory(ctx, buf, total, NULL, &doc, &err);
+    CHECK(st == TINYDNG_OK, "H: jpeg-if bc=0 opens (clamped)");
+    if (st == TINYDNG_OK) {
+      tinydng_pixels px;
+      tinydng_error derr;
+      int rc = tinydng_decode_image(ctx, doc, 0, NULL, &px, &derr);
+      CHECK(rc != TINYDNG_OK, "H: jpeg-if bc=0 decode fails cleanly, no crash");
+      if (rc == TINYDNG_OK) tinydng_pixels_free(ctx, &px);
+      tinydng_document_destroy(ctx, doc);
+    }
+    tinydng_context_destroy(ctx);
+    free(buf);
+  }
+
+  /* byte count extending past EOF: clamped to EOF (same clean failure). */
+  buf = build_jpeg_if_tiff(8, 0xFFFFFFF0u, &total);
+  if (buf) {
+    tinydng_context *ctx = tinydng_context_create(NULL, NULL);
+    tinydng_document *doc = NULL;
+    tinydng_status st = tinydng_open_memory(ctx, buf, total, NULL, &doc, &err);
+    CHECK(st == TINYDNG_OK, "H: jpeg-if bc past EOF opens (clamped)");
+    if (st == TINYDNG_OK) {
+      tinydng_pixels px;
+      tinydng_error derr;
+      int rc = tinydng_decode_image(ctx, doc, 0, NULL, &px, &derr);
+      CHECK(rc != TINYDNG_OK, "H: jpeg-if bc past EOF decode fails cleanly");
+      if (rc == TINYDNG_OK) tinydng_pixels_free(ctx, &px);
+      tinydng_document_destroy(ctx, doc);
+    }
+    tinydng_context_destroy(ctx);
+    free(buf);
+  }
+
+  /* offset past EOF: open must reject with BOUNDS. */
+  buf = build_jpeg_if_tiff(0xFFFFFFF0u, 4, &total);
+  if (buf) {
+    tinydng_context *ctx = tinydng_context_create(NULL, NULL);
+    tinydng_document *doc = NULL;
+    tinydng_status st = tinydng_open_memory(ctx, buf, total, NULL, &doc, &err);
+    CHECK(st == TINYDNG_E_BOUNDS, "H: jpeg-if offset past EOF -> BOUNDS");
+    if (st == TINYDNG_OK) tinydng_document_destroy(ctx, doc);
+    tinydng_context_destroy(ctx);
+    free(buf);
+  }
+}
+
 int main(void) {
   (void)tdt_slurp; /* shared helper unused by this all-in-memory test */
   printf("== v3 security regression fixtures ==\n");
@@ -333,6 +427,7 @@ int main(void) {
   case_linearization_stride();
   case_duplicate_tag();
   case_ljpeg_ssss();
+  case_jpeg_if_clamp();
   printf(g_fail ? "SECURITY: FAILURES\n" : "SECURITY: ALL PASS\n");
   return g_fail;
 }

@@ -13,3 +13,6 @@ add_library(tinydng_v2 STATIC
 
 add_executable(test_v2_metadata test_v2_metadata.c)
 target_link_libraries(test_v2_metadata tinydng_v2)
+
+add_executable(test_v2_streaming test_v2_streaming.c)
+target_link_libraries(test_v2_streaming tinydng_v2)

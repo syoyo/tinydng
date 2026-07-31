@@ -57,6 +57,14 @@ target_compile_features(tinydng_v2 PUBLIC c_std_11)
 add_executable(test_dng_v2 test_v2.c)
 target_link_libraries(test_dng_v2 PRIVATE tinydng_v2)
 
+add_executable(test_v2_streaming tests/v2_test/test_v2_streaming.c)
+target_link_libraries(test_v2_streaming PRIVATE tinydng_v2)
+add_test(NAME v2_streaming COMMAND test_v2_streaming)
+if(EXISTS "${CMAKE_SOURCE_DIR}/sandbox/lj92/testdata")
+  add_test(NAME v2_streaming_tiles
+           COMMAND test_v2_streaming "${CMAKE_SOURCE_DIR}/sandbox/lj92/testdata")
+endif()
+
 # ----------------------------------------------------------------------
 # tinydng v3 (clean-room pure C11 loader)
 # ----------------------------------------------------------------------

@@ -297,17 +297,20 @@ static tinydng_status td_fill_block_from_stored(const td_geom *g, int big_endian
     for (y = 0; y < bh; y++) {
       const uint8_t *rp = src + (size_t)y * in_row_bytes;
       size_t row_base = (size_t)y * samples_per_row;
-      uint32_t bitpos = 0;
+      /* MSB-first accumulator: shift whole bytes in, pull bps bits out of the
+         top. nbits stays below bps+8 <= 24, so one 32-bit value suffices. */
+      uint32_t bitbuf = 0;
+      int nbits = 0;
       size_t s;
       for (s = 0; s < samples_per_row; s++) {
-        uint32_t v = 0;
-        uint16_t k;
-        for (k = 0; k < g->bps; k++) {
-          uint32_t byte_i = bitpos >> 3;
-          uint32_t bit_i = 7u - (bitpos & 7u);
-          v = (v << 1) | (uint32_t)((rp[byte_i] >> bit_i) & 1u);
-          bitpos++;
+        uint32_t v;
+        while (nbits < g->bps) {
+          bitbuf = (bitbuf << 8) | (uint32_t)(*rp++);
+          nbits += 8;
         }
+        v = bitbuf >> (nbits - g->bps);
+        nbits -= g->bps;
+        bitbuf &= (1u << nbits) - 1u; /* keep only the unconsumed low bits */
         /* Write into the destination element width: bps<8 -> 8-bit output,
            bps 9..15 -> 16-bit output (see out_bps in td_compute_geom). */
         if (g->out_bytes == 1u) {
@@ -652,8 +655,32 @@ static tinydng_status td_decode_block_baseline(tinydng_context *ctx,
 }
 #endif /* TINYDNG_NO_BASELINE_JPEG */
 
+/* Streaming adapter: exposes a byte range of a tinydng_io to the LJPEG
+   streaming decoder, so stdio (map == NULL) segments are never materialized
+   as a whole; the entropy payload is destuffed straight from the backend. */
+typedef struct td_lj92_stream_io {
+  tinydng_io *io;
+  uint64_t base; /* absolute file offset of the segment */
+  uint64_t size; /* segment size */
+} td_lj92_stream_io;
+
+static size_t td_lj92_stream_read(void *user, uint64_t off, void *dst,
+                                  size_t len) {
+  td_lj92_stream_io *s = (td_lj92_stream_io *)user;
+  if (off > s->size || (uint64_t)len > (s->size - off)) {
+    return 0;
+  }
+  return s->io->read(s->io, s->base + off, dst, len);
+}
+
+static uint64_t td_lj92_stream_size(void *user) {
+  return ((td_lj92_stream_io *)user)->size;
+}
+
 /* Decode one lossless-JPEG segment into `block` (bw*bh*spp*2). Returns the
-   actual decoded dims via out_bw/out_bh. */
+   actual decoded dims via out_bw/out_bh. When the backend can map the
+   segment, decode zero-copy from the mapping; otherwise stream it through
+   the io in chunks (never materializing the whole segment). */
 static tinydng_status td_decode_block_ljpeg(tinydng_context *ctx,
                                             tinydng_io *io, uint64_t io_size,
                                             const td_geom *g,
@@ -672,13 +699,23 @@ static tinydng_status td_decode_block_ljpeg(tinydng_context *ctx,
                  "ljpeg segment too large");
     return TINYDNG_E_BOUNDS;
   }
-  src = td_segment_bytes(ctx, io, io_size, seg->offset, (size_t)seg->byte_count,
-                         &owned, err);
-  if (!src) {
-    return err->status ? err->status : TINYDNG_E_BOUNDS;
-  }
 
-  ret = tdng_lj92_open(&lj, src, (int)seg->byte_count, &w, &h, &bits, &comps);
+  if (io->map) {
+    src = td_segment_bytes(ctx, io, io_size, seg->offset,
+                           (size_t)seg->byte_count, &owned, err);
+    if (!src) {
+      return err->status ? err->status : TINYDNG_E_BOUNDS;
+    }
+    ret = tdng_lj92_open(&lj, src, (int)seg->byte_count, &w, &h, &bits, &comps);
+  } else {
+    /* Streaming decode through the io backend (no full-segment copy). */
+    td_lj92_stream_io sio;
+    sio.io = io;
+    sio.base = seg->offset;
+    sio.size = seg->byte_count;
+    ret = tdng_lj92_open_streaming(&lj, &sio, td_lj92_stream_read,
+                                   td_lj92_stream_size, &w, &h, &bits, &comps);
+  }
   if (ret == TDNG_LJ92_ERROR_NOT_LOSSLESS) {
     td_set_error(err, TINYDNG_E_UNSUPPORTED, TINYDNG_STAGE_DECODE, 0, 0,
                  seg->offset, "baseline JPEG decode not implemented (P4)");

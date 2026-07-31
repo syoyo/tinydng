@@ -219,6 +219,62 @@ static int test_predictor3(tinydng_context *ctx) {
   return rc;
 }
 
+/* Packed sub-byte samples (12-bit, MSB-first, row byte-aligned): the
+   stripped bytes are decoded to 16-bit samples. */
+static int test_packed12(tinydng_context *ctx) {
+  uint32_t w = 37, h = 9; /* row = 37*12 bits = 55.5 bytes -> 56 bytes */
+  size_t samples = (size_t)w * h;
+  size_t row_bytes = ((size_t)w * 12u + 7u) / 8u;
+  size_t strip_len = row_bytes * h;
+  uint16_t *orig = (uint16_t *)malloc(samples * sizeof(uint16_t));
+  uint8_t *strip = (uint8_t *)calloc(1, strip_len);
+  uint8_t *buf;
+  size_t total;
+  size_t s, y, x;
+  tinydng_error err;
+  tinydng_document *doc = NULL;
+  tinydng_pixels px;
+  int rc = 0;
+
+  for (s = 0; s < samples; s++) {
+    orig[s] = (uint16_t)((s * 0x2C7u + 0x1Au) & 0xFFFu);
+  }
+  /* Pack MSB-first into the strip. */
+  for (y = 0; y < h; y++) {
+    size_t bitpos = 0;
+    for (x = 0; x < w; x++) {
+      uint16_t v = orig[y * w + x];
+      int k;
+      for (k = 11; k >= 0; k--) {
+        size_t byte_i = bitpos >> 3;
+        size_t bit_i = 7u - (bitpos & 7u);
+        strip[y * row_bytes + byte_i] |=
+            (uint8_t)(((v >> k) & 1u) << bit_i);
+        bitpos++;
+      }
+    }
+  }
+  buf = make_classic(w, h, 12, TINYDNG_SAMPLEFORMAT_UINT, 1,
+                     TINYDNG_COMPRESSION_NONE, strip, strip_len, &total);
+  if (tinydng_open_memory(ctx, buf, total, NULL, &doc, &err) == TINYDNG_OK &&
+      tinydng_decode_image(ctx, doc, 0, NULL, &px, &err) == TINYDNG_OK) {
+    CHECK(px.bits_per_sample == 16 && px.size == samples * 2u,
+          "packed 12-bit dims");
+    CHECK(memcmp(px.data, orig, samples * sizeof(uint16_t)) == 0,
+          "packed 12-bit samples");
+    printf("  packed 12-bit (%ux%u) OK\n", w, h);
+    tinydng_pixels_free(ctx, &px);
+    tinydng_document_destroy(ctx, doc);
+  } else {
+    CHECK(0, "packed12 open/decode: %s", err.message);
+    rc = 1;
+  }
+  free(buf);
+  free(strip);
+  free(orig);
+  return rc;
+}
+
 /* Decode a fixture and compare to the uncompressed baseline (both via our
    reader). Exercises external-encoder (libtiff) compressed streams. */
 static int test_fixture(tinydng_context *ctx, const char *root,
@@ -292,6 +348,7 @@ int main(int argc, char **argv) {
   test_bigtiff(ctx);
   test_predictor2(ctx);
   test_predictor3(ctx);
+  test_packed12(ctx);
   printf("== cross-encoder codec fixtures ==\n");
   test_codec_fixtures(ctx, root);
 

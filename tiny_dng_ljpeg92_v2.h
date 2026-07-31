@@ -2,6 +2,7 @@
 #define TINY_DNG_LJPEG92_V2_H_
 
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -32,6 +33,25 @@ int tdng_lj92_encode(uint16_t* image, int width, int height, int bitdepth,
                      int delinearizeLength, uint8_t** encoded,
                      int* encodedLength);
 
+/* Streaming decode via an IO callback.
+ *
+ * Same as tdng_lj92_open, but the stream is read through `read_fn` and is
+ * never materialized in memory: headers are parsed and the entropy payload
+ * is destuffed straight out of the callback. `size_fn` may be NULL for a
+ * pure stream of unknown length (UINT64_MAX). The returned handle decodes
+ * with the regular tdng_lj92_decode and is released with tdng_lj92_close.
+ *
+ * On streams that are not lossless JPEG (SOF0/1/2) this returns
+ * TDNG_LJ92_ERROR_NOT_LOSSLESS; on garbage/truncated streams,
+ * TDNG_LJ92_ERROR_CORRUPT. The callback must return the exact byte count
+ * requested, or fewer bytes at the end of the stream (short read = EOF). */
+typedef size_t (*tdng_lj92_read_fn)(void* user, uint64_t off, void* dst, size_t len);
+typedef uint64_t (*tdng_lj92_size_fn)(void* user);
+int tdng_lj92_open_streaming(tdng_lj92* lj, void* user,
+                             tdng_lj92_read_fn read_fn,
+                             tdng_lj92_size_fn size_fn,
+                             int* width, int* height, int* bitdepth,
+                             int* components);
 /* Extended encode entry point.
  *   image        : interleaved samples (R0 G0 B0 R1 G1 B1 ...) in 16-bit
  *   width, height: tile dimensions

@@ -7,6 +7,8 @@ cd build && cmake .. && make -j4
 ./test_dng_v2 <file.dng>        # V2 loader (pure C, no stb_image dependency)
 ./test_dng_v2 <file.dng> asis   # Store raw JPEG data instead of decoding
 ./test_dng_loader <file.dng>    # V1 loader (C++, uses stb_image for baseline JPEG)
+./test_v2_streaming [tile_dir]  # streaming vs in-memory LJPEG decode parity
+ctest                           # v3 tests + v2 streaming tests
 ```
 
 ## Key Files
@@ -35,6 +37,11 @@ In `tdng_parse_document()`, SubIFDs are only queued when `TINYDNG_V2_LOAD_FLAG_P
 - `TDNG_LJ92_ERROR_NONE = 0` - Success
 - `TDNG_LJ92_ERROR_NOT_LOSSLESS = -5` - Stream is baseline/progressive JPEG (SOF0/1/2), not lossless. V2 decoder gracefully returns this instead of CORRUPT.
 - `TDNG_LJ92_ERROR_CORRUPT = -1` - Actual corruption
+
+### LJPEG v2 Fast Decode + Streaming
+- Huffman LUT entries pack `(ssss << 8) | (codelen + ssss)`; the entropy loop consumes code + residual with ONE accumulator shift (branchless, no ssss==0 special case). LUTs are expanded to a uniform peek width (`expand_luts_uniform`, `huff_maxbits`) so interleaved loops use a single shift width. Decode ~1.5x vs pre-port (58 -> ~87 MPix/s on proraw-48mp-01.dng, sandbox/lj92 README has the analysis). Byte-identical output verified against sandbox/lj92 (test_correct: 193 checks).
+- `tdng_lj92_open_streaming(lj, user, read_fn, size_fn, ...)` parses headers (incl. DHT) through a chunk-cached reader (64KB) and decodes with the regular `tdng_lj92_decode`; the entropy payload is destuffed straight from the callback (no full-segment materialization). `size_fn` may be NULL (unknown length). Tests: `tests/v2_test/test_v2_streaming.c` (memory==streaming byte parity, known/unknown size, skip lengths, truncation/garbage/baseline error paths).
+- v3 codec (`tinydng_codec.c` `td_decode_block_ljpeg`) uses the streaming path automatically when `io->map == NULL` (stdio backend).
 
 ### V2 Image Loading Behavior
 - Lossless JPEG: decoded into memory, DATA_OWNS_MEMORY flag set
