@@ -140,7 +140,7 @@ add_test(NAME v3_decode COMMAND test_v3_decode "${CMAKE_SOURCE_DIR}")
 add_test(NAME v3_metadata COMMAND test_v3_metadata "${CMAKE_SOURCE_DIR}")
 add_test(NAME v3_mt COMMAND test_v3_mt "${CMAKE_SOURCE_DIR}")
 add_test(NAME v3_psd COMMAND test_v3_psd)
-add_test(NAME v3_streamwrite COMMAND test_v3_streamwrite)
+add_test(NAME v3_streamwrite COMMAND test_v3_streamwrite "${CMAKE_SOURCE_DIR}")
 
 if (TINYDNG_WITH_PYTHON)
   # pybind11 method:

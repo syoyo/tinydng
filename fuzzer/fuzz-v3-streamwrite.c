@@ -48,8 +48,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   bps = (uint16_t)((hdr[3] % 3u == 0u) ? 8u
                   : (hdr[3] % 3u == 1u) ? 16u
                                         : 32u);
-  comp = (uint16_t)(hdr[4] % 3u == 0u ? TINYDNG_COMPRESSION_NONE
-                   : hdr[4] % 3u == 1u ? TINYDNG_COMPRESSION_LZW
+  comp = (uint16_t)(hdr[4] % 4u == 0u ? TINYDNG_COMPRESSION_NONE
+                   : hdr[4] % 4u == 1u ? TINYDNG_COMPRESSION_LZW
+                   : hdr[4] % 4u == 2u ? TINYDNG_COMPRESSION_PACKBITS
                                        : TINYDNG_COMPRESSION_NEW_JPEG);
   if (comp == TINYDNG_COMPRESSION_NEW_JPEG) {
     bps = 16;
@@ -173,6 +174,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
       ost = tinydng_decode_image(ctx, doc, 0, NULL, &px, &err);
       if (ost == TINYDNG_OK && comp != TINYDNG_COMPRESSION_NONE &&
           (comp == TINYDNG_COMPRESSION_LZW ||
+           comp == TINYDNG_COMPRESSION_PACKBITS ||
            comp == TINYDNG_COMPRESSION_NEW_JPEG)) {
         size_t img_bytes = (size_t)wpx * hpx * spp * (bps / 8u);
         size_t sb = (size_t)bps / 8u;

@@ -693,6 +693,9 @@ static tinydng_status td_decode_block_ljpeg(tinydng_context *ctx,
   int w = 0, h = 0, bits = 0, comps = 0;
   int ret;
   tinydng_status st = TINYDNG_OK;
+  /* The streaming adapter must outlive tdng_lj92_decode, which reads it
+     through the decoder's stream_user until tdng_lj92_close. */
+  td_lj92_stream_io sio;
 
   if (seg->byte_count > (uint64_t)INT32_MAX) {
     td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0, seg->offset,
@@ -709,7 +712,6 @@ static tinydng_status td_decode_block_ljpeg(tinydng_context *ctx,
     ret = tdng_lj92_open(&lj, src, (int)seg->byte_count, &w, &h, &bits, &comps);
   } else {
     /* Streaming decode through the io backend (no full-segment copy). */
-    td_lj92_stream_io sio;
     sio.io = io;
     sio.base = seg->offset;
     sio.size = seg->byte_count;

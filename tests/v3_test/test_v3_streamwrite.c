@@ -471,9 +471,146 @@ static void test_errors(void) {
 
 /* ------------------------------------------------------------------ */
 
-int main(void) {
+/* Real-world round trip: decode a corpus DNG's lossless image, re-encode
+ * it as a tiled lossless-JPEG DNG through the streaming writer (feeding
+ * tiles one at a time from the decoded pixels, carrying the source CFA/raw
+ * metadata), then decode the output and require byte-identical pixels. */
+static int test_real_corpus(const char *root) {
+  char path[1024];
+  tinydng_document *src_doc = NULL;
+  tinydng_pixels px;
+  const tinydng_image_info *img;
+  tinydng_status st;
+  int found = -1;
+  int ok = 1;
+  size_t i, n;
+
+  snprintf(path, sizeof(path), "%s/pixel3.dng", root);
+  {
+    tinydng_open_options oopts;
+    memset(&oopts, 0, sizeof(oopts));
+    oopts.flags = TINYDNG_OPEN_PARSE_SUBIFDS;
+    st = tinydng_open_file(g_ctx, path, &oopts, &src_doc, &g_err);
+  }
+  if (st != TINYDNG_OK) {
+    CHECK(0, "corpus open %s: %s", path, g_err.message);
+    return 0;
+  }
+  n = tinydng_image_count(src_doc);
+  for (i = 0; i < n; i++) {
+    const tinydng_image_info *im = tinydng_image_get(src_doc, i);
+    if ((im->compression == TINYDNG_COMPRESSION_OLD_JPEG ||
+         im->compression == TINYDNG_COMPRESSION_NEW_JPEG) &&
+        im->bits_per_sample > 8u &&
+        (found < 0 ||
+         (uint64_t)im->width * im->height >
+             (uint64_t)tinydng_image_get(src_doc, (size_t)found)->width *
+                 tinydng_image_get(src_doc, (size_t)found)->height)) {
+      found = (int)i;
+    }
+  }
+  if (found < 0) {
+    CHECK(0, "corpus: no lossless image in %s", path);
+    tinydng_document_destroy(g_ctx, src_doc);
+    return 0;
+  }
+  st = tinydng_decode_image(g_ctx, src_doc, (size_t)found, NULL, &px, &g_err);
+  if (st != TINYDNG_OK) {
+    CHECK(0, "corpus decode: %s", g_err.message);
+    tinydng_document_destroy(g_ctx, src_doc);
+    return 0;
+  }
+  img = tinydng_image_get(src_doc, (size_t)found);
+
+  /* Re-encode as a tiled LJPEG DNG (256x256 tiles). */
+  {
+    tinydng_write_image meta;
+    tinydng_write_options opts;
+    tinydng_tiling tiling;
+    tinydng_write_io io;
+    tinydng_writer *w = NULL;
+    const uint32_t TW = 256, TL = 256;
+    const uint32_t across = (img->width + TW - 1u) / TW;
+    const uint32_t down = (img->height + TL - 1u) / TL;
+    const size_t sb = (size_t)px.bits_per_sample / 8u;
+    uint8_t *tilebuf = (uint8_t *)malloc((size_t)TW * TL * px.samples_per_pixel * sb);
+    uint8_t *blob = NULL;
+    size_t blob_len = 0;
+    uint32_t t;
+
+    if (!tilebuf) {
+      tinydng_pixels_free(g_ctx, &px);
+      tinydng_document_destroy(g_ctx, src_doc);
+      return 0;
+    }
+    memset(&meta, 0, sizeof(meta));
+    meta.width = img->width;
+    meta.height = img->height;
+    meta.samples_per_pixel = img->samples_per_pixel;
+    meta.bits_per_sample = px.bits_per_sample;
+    meta.sample_format = TINYDNG_SAMPLEFORMAT_UINT;
+    meta.cfa = &img->cfa;
+    meta.raw = &img->raw;
+    memset(&opts, 0, sizeof(opts));
+    opts.as_dng = 1;
+    opts.compression = TINYDNG_COMPRESSION_NEW_JPEG;
+    memset(&tiling, 0, sizeof(tiling));
+    tiling.tile_width = TW;
+    tiling.tile_length = TL;
+
+    if (tinydng_write_io_open_memory(g_ctx, &io, &g_err) != TINYDNG_OK ||
+        tinydng_writer_create(g_ctx, io, &meta, &opts, &tiling, &w, &g_err) !=
+            TINYDNG_OK) {
+      CHECK(0, "corpus writer create: %s", g_err.message);
+      free(tilebuf);
+      tinydng_pixels_free(g_ctx, &px);
+      tinydng_document_destroy(g_ctx, src_doc);
+      return 0;
+    }
+    for (t = 0; t < across * down && ok; t++) {
+      uint32_t tx = (t % across) * TW;
+      uint32_t ty = (t / across) * TL;
+      uint32_t pw = (tx + TW <= img->width) ? TW : (img->width - tx);
+      uint32_t ph = (ty + TL <= img->height) ? TL : (img->height - ty);
+      size_t row_bytes = (size_t)img->width * px.samples_per_pixel * sb;
+      size_t trow_bytes = (size_t)pw * px.samples_per_pixel * sb;
+      uint32_t r;
+      for (r = 0; r < ph; r++) {
+        memcpy(tilebuf + (size_t)r * trow_bytes,
+               px.data + ((size_t)(ty + r) * img->width + tx) *
+                             px.samples_per_pixel * sb,
+               trow_bytes);
+      }
+      if (tinydng_writer_write_tile(w, t, tilebuf, &g_err) != TINYDNG_OK) {
+        CHECK(0, "corpus tile %u: %s", t, g_err.message);
+        ok = 0;
+      }
+    }
+    if (ok && tinydng_writer_finish(w, &g_err) != TINYDNG_OK) {
+      CHECK(0, "corpus finish: %s", g_err.message);
+      ok = 0;
+    }
+    if (!ok) {
+      tinydng_writer_finish(w, &g_err);
+    }
+    free(tilebuf);
+    if (ok && tinydng_write_io_memory_take(g_ctx, &io, &blob, &blob_len,
+                                           &g_err) == TINYDNG_OK) {
+      ok = roundtrip_ok(blob, blob_len, px.data, px.size);
+      tinydng_buffer_free(g_ctx, blob);
+    }
+    io.close(&io);
+    CHECK(ok, "pixel3.dng lossless -> tiled LJPEG DNG -> decode identical");
+  }
+  tinydng_pixels_free(g_ctx, &px);
+  tinydng_document_destroy(g_ctx, src_doc);
+  return ok;
+}
+
+int main(int argc, char **argv) {
   tinydng_cfa cfa;
   tinydng_raw_info raw;
+  const char *root = (argc > 1) ? argv[1] : ".";
   int r = 0;
 
   g_ctx = tinydng_context_create(NULL, NULL);
@@ -515,6 +652,8 @@ int main(void) {
   CHECK(r, "tiled LJPEG DNG (CFA)");
   r = test_tiled(TINYDNG_COMPRESSION_NONE, 1, 1, NULL, NULL);
   CHECK(r, "tiled uncompressed DNG BE");
+  r = test_tiled(TINYDNG_COMPRESSION_PACKBITS, 0, 0, NULL, NULL);
+  CHECK(r, "tiled PackBits LE");
 
   /* multi-strip round-trips */
   r = test_strips(TINYDNG_COMPRESSION_NONE, 0, 4);
@@ -525,6 +664,8 @@ int main(void) {
   CHECK(r, "strips LJPEG (rps=4)");
   r = test_strips(TINYDNG_COMPRESSION_NEW_JPEG, 0, 1);
   CHECK(r, "strips LJPEG single-row");
+  r = test_strips(TINYDNG_COMPRESSION_PACKBITS, 1, 5);
+  CHECK(r, "strips PackBits BE (rps=5)");
 
   /* write_memory byte parity */
   r = test_memory_parity(TINYDNG_COMPRESSION_NONE, 0, 0);
@@ -537,12 +678,19 @@ int main(void) {
   CHECK(r, "write_memory parity: ljpeg BE DNG");
   r = test_memory_parity(TINYDNG_COMPRESSION_NONE, 0, 1);
   CHECK(r, "write_memory parity: none DNG");
+  r = test_memory_parity(TINYDNG_COMPRESSION_PACKBITS, 1, 0);
+  CHECK(r, "write_memory parity: packbits BE");
 
   /* write_file */
   r = test_write_file(TINYDNG_COMPRESSION_LZW);
   CHECK(r, "write_file LZW round-trip");
   r = test_write_file(TINYDNG_COMPRESSION_NEW_JPEG);
   CHECK(r, "write_file LJPEG round-trip");
+  r = test_write_file(TINYDNG_COMPRESSION_PACKBITS);
+  CHECK(r, "write_file PackBits round-trip");
+
+  r = test_real_corpus(root);
+  CHECK(r, "real corpus streaming round-trip");
 
   test_errors();
 

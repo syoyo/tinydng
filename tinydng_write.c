@@ -603,6 +603,49 @@ static size_t td_lj92_sink_write(void *user, const void *data, size_t len) {
   return len;
 }
 
+/* TIFF PackBits encode. Emits literal runs (n in [0,127] => n+1 literal
+   bytes) and repeat runs (n in [-127,-1] => 1-n copies of one byte); the
+   loader's td_packbits_decode handles both. Returns encoded length or -1
+   on overflow. */
+static long td_packbits_encode(const uint8_t *in, size_t in_len, uint8_t *out,
+                               size_t out_cap) {
+  size_t ip = 0, op = 0;
+  while (ip < in_len) {
+    size_t run = 1;
+    while (ip + run < in_len && in[ip + run] == in[ip] && run < 128u) {
+      run++;
+    }
+    if (run >= 3u) {
+      if (op + 2u > out_cap) {
+        return -1;
+      }
+      out[op++] = (uint8_t)(1 - (int)run);
+      out[op++] = in[ip];
+      ip += run;
+    } else {
+      size_t lit = 0;
+      while (ip < in_len && lit < 128u) {
+        size_t r = 1;
+        while (ip + r < in_len && in[ip + r] == in[ip] && r < 128u) {
+          r++;
+        }
+        if (r >= 3u) {
+          break;
+        }
+        ip++;
+        lit++;
+      }
+      if (op + 1u + lit > out_cap) {
+        return -1;
+      }
+      out[op++] = (uint8_t)(lit - 1u);
+      memcpy(out + op, in + ip - lit, lit);
+      op += lit;
+    }
+  }
+  return (long)op;
+}
+
 /* Encode one tile/strip payload and write it at absolute `at`. Returns the
    encoded length via *out_len. `pw`/`ph` are the (edge-cropped) payload
    dims. */
@@ -668,6 +711,43 @@ static tinydng_status td_writer_put_payload(tinydng_writer *w,
         td_ctx_free(w->ctx, enc);
         td_set_error(err, TINYDNG_E_INTERNAL, TINYDNG_STAGE_WRITE, 0, 0, at,
                      "LZW encode overflow");
+        return TINYDNG_E_INTERNAL;
+      }
+      if (w->sink.write(&w->sink, at, enc, (size_t)n) != (size_t)n) {
+        td_ctx_free(w->ctx, enc);
+        return td_wio_err(&w->sink, at, err);
+      }
+      td_ctx_free(w->ctx, enc);
+      *out_len = (size_t)n;
+      return TINYDNG_OK;
+    }
+
+    case TINYDNG_COMPRESSION_PACKBITS: {
+      const uint8_t *src = pixels;
+      uint8_t *tmp = NULL;
+      uint8_t *enc;
+      size_t cap;
+      long n;
+      if (need_swap) {
+        tmp = (uint8_t *)td_ctx_alloc(w->ctx, data_size, err);
+        if (!tmp) {
+          return TINYDNG_E_OOM;
+        }
+        tdw_swap_copy(tmp, pixels, n_samples, sb);
+        src = tmp;
+      }
+      cap = data_size + data_size / 2u + 1024u;
+      enc = (uint8_t *)td_ctx_alloc(w->ctx, cap, err);
+      if (!enc) {
+        td_ctx_free(w->ctx, tmp);
+        return TINYDNG_E_OOM;
+      }
+      n = td_packbits_encode(src, data_size, enc, cap);
+      td_ctx_free(w->ctx, tmp);
+      if (n < 0) {
+        td_ctx_free(w->ctx, enc);
+        td_set_error(err, TINYDNG_E_INTERNAL, TINYDNG_STAGE_WRITE, 0, 0, at,
+                     "PackBits encode overflow");
         return TINYDNG_E_INTERNAL;
       }
       if (w->sink.write(&w->sink, at, enc, (size_t)n) != (size_t)n) {
@@ -842,6 +922,8 @@ tinydng_status tinydng_writer_create(tinydng_context *ctx,
     comp = TINYDNG_COMPRESSION_NONE;
   } else if (comp == TINYDNG_COMPRESSION_LZW) {
     comp = TINYDNG_COMPRESSION_LZW;
+  } else if (comp == TINYDNG_COMPRESSION_PACKBITS) {
+    comp = TINYDNG_COMPRESSION_PACKBITS;
   } else if (comp == TINYDNG_COMPRESSION_NEW_JPEG ||
              comp == TINYDNG_COMPRESSION_OLD_JPEG) {
     if (bps != 16u) {

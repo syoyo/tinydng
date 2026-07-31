@@ -651,7 +651,7 @@ tinydng_status tinydng_psd_write_file(tinydng_context *ctx, const char *path,
 typedef struct tinydng_write_options {
   uint8_t big_endian;   /* 0 => little-endian */
   uint8_t as_dng;       /* emit DNG-specific tags from `raw`/`cfa`     */
-  uint16_t compression; /* 0/1 none, 5 LZW, 7 lossless JPEG            */
+  uint16_t compression; /* 0/1 none, 5 LZW, 7 lossless JPEG, 32773 PackBits */
 } tinydng_write_options;
 
 typedef struct tinydng_write_image {
