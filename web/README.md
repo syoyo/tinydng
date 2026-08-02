@@ -35,6 +35,11 @@ optional DNG ColorMatrix1/AsShotNeutral correction. The preview is capped at
 uploaded at a time, so large files do not require a full-resolution GPU
 texture. Browsers without WebGL2 get a normalized Canvas2D fallback.
 
+The repository's `release` branch has a GitHub Actions workflow that builds
+this target and deploys the demo to the repository's GitHub Pages site. The
+workflow publishes the generated WASM files as part of the Pages artifact, so
+they do not need to be committed to the source tree.
+
 ## Smoke test
 
 After building the WASM target:

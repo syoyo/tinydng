@@ -1,0 +1,62 @@
+name: Deploy web demo
+
+on:
+  push:
+    branches:
+      - release
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Emscripten
+        uses: emscripten-core/setup-emsdk@v15
+        with:
+          version: 4.0.14
+
+      - name: Build WebAssembly demo
+        run: |
+          emcmake cmake -S web -B web/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build web/build --parallel
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Stage site
+        run: |
+          mkdir -p _site/dist
+          cp web/js/index.html _site/index.html
+          cp web/js/app.js web/js/raw-develop.js web/js/tinydng-api.js _site/
+          cp web/js/dist/tinydng.js web/js/dist/tinydng.wasm _site/dist/
+          touch _site/.nojekyll
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
