@@ -89,7 +89,10 @@ set(TINYDNG_V3_VENDOR_SRCS
 add_library(tinydng STATIC
   ${TINYDNG_V3_CORE_SRCS}
   ${TINYDNG_V3_VENDOR_SRCS}
-  tiny_dng_ljpeg92_v2.c)
+  tiny_dng_ljpeg92_v2.c
+  tiny_dng_htj2k.c
+  tiny_dng_j2k.c
+  tiny_dng_j2k_enc.c)
 target_include_directories(tinydng PUBLIC ${CMAKE_SOURCE_DIR})
 target_compile_features(tinydng PUBLIC c_std_11)
 
@@ -100,6 +103,10 @@ set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads)
 if(Threads_FOUND)
   target_link_libraries(tinydng PUBLIC Threads::Threads)
+endif()
+if(NOT MSVC)
+  # J2K encoder uses log()/roundf() (libm) on POSIX.
+  target_link_libraries(tinydng PUBLIC m)
 endif()
 
 # Vendored third-party TUs: silence their warnings (not our code) and exclude
@@ -128,7 +135,8 @@ enable_testing()
 
 # v3 unit tests (link the tinydng library; honor sanitizer options).
 set(TINYDNG_V3_TESTS test_v3_roundtrip test_v3_decode test_v3_metadata
-                     test_v3_security test_v3_mt test_v3_psd test_v3_streamwrite)
+                     test_v3_security test_v3_mt test_v3_psd test_v3_streamwrite
+                     test_v3_writemeta test_v3_j2k_write)
 foreach(t ${TINYDNG_V3_TESTS})
   add_executable(${t} tests/v3_test/${t}.c)
   target_link_libraries(${t} PRIVATE tinydng)
@@ -142,6 +150,44 @@ add_test(NAME v3_security COMMAND test_v3_security)
 add_test(NAME v3_mt COMMAND test_v3_mt "${CMAKE_SOURCE_DIR}")
 add_test(NAME v3_psd COMMAND test_v3_psd)
 add_test(NAME v3_streamwrite COMMAND test_v3_streamwrite "${CMAKE_SOURCE_DIR}")
+add_test(NAME v3_writemeta COMMAND test_v3_writemeta "${CMAKE_SOURCE_DIR}")
+add_test(NAME v3_j2k_write COMMAND test_v3_j2k_write)
+
+# HTJ2K block codec + J2K codestream self-test (no OpenJPH dependency).
+add_executable(test_htj2k tests/htj2k_test/test_block_j2k.c
+               tiny_dng_htj2k.c tiny_dng_j2k.c)
+target_include_directories(test_htj2k PRIVATE ${CMAKE_SOURCE_DIR})
+add_sanitizers(test_htj2k)
+add_test(NAME htj2k_self COMMAND test_htj2k)
+
+# J2K codestream encoder round-trip (lossless, self-contained).
+add_executable(test_j2k_enc tests/htj2k_test/test_j2k_enc.c
+               tiny_dng_htj2k.c tiny_dng_j2k.c tiny_dng_j2k_enc.c)
+target_include_directories(test_j2k_enc PRIVATE ${CMAKE_SOURCE_DIR})
+target_link_libraries(test_j2k_enc PRIVATE m)
+add_sanitizers(test_j2k_enc)
+add_test(NAME j2k_enc_roundtrip COMMAND test_j2k_enc)
+
+# J2K encoder/decoder edge cases (tiny, odd, 16-bit, nd=0).
+add_executable(test_j2k_edge tests/htj2k_test/test_j2k_edge.c
+               tiny_dng_htj2k.c tiny_dng_j2k.c tiny_dng_j2k_enc.c)
+target_include_directories(test_j2k_edge PRIVATE ${CMAKE_SOURCE_DIR})
+target_link_libraries(test_j2k_edge PRIVATE m)
+add_sanitizers(test_j2k_edge)
+add_test(NAME j2k_edge COMMAND test_j2k_edge)
+
+# Tiled J2K DNG write -> decode round-trip with edge tiles (0xFF padding
+# in the packet headers).
+add_executable(test_v3_j2k_tiled tests/v3_test/test_v3_j2k_tiled.c)
+target_link_libraries(test_v3_j2k_tiled PRIVATE tinydng)
+add_sanitizers(test_v3_j2k_tiled)
+add_test(NAME v3_j2k_tiled COMMAND test_v3_j2k_tiled)
+
+# J2K DNG lossy (j2k_qstep) + 16-bit gray/CFA round-trips.
+add_executable(test_v3_j2k_lossy tests/v3_test/test_v3_j2k_lossy.c)
+target_link_libraries(test_v3_j2k_lossy PRIVATE tinydng)
+add_sanitizers(test_v3_j2k_lossy)
+add_test(NAME v3_j2k_lossy COMMAND test_v3_j2k_lossy)
 
 if (TINYDNG_WITH_PYTHON)
   # pybind11 method:
