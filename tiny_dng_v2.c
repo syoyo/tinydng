@@ -426,7 +426,7 @@ size_t tinydng_v2_context_memory_peak(const tinydng_v2_context* ctx) {
 }
 
 static int tdng_read_u16(const tdng_reader* r, size_t at, uint16_t* out) {
-  if (!r || !out || (at + 2u > r->size)) {
+  if (!r || !out || (at > r->size) || (2u > r->size - at)) {
     return 0;
   }
   if (r->big_endian) {
@@ -438,7 +438,7 @@ static int tdng_read_u16(const tdng_reader* r, size_t at, uint16_t* out) {
 }
 
 static int tdng_read_u32(const tdng_reader* r, size_t at, uint32_t* out) {
-  if (!r || !out || (at + 4u > r->size)) {
+  if (!r || !out || (at > r->size) || (4u > r->size - at)) {
     return 0;
   }
   if (r->big_endian) {
@@ -453,22 +453,26 @@ static int tdng_read_u32(const tdng_reader* r, size_t at, uint32_t* out) {
 }
 
 static int tdng_read_i32(const tdng_reader* r, size_t at, int32_t* out) {
-  if (!r || !out || (at + 4u > r->size)) {
+  if (!r || !out || (at > r->size) || (4u > r->size - at)) {
     return 0;
   }
-  if (r->big_endian) {
-    *out = ((int32_t)r->data[at] << 24) | ((int32_t)r->data[at + 1] << 16) |
-           ((int32_t)r->data[at + 2] << 8) | (int32_t)r->data[at + 3];
-  } else {
-    *out = ((int32_t)r->data[at + 3] << 24) |
-           ((int32_t)r->data[at + 2] << 16) |
-           ((int32_t)r->data[at + 1] << 8) | (int32_t)r->data[at];
+  {
+    uint32_t v;
+    if (r->big_endian) {
+      v = ((uint32_t)r->data[at] << 24) | ((uint32_t)r->data[at + 1] << 16) |
+          ((uint32_t)r->data[at + 2] << 8) | (uint32_t)r->data[at + 3];
+    } else {
+      v = ((uint32_t)r->data[at + 3] << 24) |
+          ((uint32_t)r->data[at + 2] << 16) |
+          ((uint32_t)r->data[at + 1] << 8) | (uint32_t)r->data[at];
+    }
+    *out = (int32_t)v;
   }
   return 1;
 }
 
 static int tdng_read_u64(const tdng_reader* r, size_t at, uint64_t* out) {
-  if (!r || !out || (at + 8u > r->size)) {
+  if (!r || !out || (at > r->size) || (8u > r->size - at)) {
     return 0;
   }
   if (r->big_endian) {
@@ -526,7 +530,7 @@ static char* tdng_read_string(tinydng_v2_context* ctx, const tdng_reader* r,
                               tinydng_v2_error* err) {
   if (!ctx || !r) return NULL;
   if (count == 0) return NULL;
-  if (offset + count > r->size) return NULL;
+  if (offset > r->size || count > r->size - offset) return NULL;
 
   char* str = (char*)tdng_ctx_alloc(ctx, count + 1, err);
   if (!str) return NULL;
@@ -678,7 +682,8 @@ static int tdng_decode_strips_uncompressed(tinydng_v2_context* ctx,
   for (i = 0; i < b->strip_count; i++) {
     size_t off = b->strip_offsets[i];
     size_t len = b->strip_byte_counts[i];
-    if ((off + len > r->size) || (copied + len > expected_size)) {
+    if ((off > r->size) || (len > r->size - off) ||
+        (copied > expected_size - len)) {
       tdng_set_error(err, TINYDNG_V2_STATUS_BOUNDS_ERROR,
                      TINYDNG_V2_STAGE_DECODE, ifd_index,
                      TINYDNG_V2_TAG_STRIP_OFFSETS, off,
@@ -733,7 +738,7 @@ static int tdng_decode_ljpeg(tinydng_v2_context* ctx, const tdng_reader* r,
   off = b->strip_offsets[0];
   len = b->jpeg_if_byte_count ? (size_t)b->jpeg_if_byte_count
                               : (size_t)b->strip_byte_counts[0];
-  if ((len == 0u) || (off >= r->size) || (off + len > r->size)) {
+  if ((len == 0u) || (off >= r->size) || (len > (r->size - off))) {
     tdng_set_error(err, TINYDNG_V2_STATUS_BOUNDS_ERROR, TINYDNG_V2_STAGE_DECODE,
                    ifd_index, TINYDNG_V2_TAG_JPEG_IF_BYTE_COUNT, off,
                    "invalid jpeg payload off=%zu len=%zu size=%zu", off, len,

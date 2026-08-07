@@ -86,6 +86,13 @@ static int test_dng_metadata(tinydng_context *ctx) {
   for (i = 0; i < W * H; i++) {
     src[i] = (uint16_t)((i * 7u + 3u) & 0x3fffu);
   }
+  tinydng_exif exif;
+  memset(&exif, 0, sizeof(exif));
+  exif.make = "TestCam";
+  exif.model = "TestModel";
+  exif.software = "TestSw";
+  exif.datetime = "2024:03:15 10:30:00";
+  exif.orientation = 3;
   memset(&cfa, 0, sizeof(cfa));
   cfa.present = 1;
   cfa.pattern_dim[0] = 2;
@@ -127,6 +134,7 @@ static int test_dng_metadata(tinydng_context *ctx) {
   wi.data_size = (size_t)W * H * 2;
   wi.cfa = &cfa;
   wi.raw = &raw;
+  wi.exif = &exif;
   memset(&wo, 0, sizeof(wo));
   wo.as_dng = 1;
   wo.compression = TINYDNG_COMPRESSION_LZW; /* exercise LZW + DNG together */
@@ -143,24 +151,39 @@ static int test_dng_metadata(tinydng_context *ctx) {
     return 1;
   }
   im = tinydng_image_get(doc, 0);
+  const tinydng_raw_info *ri = tinydng_image_raw_info(im);
+  const tinydng_cfa *cf = tinydng_image_cfa(im);
   CHECK(im && im->width == W && im->height == H, "dng dims");
   CHECK(im && im->compression == TINYDNG_COMPRESSION_LZW, "dng comp=lzw");
-  CHECK(im && im->raw.has_dng_version && im->raw.dng_version[1] == 4, "dngver");
-  CHECK(im && im->raw.black_level_present && im->raw.black_level[0] == 128,
+  CHECK(im && ri && ri->has_dng_version && ri->dng_version[1] == 4, "dngver");
+  CHECK(im && ri && ri->black_level_present && ri->black_level[0] == 128,
         "black");
-  CHECK(im && im->raw.white_level_present && im->raw.white_level[0] == 16383,
+  CHECK(im && ri && ri->white_level_present && ri->white_level[0] == 16383,
         "white");
-  CHECK(im && im->cfa.present && im->cfa.pattern_size == 4 &&
-            im->cfa.pattern[3] == 2,
+  CHECK(im && cf && cf->present && cf->pattern_size == 4 &&
+            cf->pattern[3] == 2,
         "cfa");
-  CHECK(im && im->raw.color_matrix_present &&
-            im->raw.color_matrix1[0] > 0.999 && im->raw.color_matrix1[0] < 1.001,
+  CHECK(im && ri && ri->color_matrix_present &&
+            ri->color_matrix1[0] > 0.999 && ri->color_matrix1[0] < 1.001,
         "color matrix");
-  CHECK(im && im->raw.has_as_shot_neutral &&
-            im->raw.as_shot_neutral[2] > 0.699 &&
-            im->raw.as_shot_neutral[2] < 0.701,
+  CHECK(im && ri && ri->has_as_shot_neutral &&
+            ri->as_shot_neutral[2] > 0.699 &&
+            ri->as_shot_neutral[2] < 0.701,
         "as-shot-neutral");
-  CHECK(im && im->raw.calibration_illuminant1 == 21, "illuminant");
+  CHECK(im && ri && ri->calibration_illuminant1 == 21, "illuminant");
+  {
+    const tinydng_exif *dexif = tinydng_document_exif(doc);
+    CHECK(dexif && dexif->make && strcmp(dexif->make, "TestCam") == 0,
+          "dng make");
+    CHECK(dexif && dexif->model && strcmp(dexif->model, "TestModel") == 0,
+          "dng model");
+    CHECK(dexif && dexif->software && strcmp(dexif->software, "TestSw") == 0,
+          "dng software");
+    CHECK(dexif && dexif->datetime &&
+              strcmp(dexif->datetime, "2024:03:15 10:30:00") == 0,
+          "dng datetime");
+    CHECK(dexif && dexif->orientation == 3, "dng orientation");
+  }
 
   if (tinydng_decode_image(ctx, doc, 0, NULL, &px, &e) == TINYDNG_OK) {
     CHECK(px.size == (size_t)W * H * 2 &&
@@ -265,6 +288,8 @@ int main(void) {
   roundtrip(ctx, "ljpeg mono16", TINYDNG_COMPRESSION_NEW_JPEG, 0, 16, 256, 192,
             0);
   roundtrip(ctx, "ljpeg rgb16", TINYDNG_COMPRESSION_NEW_JPEG, 1, 16, 100, 80, 0);
+  roundtrip(ctx, "zip rgb8", TINYDNG_COMPRESSION_ZIP, 1, 8, 64, 48, 0);
+  roundtrip(ctx, "zip mono16 BE", TINYDNG_COMPRESSION_ZIP, 0, 16, 128, 96, 1);
   printf("== DNG metadata ==\n");
   test_dng_metadata(ctx);
   printf("== region/segment ==\n");

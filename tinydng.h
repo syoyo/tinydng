@@ -149,7 +149,8 @@ typedef enum tinydng_compression {
   TINYDNG_COMPRESSION_NEW_JPEG = 7,
   TINYDNG_COMPRESSION_ZIP = 8,
   TINYDNG_COMPRESSION_PACKBITS = 32773,
-  TINYDNG_COMPRESSION_LOSSY_JPEG = 34892
+  TINYDNG_COMPRESSION_LOSSY_JPEG = 34892,
+  TINYDNG_COMPRESSION_JPEG2000 = 34712
 } tinydng_compression;
 
 typedef enum tinydng_sample_format {
@@ -334,6 +335,11 @@ size_t tinydng_image_count(const tinydng_document *doc);
 const tinydng_image_info *tinydng_image_get(const tinydng_document *doc,
                                             size_t index);
 const tinydng_exif *tinydng_document_exif(const tinydng_document *doc);
+
+/* Per-image metadata accessors (convenience; equivalent to &img->field). */
+const tinydng_exif *tinydng_image_exif(const tinydng_image_info *img);
+const tinydng_cfa *tinydng_image_cfa(const tinydng_image_info *img);
+const tinydng_raw_info *tinydng_image_raw_info(const tinydng_image_info *img);
 
 size_t tinydng_image_segment_count(const tinydng_image_info *img);
 tinydng_status tinydng_image_segment(const tinydng_image_info *img, size_t i,
@@ -652,6 +658,7 @@ typedef struct tinydng_write_options {
   uint8_t big_endian;   /* 0 => little-endian */
   uint8_t as_dng;       /* emit DNG-specific tags from `raw`/`cfa`     */
   uint16_t compression; /* 0/1 none, 5 LZW, 7 lossless JPEG, 32773 PackBits */
+  float j2k_qstep;      /* JPEG2000 quantization step; 0.0 = lossless */
 } tinydng_write_options;
 
 typedef struct tinydng_write_image {
@@ -662,8 +669,9 @@ typedef struct tinydng_write_image {
   uint16_t photometric;     /* 0 => auto (CFA/RGB/MINISBLACK)          */
   const uint8_t *data;      /* row-major, chunky, host byte order      */
   size_t data_size;
-  const tinydng_cfa *cfa;      /* optional */
-  const tinydng_raw_info *raw; /* optional DNG metadata */
+  const tinydng_cfa *cfa;          /* optional */
+  const tinydng_raw_info *raw;     /* optional DNG metadata */
+  const tinydng_exif *exif;        /* optional EXIF/Baseline tags */
 } tinydng_write_image;
 
 /* Serialize `img` to an in-memory TIFF/DNG buffer (allocated via ctx;

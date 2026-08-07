@@ -99,9 +99,10 @@ static void case_gainmap_overflow(void) {
   buf = build_img(&ex, 1, b, p, &total);
   im = open_img(ctx, buf, total, &doc);
   CHECK(im != NULL, "A: gainmap-overflow file should still open");
-  CHECK(im && im->raw.gainmap_count == 0,
+  const tinydng_raw_info *raw = im ? tinydng_image_raw_info(im) : NULL;
+  CHECK(im && raw && raw->gainmap_count == 0,
         "A: overflowing GainMap rejected (count=%zu)",
-        im ? im->raw.gainmap_count : (size_t)999);
+        raw ? raw->gainmap_count : (size_t)999);
   if (doc) tinydng_document_destroy(ctx, doc);
   CHECK(tinydng_context_memory_used(ctx) == 0u, "A: no leak");
   tinydng_context_destroy(ctx);
@@ -127,9 +128,10 @@ static void case_gainmap_short_nbytes(void) {
   buf = build_img(&ex, 1, b, p, &total);
   im = open_img(ctx, buf, total, &doc);
   CHECK(im != NULL, "B: short-nbytes gainmap file should still open");
-  CHECK(im && im->raw.gainmap_count == 0,
+  const tinydng_raw_info *raw2 = im ? tinydng_image_raw_info(im) : NULL;
+  CHECK(im && raw2 && raw2->gainmap_count == 0,
         "B: GainMap with payload exceeding nbytes rejected (count=%zu)",
-        im ? im->raw.gainmap_count : (size_t)999);
+        raw2 ? raw2->gainmap_count : (size_t)999);
   if (doc) tinydng_document_destroy(ctx, doc);
   tinydng_context_destroy(ctx);
   free(buf);
@@ -184,8 +186,10 @@ static void case_rational_type(void) {
   tdt_pf64be(blob, 0.5); /* value bytes (any 8-byte content) */
   ex.tag = 33434; ex.type = 12 /*DOUBLE*/; ex.count = 1; ex.val = 12;
   buf = build_img(&ex, 1, blob, 8, &total);
+  const tinydng_exif *dexif;
   im = open_img(ctx, buf, total, &doc);
-  CHECK(im && im->exif.has_exposure_time == 0,
+  dexif = tinydng_document_exif(doc);
+  CHECK(im && dexif && dexif->has_exposure_time == 0,
         "D1: DOUBLE ExposureTime not misread as rational");
   if (doc) tinydng_document_destroy(ctx, doc);
   free(buf);
@@ -194,11 +198,12 @@ static void case_rational_type(void) {
   ex.tag = 33434; ex.type = 5 /*RATIONAL*/; ex.count = 1; ex.val = 12;
   buf = build_img(&ex, 1, blob, 8, &total);
   im = open_img(ctx, buf, total, &doc);
-  CHECK(im && im->exif.has_exposure_time == 1 && im->exif.exposure_time[0] == 1 &&
-            im->exif.exposure_time[1] == 100,
+  dexif = tinydng_document_exif(doc);
+  CHECK(im && dexif && dexif->has_exposure_time == 1 &&
+            dexif->exposure_time[0] == 1 && dexif->exposure_time[1] == 100,
         "D2: RATIONAL ExposureTime parsed (has=%d %d/%d)",
-        im ? im->exif.has_exposure_time : -1,
-        im ? im->exif.exposure_time[0] : -1, im ? im->exif.exposure_time[1] : -1);
+        dexif ? dexif->has_exposure_time : -1,
+        dexif ? dexif->exposure_time[0] : -1, dexif ? dexif->exposure_time[1] : -1);
   if (doc) tinydng_document_destroy(ctx, doc);
   free(buf);
   tinydng_context_destroy(ctx);
@@ -215,9 +220,10 @@ static void case_linearization_stride(void) {
   ex.tag = 50712; ex.type = 4 /*LONG*/; ex.count = 4; ex.val = 12;
   buf = build_img(&ex, 1, blob, 16, &total);
   im = open_img(ctx, buf, total, &doc);
-  CHECK(im && im->raw.linearization_table_count == 4, "E: lin count=4");
-  if (im && im->raw.linearization_table_count == 4) {
-    const uint16_t *t = im->raw.linearization_table;
+  const tinydng_raw_info *raw_e = im ? tinydng_image_raw_info(im) : NULL;
+  CHECK(im && raw_e && raw_e->linearization_table_count == 4, "E: lin count=4");
+  if (im && raw_e && raw_e->linearization_table_count == 4) {
+    const uint16_t *t = raw_e->linearization_table;
     CHECK(t[0] == 1 && t[1] == 2 && t[2] == 3 && t[3] == 4,
           "E: LONG stride correct ([%u,%u,%u,%u])", t[0], t[1], t[2], t[3]);
   }
@@ -230,10 +236,12 @@ static void case_linearization_stride(void) {
  * after open is close to a control with a single small Make. */
 static size_t open_used(uint8_t *buf, size_t total, char *make_out) {
   tinydng_context *ctx = tinydng_context_create(NULL, NULL);
-  tinydng_document *doc; const tinydng_image_info *im; size_t used;
-  im = open_img(ctx, buf, total, &doc);
-  if (im && im->exif.make) {
-    make_out[0] = im->exif.make[0];
+  tinydng_document *doc; size_t used;
+  const tinydng_exif *dexif;
+  (void)open_img(ctx, buf, total, &doc);
+  dexif = tinydng_document_exif(doc);
+  if (dexif && dexif->make) {
+    make_out[0] = dexif->make[0];
     make_out[1] = '\0';
   } else {
     make_out[0] = '\0';
@@ -417,6 +425,55 @@ static void case_jpeg_if_clamp(void) {
   }
 }
 
+/* K: A very long EXIF string must not crash the writer or cause overflow.
+ * The writer truncates strings to 65534 bytes in td_add_ascii. */
+static void case_long_exif_string(void) {
+  tinydng_context *ctx = tinydng_context_create(NULL, NULL);
+  tinydng_error err;
+  tinydng_write_image meta;
+  tinydng_write_options opts;
+  uint8_t img[4 * 4 * 3];
+  uint8_t *blob = NULL;
+  size_t blob_len = 0;
+  char long_make[70000];
+  memset(img, 0, sizeof(img));
+  memset(long_make, 'A', sizeof(long_make));
+  long_make[sizeof(long_make) - 1] = '\0';
+
+  tinydng_exif exif;
+  memset(&exif, 0, sizeof(exif));
+  exif.make = long_make;
+  memset(&meta, 0, sizeof(meta));
+  meta.width = 4;
+  meta.height = 4;
+  meta.samples_per_pixel = 3;
+  meta.bits_per_sample = 8;
+  meta.data = img;
+  meta.data_size = sizeof(img);
+  meta.exif = &exif;
+  memset(&opts, 0, sizeof(opts));
+  opts.as_dng = 1;
+
+  tinydng_status st = tinydng_write_memory(ctx, &meta, &opts, &blob,
+                                           &blob_len, &err);
+  if (st == TINYDNG_OK) {
+    tinydng_document *doc = NULL;
+    st = tinydng_open_memory(ctx, blob, blob_len, NULL, &doc, &err);
+    if (st == TINYDNG_OK) {
+      const tinydng_exif *ex = tinydng_document_exif(doc);
+      CHECK(ex && ex->make, "long EXIF: make present after round-trip");
+      if (ex && ex->make) {
+        CHECK(strlen(ex->make) <= 65534u,
+              "long EXIF: truncated to %u", (unsigned)strlen(ex->make));
+      }
+      tinydng_document_destroy(ctx, doc);
+    }
+    tinydng_buffer_free(ctx, blob);
+  }
+  CHECK(st == TINYDNG_OK, "long EXIF: write did not crash");
+  tinydng_context_destroy(ctx);
+}
+
 int main(void) {
   (void)tdt_slurp; /* shared helper unused by this all-in-memory test */
   printf("== v3 security regression fixtures ==\n");
@@ -428,6 +485,7 @@ int main(void) {
   case_duplicate_tag();
   case_ljpeg_ssss();
   case_jpeg_if_clamp();
+  case_long_exif_string();
   printf(g_fail ? "SECURITY: FAILURES\n" : "SECURITY: ALL PASS\n");
   return g_fail;
 }

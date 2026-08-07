@@ -5,6 +5,7 @@
  */
 #include "td_internal.h"
 #include "tiny_dng_ljpeg92_v2.h"
+#include "tiny_dng_j2k.h"
 
 #ifndef TINYDNG_NO_ZIP
 #include "miniz.h"
@@ -271,7 +272,9 @@ static tinydng_status td_fill_block_from_stored(const td_geom *g, int big_endian
              in_row_bytes);
     }
     if (need_swap) {
-      size_t total_samples = (size_t)bw * bh * g->spp;
+      /* total_samples = need / stored_bytes, computed without the
+         bw * bh * spp multiplication that could overflow size_t. */
+      size_t total_samples = need / stored_bytes;
       size_t i;
       if (stored_bytes == 2u) {
         uint16_t *p = (uint16_t *)block;
@@ -649,7 +652,14 @@ static tinydng_status td_decode_block_baseline(tinydng_context *ctx,
                  "baseline JPEG dims %dx%d != block %ux%u", w, h, bw, bh);
     return TINYDNG_E_DECODE;
   }
-  memcpy(block, pixels, (size_t)bw * bh * g->spp); /* 8-bit, spp channels */
+  {
+    size_t need;
+    if (!td_stored_block_size(g, bw, bh, &need)) {
+      stbi_image_free(pixels);
+      return TINYDNG_E_BOUNDS;
+    }
+    memcpy(block, pixels, need); /* 8-bit, spp channels: need = bw*bh*spp */
+  }
   stbi_image_free(pixels);
   return TINYDNG_OK;
 }
@@ -758,6 +768,89 @@ cleanup:
   if (owned) {
     td_ctx_free(ctx, owned);
   }
+  return st;
+}
+
+/* Decode one JPEG 2000 (HTJ2K) segment into `block` (out_bps 16 unless
+   the codestream is 8-bit). Each DNG tile is an independent codestream. */
+static tinydng_status td_decode_block_j2k(tinydng_context *ctx,
+                                          tinydng_io *io, uint64_t io_size,
+                                          const td_geom *g,
+                                          const tinydng_segment *seg,
+                                          uint8_t *block, uint32_t bw,
+                                          uint32_t bh, tinydng_error *err) {
+  uint8_t *owned = NULL;
+  const uint8_t *src;
+  tdng_j2k *j2k = NULL;
+  uint32_t iw, ih, ncomp, bits[16], tw, th, ntx, nty;
+  int r;
+  tinydng_status st = TINYDNG_OK;
+
+  if (seg->byte_count > (uint64_t)INT32_MAX) {
+    td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0, seg->offset,
+                 "j2k segment too large");
+    return TINYDNG_E_BOUNDS;
+  }
+  src = td_segment_bytes(ctx, io, io_size, seg->offset, (size_t)seg->byte_count,
+                         &owned, err);
+  if (!src) return err->status ? err->status : TINYDNG_E_BOUNDS;
+
+  r = tdng_j2k_open(&j2k, src, (size_t)seg->byte_count, &iw, &ih, &ncomp, bits,
+                    &tw, &th, &ntx, &nty);
+  if (r != TDNG_J2K_OK) {
+    td_set_error(err, TINYDNG_E_DECODE, TINYDNG_STAGE_DECODE, 0, 0, seg->offset,
+                 "j2k open failed r=%d", r);
+    st = TINYDNG_E_DECODE;
+    goto cleanup;
+  }
+  if (ncomp != g->spp) {
+    td_set_error(err, TINYDNG_E_DECODE, TINYDNG_STAGE_DECODE, 0, 0, seg->offset,
+                 "j2k comps=%u != block spp=%u", ncomp, (unsigned)g->spp);
+    st = TINYDNG_E_DECODE;
+    goto cleanup;
+  }
+  {
+    uint32_t tw2 = tw, th2 = th;
+    int32_t *tmp = (int32_t *)td_ctx_alloc(ctx,
+                                           (size_t)tw2 * th2 * ncomp * 4, err);
+    uint32_t t, y, x, c;
+    if (!tmp) {
+      st = err->status ? err->status : TINYDNG_E_OOM;
+      goto cleanup;
+    }
+    for (t = 0; t < ntx * nty; ++t) {
+      r = tdng_j2k_decode_tile(j2k, t, tmp);
+      if (r != TDNG_J2K_OK) {
+        td_ctx_free(ctx, tmp);
+        td_set_error(err, TINYDNG_E_DECODE, TINYDNG_STAGE_DECODE, 0, 0,
+                     seg->offset, "j2k tile decode failed r=%d", r);
+        st = TINYDNG_E_DECODE;
+        goto cleanup;
+      }
+      /* copy into the block (chunky, out_bps bytes per sample) */
+      for (y = 0; y < th2 && y < bh; ++y) {
+        for (x = 0; x < tw2 && x < bw; ++x) {
+          for (c = 0; c < ncomp; ++c) {
+            int32_t v = tmp[((size_t)y * tw2 + x) * ncomp + c];
+            if (g->out_bytes == 2) {
+              uint16_t uv = (uint16_t)(v < 0 ? 0 : (v > 65535 ? 65535 : v));
+              memcpy(block + ((size_t)y * bw + x) * g->pixel_stride +
+                         c * g->out_bytes,
+                     &uv, 2);
+            } else {
+              uint8_t uv = (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
+              block[((size_t)y * bw + x) * g->pixel_stride + c] = uv;
+            }
+          }
+        }
+      }
+    }
+    td_ctx_free(ctx, tmp);
+  }
+
+cleanup:
+  if (j2k) tdng_j2k_close(j2k);
+  if (owned) td_ctx_free(ctx, owned);
   return st;
 }
 
@@ -988,6 +1081,10 @@ static int td_decode_one_segment(td_decode_par *par, const tinydng_segment *seg,
                                     target, bw, bh, err);
       break;
 #endif
+    case TINYDNG_COMPRESSION_JPEG2000:
+      st = td_decode_block_j2k(ctx, par->io, par->io_size, gseg, seg, target,
+                               bw, bh, err);
+      break;
     case TINYDNG_COMPRESSION_LZW:
     case TINYDNG_COMPRESSION_PACKBITS:
     case TINYDNG_COMPRESSION_ZIP:

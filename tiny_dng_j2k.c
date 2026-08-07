@@ -8,8 +8,6 @@
 #include "tiny_dng_htj2k.h"
 
 #include <stdlib.h>
-#include <time.h>
-#include <stdio.h>
 #include <string.h>
 
 typedef uint8_t ui8;
@@ -1298,31 +1296,6 @@ static void tdj_interleave_even_avx2(int32_t *out, const int32_t *low,
   }
 }
 
-/* AVX2: interleave high and low into out (odd case). */
-__attribute__((target("avx2")))
-static void __attribute__((unused)) tdj_interleave_odd_avx2(int32_t *out, const int32_t *low,
-                                    const int32_t *high, int n) {
-  int i = 0;
-  for (; i + 8 <= n; i += 8) {
-    __m256i lo = _mm256_loadu_si256((const __m256i *)(low + i));
-    __m256i hi = _mm256_loadu_si256((const __m256i *)(high + i));
-    __m128i lo0 = _mm256_castsi256_si128(lo);
-    __m128i hi0 = _mm256_castsi256_si128(hi);
-    __m128i p0 = _mm_unpacklo_epi32(hi0, lo0);
-    __m128i p1 = _mm_unpackhi_epi32(hi0, lo0);
-    __m128i lo1 = _mm256_extracti128_si256(lo, 1);
-    __m128i hi1 = _mm256_extracti128_si256(hi, 1);
-    __m128i p2 = _mm_unpacklo_epi32(hi1, lo1);
-    __m128i p3 = _mm_unpackhi_epi32(hi1, lo1);
-    _mm256_storeu_si256((__m256i *)(out + 2 * i), _mm256_set_m128i(p1, p0));
-    _mm256_storeu_si256((__m256i *)(out + 2 * i + 8),
-                        _mm256_set_m128i(p3, p2));
-  }
-  for (; i < n; ++i) {
-    out[2 * i] = high[i];
-    out[2 * i + 1] = low[i];
-  }
-}
 /* AVX2: convert sign-magnitude block samples to signed integers.
    sv = ((v & 0x7FFFFFFF) >> shift) with sign applied, arithmetic. */
 __attribute__((target("avx2")))
@@ -1420,58 +1393,6 @@ static void tdj_pack3_avx2(int32_t *out, const int32_t *a, const int32_t *b,
 
 #else
 #endif
-
-/* Row-wise 5/3 vertical synthesis of a horizontal-synthesized buffer.
-   Low rows and high rows are combined along columns, processing each row
-   contiguously (cache friendly). */
-/* Row-wise 5/3 vertical synthesis of a horizontal-synthesized buffer.
-   Low rows and high rows are combined along columns, processing each row
-   contiguously (cache friendly). */
-static void __attribute__((unused)) tdj_synth_53_vert_to(int32_t *dst, const int32_t *tmp, int out_w,
-                                 int out_h, int n_low_y, int n_high_y,
-                                 int even) {
-  int i, k;
-  int use_avx = tdj_cpu_avx2();
-  if (out_h == 1) { /* single row: no vertical filtering */
-    for (k = 0; k < out_w; ++k) dst[k] = tmp[k];
-    return;
-  }
-  if (even) {
-    for (i = 0; i < n_low_y; ++i) {
-      int32_t *r0 = dst + (size_t)(2 * i) * out_w;
-      const int32_t *s0 = tmp + (size_t)(2 * i) * out_w;
-      const int32_t *up = tmp + (size_t)(2 * i - 1 >= 0 ? 2 * i - 1 : 1) * out_w;
-      const int32_t *dn = tmp + (size_t)(2 * i + 1 < out_h ? 2 * i + 1 : 2 * i - 1) * out_w;
-      if (use_avx) tdj_v53_update_even_to_avx2(r0, s0, up, dn, out_w);
-      else for (k = 0; k < out_w; ++k) r0[k] = s0[k] - ((up[k] + dn[k] + 2) >> 2);
-    }
-    for (i = 0; i < n_high_y; ++i) {
-      int32_t *r1 = dst + (size_t)(2 * i + 1) * out_w;
-      const int32_t *s1 = tmp + (size_t)(2 * i + 1) * out_w;
-      const int32_t *up = dst + (size_t)(2 * i) * out_w;
-      const int32_t *dn = dst + (size_t)(2 * i + 2 < out_h ? 2 * i + 2 : 2 * i) * out_w;
-      if (use_avx) tdj_v53_predict_even_to_avx2(r1, s1, up, dn, out_w);
-      else for (k = 0; k < out_w; ++k) r1[k] = s1[k] + ((up[k] + dn[k]) >> 1);
-    }
-  } else {
-    for (i = 0; i < n_low_y; ++i) {
-      int32_t *r0 = dst + (size_t)(2 * i + 1) * out_w;
-      const int32_t *s0 = tmp + (size_t)(2 * i + 1) * out_w;
-      const int32_t *up = tmp + (size_t)(2 * i) * out_w;
-      const int32_t *dn = tmp + (size_t)(2 * i + 2 < out_h ? 2 * i + 2 : 2 * i) * out_w;
-      if (use_avx) tdj_v53_update_even_to_avx2(r0, s0, up, dn, out_w);
-      else for (k = 0; k < out_w; ++k) r0[k] = s0[k] - ((up[k] + dn[k] + 2) >> 2);
-    }
-    for (i = 0; i < n_high_y; ++i) {
-      int32_t *r1 = dst + (size_t)(2 * i) * out_w;
-      const int32_t *s1 = tmp + (size_t)(2 * i) * out_w;
-      const int32_t *up = dst + (size_t)(2 * i - 1 >= 0 ? 2 * i - 1 : 1) * out_w;
-      const int32_t *dn = dst + (size_t)(2 * i + 1 < out_h ? 2 * i + 1 : 2 * i - 1) * out_w;
-      if (use_avx) tdj_v53_predict_even_to_avx2(r1, s1, up, dn, out_w);
-      else for (k = 0; k < out_w; ++k) r1[k] = s1[k] + ((up[k] + dn[k]) >> 1);
-    }
-  }
-}
 
 static void tdj_synth_53_load_row(const tdj_res *res, int row,
                                   const int32_t *ll_src, int ll_stride,
@@ -1698,16 +1619,6 @@ static int tdj_synth_component(tdj_cs *cs, tdj_comp *cp) {
     int ok;
     if (r == 1) {
       tdj_band *b = &cp->res[0].bands[0];
-      {
-        const char *env = getenv("TDJ_DUMP_LL");
-        if (env) {
-          FILE *f = fopen(env, "wb");
-          if (f) {
-            fwrite(b->samples, sizeof(int32_t), (size_t)b->w * b->h, f);
-            fclose(f);
-          }
-        }
-      }
       ok = tdj_synth_res(cp, r, b->samples, b->stride, b->w, b->h, tmp,
                          lcopy, hcopy, cp->recon);
     } else {
@@ -1721,19 +1632,6 @@ static int tdj_synth_component(tdj_cs *cs, tdj_comp *cp) {
       }
     }
     if (!ok) return 0;
-    {
-      const char *env = getenv("TDJ_DUMP_RECON");
-      if (env) {
-        char fn[128];
-        snprintf(fn, sizeof(fn), "%s_res%d.bin", env, r);
-        FILE *f = fopen(fn, "wb");
-        if (f) {
-          fwrite(cp->recon, sizeof(int32_t),
-                 (size_t)cp->res[r].w * cp->res[r].h, f);
-          fclose(f);
-        }
-      }
-    }
   }
   return 1;
 }

@@ -16,6 +16,11 @@
 
 #include "td_internal.h"
 #include "tiny_dng_ljpeg92_v2.h"
+#include "tiny_dng_j2k_enc.h"
+#include "tiny_dng_j2k.h"
+#ifndef TINYDNG_NO_ZIP
+#include "miniz.h"
+#endif
 
 #include <limits.h>
 #include <stdio.h>
@@ -76,8 +81,13 @@ static void td_put32(uint8_t *p, uint32_t v, int be) {
 /* Append serialized bytes to the extras buffer; returns pointer or NULL. */
 static const uint8_t *td_extras_put(td_writer *w, const uint8_t *bytes,
                                     size_t len) {
-  size_t padded = (len + 1u) & ~(size_t)1u; /* word-align */
+  size_t padded;
   const uint8_t *ret;
+  if (len > w->extras_cap) { /* reject oversized payloads */
+    w->failed = 1;
+    return NULL;
+  }
+  padded = (len + 1u) & ~(size_t)1u; /* word-align */
   if (w->extras_len + padded > w->extras_cap) {
     w->failed = 1;
     return NULL;
@@ -130,7 +140,7 @@ static void td_add_shorts(td_writer *w, uint16_t tag, const uint16_t *v,
                           uint32_t n) {
   uint8_t tmp[64];
   uint32_t i;
-  if (n * 2u > sizeof(tmp)) {
+  if (n > 32u) {
     w->failed = 1;
     return;
   }
@@ -144,7 +154,7 @@ static void td_add_longs(td_writer *w, uint16_t tag, const uint32_t *v,
                          uint32_t n) {
   uint8_t tmp[128];
   uint32_t i;
-  if (n * 4u > sizeof(tmp)) {
+  if (n > 32u) {
     w->failed = 1;
     return;
   }
@@ -159,19 +169,45 @@ static void td_add_bytes(td_writer *w, uint16_t tag, const uint8_t *v,
   td_add(w, tag, TD_TYPE_BYTE, n, v, n);
 }
 
+/* Write an ASCII tag. `s` is NUL-terminated; the NUL is included in the
+   emitted value (TIFF ASCII includes the trailing NUL). NULL is emitted
+   as an empty string. Strings longer than 65534 bytes are truncated
+   (TIFF count field is 32-bit, but DICOM/DNG practice limits ASCII
+   strings far smaller; this guards against hostile inputs). */
+static void td_add_ascii(td_writer *w, uint16_t tag, const char *s) {
+  if (s) {
+    uint32_t len = (uint32_t)strlen(s);
+    if (len > 65534u) {
+      /* Truncate but write a NUL terminator so the reader sees a
+       * properly terminated ASCII string. */
+      uint8_t tmp[65535];
+      len = 65534u;
+      memcpy(tmp, s, len);
+      tmp[len] = '\0';
+      td_add(w, tag, TD_TYPE_ASCII, len + 1u, tmp, len + 1u);
+    } else {
+      td_add(w, tag, TD_TYPE_ASCII, len + 1u, (const uint8_t *)s, len + 1u);
+    }
+  } else {
+    td_add(w, tag, TD_TYPE_ASCII, 1u, (const uint8_t *)"", 1u);
+  }
+}
+
 /* Doubles -> SRATIONAL (num/den) with fixed denominator. */
 static void td_add_srationals(td_writer *w, uint16_t tag, const double *v,
                               uint32_t n) {
   uint8_t tmp[128];
   uint32_t i;
   const int32_t den = 1000000;
-  if (n * 8u > sizeof(tmp)) {
+  if (n > 16u) { /* tmp is 128 bytes; each SRATIONAL is 8 bytes */
     w->failed = 1;
     return;
   }
   for (i = 0; i < n; i++) {
-    int32_t num = (int32_t)(v[i] * (double)den);
-    td_put32(tmp + i * 8u, (uint32_t)num, w->big_endian);
+    int64_t scaled = (int64_t)(v[i] * (double)den);
+    if (scaled > INT32_MAX) scaled = INT32_MAX;
+    if (scaled < INT32_MIN) scaled = INT32_MIN;
+    td_put32(tmp + i * 8u, (uint32_t)(int32_t)scaled, w->big_endian);
     td_put32(tmp + i * 8u + 4u, (uint32_t)den, w->big_endian);
   }
   td_add(w, tag, TD_TYPE_SRATIONAL, n, tmp, (size_t)n * 8u);
@@ -182,16 +218,29 @@ static void td_add_rationals(td_writer *w, uint16_t tag, const double *v,
   uint8_t tmp[128];
   uint32_t i;
   const uint32_t den = 1000000u;
-  if (n * 8u > sizeof(tmp)) {
+  if (n > 16u) {
     w->failed = 1;
     return;
   }
   for (i = 0; i < n; i++) {
-    uint32_t num = (uint32_t)(v[i] * (double)den);
+    double scaled = v[i] * (double)den;
+    uint32_t num;
+    if (scaled >= 4294967295.0) num = 0xFFFFFFFFu;
+    else if (scaled <= 0.0) num = 0;
+    else num = (uint32_t)scaled;
     td_put32(tmp + i * 8u, num, w->big_endian);
     td_put32(tmp + i * 8u + 4u, den, w->big_endian);
   }
   td_add(w, tag, TD_TYPE_RATIONAL, n, tmp, (size_t)n * 8u);
+}
+
+/* Write a rational (num/den) from two signed int32 values. */
+static void td_add_rational_i32(td_writer *w, uint16_t tag, int32_t num,
+                                int32_t den) {
+  uint8_t b[8];
+  td_put32(b, (uint32_t)num, w->big_endian);
+  td_put32(b + 4u, (uint32_t)den, w->big_endian);
+  td_add(w, tag, TD_TYPE_RATIONAL, 1u, b, 8u);
 }
 
 static int td_entry_cmp(const void *a, const void *b) {
@@ -556,8 +605,13 @@ tinydng_status tinydng_write_io_memory_take(tinydng_context *ctx,
 /* Reserve `len` zeroed bytes in the extras buffer (even-aligned like
    td_extras_put); returns a writable pointer or NULL (w->failed set). */
 static uint8_t *td_reserve(td_writer *w, size_t len) {
-  size_t padded = (len + 1u) & ~(size_t)1u;
+  size_t padded;
   uint8_t *ret;
+  if (len > w->extras_cap) {
+    w->failed = 1;
+    return NULL;
+  }
+  padded = (len + 1u) & ~(size_t)1u;
   if (w->failed || w->extras_len + padded > w->extras_cap) {
     w->failed = 1;
     return NULL;
@@ -597,6 +651,7 @@ struct tinydng_writer {
   uint32_t width, height;
   uint16_t spp, bps, sfmt, photo;
   uint16_t compression; /* effective: NONE / LZW / NEW_JPEG */
+  float j2k_qstep;      /* JPEG2000 qstep; 0 = lossless */
   int tiled;
   uint32_t tile_width, tile_length;
   uint32_t rows_per_strip;
@@ -858,6 +913,124 @@ static tinydng_status td_writer_put_payload(tinydng_writer *w,
       return TINYDNG_OK;
     }
 
+#ifndef TINYDNG_NO_ZIP
+    case TINYDNG_COMPRESSION_ZIP: {
+      const uint8_t *src = pixels;
+      uint8_t *tmp = NULL;
+      uint8_t *enc;
+      mz_ulong cap, dlen;
+      int mzr;
+      /* mz_ulong is 32-bit on some builds; reject payloads that don't fit. */
+      if (data_size > 0xFFFFFFFFu) {
+        td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, 0, at,
+                     "ZIP payload too large for miniz");
+        return TINYDNG_E_BOUNDS;
+      }
+      if (need_swap) {
+        tmp = (uint8_t *)td_ctx_alloc(w->ctx, data_size, err);
+        if (!tmp) {
+          return TINYDNG_E_OOM;
+        }
+        tdw_swap_copy(tmp, pixels, n_samples, sb);
+        src = tmp;
+      }
+      cap = mz_compressBound((mz_ulong)data_size);
+      if (cap == 0u || cap > SIZE_MAX) {
+        cap = data_size + (data_size / 2u) + 1024u;
+        if (cap < data_size) {
+          cap = SIZE_MAX;
+        }
+      }
+      enc = (uint8_t *)td_ctx_alloc(w->ctx, (size_t)cap, err);
+      if (!enc) {
+        td_ctx_free(w->ctx, tmp);
+        return TINYDNG_E_OOM;
+      }
+      dlen = cap;
+      mzr = mz_compress2(enc, &dlen, src, (mz_ulong)data_size,
+                          6 /* compression level */);
+      td_ctx_free(w->ctx, tmp);
+      if (mzr != MZ_OK) {
+        td_ctx_free(w->ctx, enc);
+        td_set_error(err, TINYDNG_E_INTERNAL, TINYDNG_STAGE_WRITE, 0, 0, at,
+                     "ZIP encode failed");
+        return TINYDNG_E_INTERNAL;
+      }
+      if (w->sink.write(&w->sink, at, enc, (size_t)dlen) != (size_t)dlen) {
+        td_ctx_free(w->ctx, enc);
+        return td_wio_err(&w->sink, at, err);
+      }
+      td_ctx_free(w->ctx, enc);
+      *out_len = (size_t)dlen;
+      return TINYDNG_OK;
+    }
+#endif
+
+    case TINYDNG_COMPRESSION_JPEG2000: {
+      /* Single-tile HTJ2K codestream per payload (DNG Compression=34712).
+         Samples are interleaved, sb bytes each (host byte order). */
+      size_t n = (size_t)pw * ph * (size_t)w->spp;
+      int32_t *px;
+      uint8_t *out = NULL;
+      size_t cap = 0, olen = 0;
+      int bits[8], sgn[8], c, num_decomps, ret;
+      int mct = (w->photo == TD_PHOTO_RGB && w->spp >= 3) ? 1 : 0;
+      if (w->spp > 8u || w->bps < 1u || w->bps > 31u) {
+        td_set_error(err, TINYDNG_E_UNSUPPORTED, TINYDNG_STAGE_WRITE, 0, 0, at,
+                     "JPEG2000 writer requires 1..8 components of 1..31 bits");
+        return TINYDNG_E_UNSUPPORTED;
+      }
+      px = (int32_t *)td_ctx_alloc(w->ctx, n * sizeof(int32_t), err);
+      if (!px) {
+        return TINYDNG_E_OOM;
+      }
+      {
+        const uint8_t *src = (const uint8_t *)pixels;
+        size_t i, k;
+        int host_big = tdw_host_big();
+        for (i = 0; i < n; ++i) {
+          uint32_t v = 0;
+          const uint8_t *sp = src + i * sb;
+          if (host_big) {
+            for (k = 0; k < sb; ++k) v = (v << 8) | sp[k];
+          } else {
+            for (k = sb; k > 0; --k) v = (v << 8) | sp[k - 1];
+          }
+          px[i] = (int32_t)v;
+        }
+      }
+
+      for (c = 0; c < 8; ++c) {
+        bits[c] = (int)w->bps;
+        sgn[c] = (w->sfmt == 2u) ? 1 : 0;
+      }
+      num_decomps = 5;
+      while (num_decomps > 0 &&
+             ((pw >> num_decomps) < 16u || (ph >> num_decomps) < 16u)) {
+        num_decomps--;
+      }
+      {
+        int rev = (w->j2k_qstep <= 0.0f) ? 1 : 0;
+        ret = tdng_j2k_encode(px, (int)pw, (int)ph, (int)w->spp, bits, sgn,
+                              num_decomps, rev, mct, 6, 6, w->j2k_qstep,
+                              &out, &cap, &olen);
+      }
+      td_ctx_free(w->ctx, px);
+      if (ret != TDNG_J2K_OK || !out || olen == 0u) {
+        if (out) free(out);
+        td_set_error(err, TINYDNG_E_INTERNAL, TINYDNG_STAGE_WRITE, 0, 0, at,
+                     "JPEG2000 payload encode failed rc=%d", ret);
+        return TINYDNG_E_INTERNAL;
+      }
+      if (w->sink.write(&w->sink, at, out, olen) != olen) {
+        free(out);
+        return td_wio_err(&w->sink, at, err);
+      }
+      free(out);
+      *out_len = olen;
+      return TINYDNG_OK;
+    }
+
     default:
       td_set_error(err, TINYDNG_E_UNSUPPORTED, TINYDNG_STAGE_WRITE, 0, 0, 0,
                    "unsupported writer compression %u",
@@ -991,6 +1164,8 @@ tinydng_status tinydng_writer_create(tinydng_context *ctx,
     comp = TINYDNG_COMPRESSION_LZW;
   } else if (comp == TINYDNG_COMPRESSION_PACKBITS) {
     comp = TINYDNG_COMPRESSION_PACKBITS;
+  } else if (comp == TINYDNG_COMPRESSION_ZIP) {
+    comp = TINYDNG_COMPRESSION_ZIP;
   } else if (comp == TINYDNG_COMPRESSION_NEW_JPEG ||
              comp == TINYDNG_COMPRESSION_OLD_JPEG) {
     if (bps != 16u) {
@@ -999,6 +1174,8 @@ tinydng_status tinydng_writer_create(tinydng_context *ctx,
       return TINYDNG_E_UNSUPPORTED;
     }
     comp = TINYDNG_COMPRESSION_NEW_JPEG;
+  } else if (comp == TINYDNG_COMPRESSION_JPEG2000) {
+    comp = TINYDNG_COMPRESSION_JPEG2000;
   } else {
     td_set_error(err, TINYDNG_E_UNSUPPORTED, TINYDNG_STAGE_WRITE, 0, 0, 0,
                  "unsupported writer compression %u", (unsigned)comp);
@@ -1031,6 +1208,7 @@ tinydng_status tinydng_writer_create(tinydng_context *ctx,
   w->sfmt = sfmt;
   w->photo = photo;
   w->compression = comp;
+  w->j2k_qstep = opts ? opts->j2k_qstep : 0.0f;
 
   if (tiling && tiling->tile_width > 0u && tiling->tile_length > 0u) {
     if (tiling->tile_width > 0xFFFFu || tiling->tile_length > 0xFFFFu) {
@@ -1156,7 +1334,37 @@ tinydng_status tinydng_writer_create(tinydng_context *ctx,
   if (opts && opts->as_dng) {
     const tinydng_raw_info *raw = meta->raw;
     const tinydng_cfa *cfa = meta->cfa;
+    const tinydng_exif *exif = meta->exif;
     td_add_short(&w->w, TD_TAG_NEW_SUBFILE_TYPE, 0);
+    /* --- EXIF / baseline tags --- */
+    if (exif) {
+      if (exif->make) {
+        td_add_ascii(&w->w, TD_TAG_MAKE, exif->make);
+      }
+      if (exif->model) {
+        td_add_ascii(&w->w, TD_TAG_MODEL, exif->model);
+      }
+      if (exif->software) {
+        td_add_ascii(&w->w, TD_TAG_SOFTWARE, exif->software);
+      }
+      if (exif->datetime) {
+        td_add_ascii(&w->w, TD_TAG_DATETIME, exif->datetime);
+      }
+      if (exif->image_description) {
+        td_add_ascii(&w->w, TD_TAG_IMAGEDESCRIPTION,
+                     exif->image_description);
+      }
+      if (exif->orientation) {
+        td_add_short(&w->w, TD_TAG_ORIENTATION, exif->orientation);
+      }
+      if (exif->has_exposure_time) {
+        td_add_rational_i32(&w->w, TD_TAG_EXPOSURE_TIME,
+                            exif->exposure_time[0], exif->exposure_time[1]);
+      }
+      if (exif->has_iso) {
+        td_add_long(&w->w, TD_TAG_ISO_SPEED_RATINGS, exif->iso);
+      }
+    }
     if (cfa && cfa->present) {
       uint16_t dim[2];
       dim[0] = cfa->pattern_dim[0] ? cfa->pattern_dim[0] : 2u;
@@ -1169,13 +1377,19 @@ tinydng_status tinydng_writer_create(tinydng_context *ctx,
         td_add_bytes(&w->w, TD_TAG_CFA_PLANE_COLOR, cfa->plane_color,
                      cfa->plane_color_count);
       }
+      if (cfa->layout) {
+        td_add_short(&w->w, TD_TAG_CFA_LAYOUT, cfa->layout);
+      }
     }
     if (raw) {
       if (raw->has_dng_version) {
         td_add_bytes(&w->w, TD_TAG_DNG_VERSION, raw->dng_version, 4);
+        /* DNGBackwardVersion mirrors the DNG version per the spec. */
+        td_add_bytes(&w->w, TD_TAG_DNG_BACKWARD_VERSION, raw->dng_version, 4);
       } else {
         uint8_t ver[4] = {1u, 4u, 0u, 0u};
         td_add_bytes(&w->w, TD_TAG_DNG_VERSION, ver, 4);
+        td_add_bytes(&w->w, TD_TAG_DNG_BACKWARD_VERSION, ver, 4);
       }
       if (raw->black_level_present) {
         uint32_t bl[4];
@@ -1203,6 +1417,93 @@ tinydng_status tinydng_writer_create(tinydng_context *ctx,
         td_add_short(&w->w, TD_TAG_CALIBRATION_ILLUMINANT1,
                      raw->calibration_illuminant1);
       }
+      if (raw->calibration_illuminant2) {
+        td_add_short(&w->w, TD_TAG_CALIBRATION_ILLUMINANT2,
+                     raw->calibration_illuminant2);
+      }
+      /* Forward matrices: emit if any non-zero value is present. */
+      {
+        int i;
+        for (i = 0; i < 9; i++) {
+          if (raw->forward_matrix1[i] != 0.0) {
+            break;
+          }
+        }
+        if (i < 9) {
+          td_add_srationals(&w->w, TD_TAG_FORWARD_MATRIX1,
+                            raw->forward_matrix1, 9);
+        }
+        for (i = 0; i < 9; i++) {
+          if (raw->forward_matrix2[i] != 0.0) {
+            break;
+          }
+        }
+        if (i < 9) {
+          td_add_srationals(&w->w, TD_TAG_FORWARD_MATRIX2,
+                            raw->forward_matrix2, 9);
+        }
+      }
+      /* Camera Calibration matrices: calibration1 shares the
+         camera_calibration_present flag; calibration2 is emitted if
+         any non-zero value is present. */
+      if (raw->camera_calibration_present) {
+        td_add_srationals(&w->w, TD_TAG_CAMERA_CALIBRATION1,
+                          raw->camera_calibration1, 9);
+      }
+      {
+        int i;
+        for (i = 0; i < 9; i++) {
+          if (raw->camera_calibration2[i] != 0.0) {
+            break;
+          }
+        }
+        if (i < 9) {
+          td_add_srationals(&w->w, TD_TAG_CAMERA_CALIBRATION2,
+                            raw->camera_calibration2, 9);
+        }
+      }
+      if (raw->has_analog_balance) {
+        td_add_srationals(&w->w, TD_TAG_ANALOG_BALANCE,
+                          raw->analog_balance, 3);
+      }
+      if (raw->has_active_area) {
+        td_add_longs(&w->w, TD_TAG_ACTIVE_AREA, raw->active_area, 4);
+      }
+      if (raw->has_default_black_render) {
+        td_add_short(&w->w, TD_TAG_DEFAULT_BLACK_RENDER,
+                     raw->default_black_render);
+      }
+      if (raw->profile_name) {
+        td_add_ascii(&w->w, TD_TAG_PROFILE_NAME, raw->profile_name);
+      }
+      if (raw->semantic_name) {
+        td_add_ascii(&w->w, TD_TAG_SEMANTIC_NAME, raw->semantic_name);
+      }
+      if (raw->has_cr2_slices) {
+        uint16_t s[3];
+        s[0] = raw->cr2_slices[0];
+        s[1] = raw->cr2_slices[1];
+        s[2] = raw->cr2_slices[2];
+        td_add_shorts(&w->w, TD_TAG_CR2_SLICES, s, 3);
+      }
+    }
+    if (raw && raw->profile_tone_curve_count) {
+      double doubles[64];
+      uint32_t i, n = raw->profile_tone_curve_count;
+      if (n > 64u) n = 64u;
+      for (i = 0; i < n; i++) {
+        doubles[i] = raw->profile_tone_curve[i];
+      }
+      td_add_rationals(&w->w, TD_TAG_PROFILE_TONE_CURVE, doubles, n);
+    }
+    if (raw && raw->noise_profile_count) {
+      double doubles[8];
+      uint32_t i, n = raw->noise_profile_count;
+      if (n > 8u) n = 8u;
+      for (i = 0; i < n; i++) {
+        doubles[i] = raw->noise_profile[i];
+      }
+      td_add_rationals(&w->w, TD_TAG_NOISE_PROFILE, doubles, n);
     }
   }
 

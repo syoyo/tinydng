@@ -577,8 +577,9 @@ static int test_real_corpus(const char *root) {
     meta.samples_per_pixel = img->samples_per_pixel;
     meta.bits_per_sample = px.bits_per_sample;
     meta.sample_format = TINYDNG_SAMPLEFORMAT_UINT;
-    meta.cfa = &img->cfa;
-    meta.raw = &img->raw;
+    meta.cfa = tinydng_image_cfa(img);
+    meta.raw = tinydng_image_raw_info(img);
+    meta.exif = tinydng_document_exif(src_doc);
     memset(&opts, 0, sizeof(opts));
     opts.as_dng = 1;
     opts.compression = TINYDNG_COMPRESSION_NEW_JPEG;
@@ -682,6 +683,12 @@ int main(int argc, char **argv) {
   CHECK(r, "tiled uncompressed DNG BE");
   r = test_tiled(TINYDNG_COMPRESSION_PACKBITS, 0, 0, NULL, NULL);
   CHECK(r, "tiled PackBits LE");
+  r = test_tiled(TINYDNG_COMPRESSION_ZIP, 0, 0, NULL, NULL);
+  CHECK(r, "tiled ZIP LE");
+  r = test_tiled(TINYDNG_COMPRESSION_ZIP, 1, 0, NULL, NULL);
+  CHECK(r, "tiled ZIP BE");
+  r = test_tiled(TINYDNG_COMPRESSION_ZIP, 0, 1, NULL, NULL);
+  CHECK(r, "tiled ZIP DNG");
 
   /* multi-strip round-trips */
   r = test_strips(TINYDNG_COMPRESSION_NONE, 0, 4);
@@ -694,6 +701,8 @@ int main(int argc, char **argv) {
   CHECK(r, "strips LJPEG single-row");
   r = test_strips(TINYDNG_COMPRESSION_PACKBITS, 1, 5);
   CHECK(r, "strips PackBits BE (rps=5)");
+  r = test_strips(TINYDNG_COMPRESSION_ZIP, 0, 4);
+  CHECK(r, "strips ZIP (rps=4)");
 
   /* write_memory byte parity */
   r = test_memory_parity(TINYDNG_COMPRESSION_NONE, 0, 0);
@@ -708,6 +717,10 @@ int main(int argc, char **argv) {
   CHECK(r, "write_memory parity: none DNG");
   r = test_memory_parity(TINYDNG_COMPRESSION_PACKBITS, 1, 0);
   CHECK(r, "write_memory parity: packbits BE");
+  r = test_memory_parity(TINYDNG_COMPRESSION_ZIP, 0, 0);
+  CHECK(r, "write_memory parity: zip");
+  r = test_memory_parity(TINYDNG_COMPRESSION_ZIP, 1, 1);
+  CHECK(r, "write_memory parity: zip BE DNG");
 
   /* write_file */
   r = test_write_file(TINYDNG_COMPRESSION_LZW);
@@ -716,6 +729,8 @@ int main(int argc, char **argv) {
   CHECK(r, "write_file LJPEG round-trip");
   r = test_write_file(TINYDNG_COMPRESSION_PACKBITS);
   CHECK(r, "write_file PackBits round-trip");
+  r = test_write_file(TINYDNG_COMPRESSION_ZIP);
+  CHECK(r, "write_file ZIP round-trip");
 
   r = test_real_corpus(root);
   CHECK(r, "real corpus streaming round-trip");

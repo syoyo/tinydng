@@ -29,10 +29,9 @@ static char *td_read_ascii(tinydng_context *ctx, const td_reader *r,
     memcpy(str, p, n);
   }
   str[n] = '\0';
-  /* Trim a single trailing NUL that TIFF ASCII counts include. */
-  if (n > 0u && str[n - 1u] == '\0') {
-    /* already terminated */
-  }
+  /* TIFF ASCII count includes the trailing NUL; str[n]='\0' above
+     guarantees termination. If the data's last byte is also NUL, strlen
+     returns n-1 (the string content). */
   return str;
 }
 

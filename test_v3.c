@@ -60,6 +60,8 @@ int main(int argc, char **argv) {
 
   for (i = 0; i < n; i++) {
     const tinydng_image_info *img = tinydng_image_get(doc, i);
+    const tinydng_raw_info *ri = tinydng_image_raw_info(img);
+    const tinydng_cfa *cf = tinydng_image_cfa(img);
     printf("--- image %zu ---\n", i);
     printf("  %ux%u spp=%u bps=%u comp=%u sfmt=%u pred=%u planar=%u\n",
            img->width, img->height, img->samples_per_pixel,
@@ -67,59 +69,67 @@ int main(int argc, char **argv) {
            img->predictor, img->planar_configuration);
     printf("  tile=%ux%u rows_per_strip=%u segments=%zu\n", img->tile_width,
            img->tile_length, img->rows_per_strip, img->segment_count);
-    if (img->raw.has_dng_version) {
-      printf("  dng_version=%u.%u.%u.%u\n", img->raw.dng_version[0],
-             img->raw.dng_version[1], img->raw.dng_version[2],
-             img->raw.dng_version[3]);
+    if (ri->has_dng_version) {
+      printf("  dng_version=%u.%u.%u.%u\n", ri->dng_version[0],
+             ri->dng_version[1], ri->dng_version[2],
+             ri->dng_version[3]);
     }
-    if (img->raw.black_level_present) {
-      printf("  black_level=%d white_level=%d\n", img->raw.black_level[0],
-             img->raw.white_level[0]);
+    if (ri->black_level_present) {
+      printf("  black_level=%d white_level=%d\n", ri->black_level[0],
+             ri->white_level[0]);
     }
-    if (img->cfa.present) {
+    if (cf->present) {
       printf("  cfa dim=%ux%u pattern=[%u %u %u %u] size=%u\n",
-             img->cfa.pattern_dim[0], img->cfa.pattern_dim[1],
-             img->cfa.pattern[0], img->cfa.pattern[1], img->cfa.pattern[2],
-             img->cfa.pattern[3], img->cfa.pattern_size);
+             cf->pattern_dim[0], cf->pattern_dim[1],
+             cf->pattern[0], cf->pattern[1], cf->pattern[2],
+             cf->pattern[3], cf->pattern_size);
     }
-    if (img->raw.color_matrix_present) {
+    if (ri->color_matrix_present) {
       printf("  color_matrix1[0..2]=%.4f %.4f %.4f\n",
-             img->raw.color_matrix1[0], img->raw.color_matrix1[1],
-             img->raw.color_matrix1[2]);
+             ri->color_matrix1[0], ri->color_matrix1[1],
+             ri->color_matrix1[2]);
     }
-    if (img->exif.has_iso || img->exif.has_exposure_time ||
-        img->exif.has_aperture_value) {
+    if (i == 0) {
+      const tinydng_exif *dexif = tinydng_document_exif(doc);
+      if (dexif && (dexif->has_iso || dexif->has_exposure_time ||
+                    dexif->has_aperture_value)) {
+        printf("  exif iso=%u exposure=%d/%d aperture=%d/%d\n", dexif->iso,
+               dexif->exposure_time[0], dexif->exposure_time[1],
+               dexif->aperture_value[0], dexif->aperture_value[1]);
+      }
+    } else if (img->exif.has_iso || img->exif.has_exposure_time ||
+               img->exif.has_aperture_value) {
       printf("  exif iso=%u exposure=%d/%d aperture=%d/%d\n", img->exif.iso,
              img->exif.exposure_time[0], img->exif.exposure_time[1],
              img->exif.aperture_value[0], img->exif.aperture_value[1]);
     }
-    if (img->raw.opcode_count) {
+    if (ri->opcode_count) {
       size_t oi;
       printf("  opcodes=%zu (warps=%zu vignettes=%zu gainmaps=%zu)\n",
-             img->raw.opcode_count, img->raw.warp_count,
-             img->raw.vignette_count, img->raw.gainmap_count);
-      for (oi = 0; oi < img->raw.opcode_count; oi++) {
-        const tinydng_opcode *op = &img->raw.opcodes[oi];
+             ri->opcode_count, ri->warp_count,
+             ri->vignette_count, ri->gainmap_count);
+      for (oi = 0; oi < ri->opcode_count; oi++) {
+        const tinydng_opcode *op = &ri->opcodes[oi];
         printf("    op[%zu] list%u id=%u ver=%u flags=%u params=%zuB\n", oi,
                op->list, op->id, op->version, op->flags, op->params_size);
       }
-      if (img->raw.warp_count) {
-        const tinydng_warp_rectilinear *wp = &img->raw.warps[0];
+      if (ri->warp_count) {
+        const tinydng_warp_rectilinear *wp = &ri->warps[0];
         printf("    warp[0] planes=%u kr0=%.5f kr1=%.5f center=(%.3f,%.3f)\n",
                wp->plane_count, wp->coeff[0][0], wp->coeff[0][1],
                wp->center[0], wp->center[1]);
       }
-      if (img->raw.vignette_count) {
-        const tinydng_vignette_radial *vg = &img->raw.vignettes[0];
+      if (ri->vignette_count) {
+        const tinydng_vignette_radial *vg = &ri->vignettes[0];
         printf("    vignette[0] k0=%.5f k1=%.5f center=(%.3f,%.3f)\n", vg->k[0],
                vg->k[1], vg->center[0], vg->center[1]);
       }
     }
-    if (img->raw.gainmap_count) {
+    if (ri->gainmap_count) {
       size_t gi;
-      printf("  gainmaps=%zu\n", img->raw.gainmap_count);
-      for (gi = 0; gi < img->raw.gainmap_count; gi++) {
-        const tinydng_gainmap *gm = &img->raw.gainmaps[gi];
+      printf("  gainmaps=%zu\n", ri->gainmap_count);
+      for (gi = 0; gi < ri->gainmap_count; gi++) {
+        const tinydng_gainmap *gm = &ri->gainmaps[gi];
         printf("    [%zu] list%u rect=(%u,%u,%u,%u) plane=%u/%u map=%ux%ux%u "
                "pixels=%zu\n",
                gi, gm->opcode_list, gm->top, gm->left, gm->bottom, gm->right,

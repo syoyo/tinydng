@@ -1331,6 +1331,12 @@ tinydng_status tinydng_open_io(tinydng_context *ctx, tinydng_io io,
     goto done;
   }
 
+  /* Promote IFD0's document-level EXIF into doc->global_exif and clear the
+     per-image copy so tinydng_document_destroy() does not double-free. */
+  doc->global_exif = doc->images[0].exif;
+  memset(&doc->images[0].exif, 0, sizeof(tinydng_exif));
+  doc->has_global_exif = 1;
+
   st = TINYDNG_OK;
 
 done:

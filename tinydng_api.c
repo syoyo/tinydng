@@ -645,10 +645,22 @@ const tinydng_psd_info *tinydng_document_psd(const tinydng_document *doc) {
 }
 
 const tinydng_exif *tinydng_document_exif(const tinydng_document *doc) {
-  if (!doc || doc->image_count == 0u) {
+  if (!doc || !doc->has_global_exif) {
     return NULL;
   }
-  return &doc->images[0].exif; /* IFD0 EXIF */
+  return &doc->global_exif;
+}
+
+const tinydng_exif *tinydng_image_exif(const tinydng_image_info *img) {
+  return img ? &img->exif : NULL;
+}
+
+const tinydng_cfa *tinydng_image_cfa(const tinydng_image_info *img) {
+  return img ? &img->cfa : NULL;
+}
+
+const tinydng_raw_info *tinydng_image_raw_info(const tinydng_image_info *img) {
+  return img ? &img->raw : NULL;
 }
 
 size_t tinydng_image_segment_count(const tinydng_image_info *img) {
