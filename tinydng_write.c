@@ -636,6 +636,8 @@ struct tinydng_writer {
   td_writer w;
   uint64_t data_pos;
   int finished;
+  /* Cached LZW encoder hash table (reused across tiles). */
+  td_lzw_table lzw_tbl;
 };
 
 static tinydng_status td_wio_err(tinydng_write_io *sink, uint64_t at,
@@ -757,11 +759,8 @@ static tinydng_status td_writer_put_payload(tinydng_writer *w,
       const uint8_t *src = pixels;
       uint8_t *tmp = NULL;
       uint8_t *enc;
-      td_lzw_table tbl;
       size_t cap;
       long n;
-      tbl.keys = NULL;
-      tbl.codes = NULL;
       if (need_swap) {
         tmp = (uint8_t *)td_ctx_alloc(w->ctx, data_size, err);
         if (!tmp) {
@@ -778,20 +777,28 @@ static tinydng_status td_writer_put_payload(tinydng_writer *w,
         return TINYDNG_E_BOUNDS;
       }
       enc = (uint8_t *)td_ctx_alloc(w->ctx, cap, err);
-      tbl.keys = (uint32_t *)td_ctx_alloc(
-          w->ctx, (size_t)TD_LZW_HASH_SIZE * sizeof(*tbl.keys), err);
-      tbl.codes = (uint16_t *)td_ctx_alloc(
-          w->ctx, (size_t)TD_LZW_HASH_SIZE * sizeof(*tbl.codes), err);
-      if (!enc || !tbl.keys || !tbl.codes) {
+      if (!enc) {
         td_ctx_free(w->ctx, tmp);
-        td_ctx_free(w->ctx, enc);
-        td_ctx_free(w->ctx, tbl.keys);
-        td_ctx_free(w->ctx, tbl.codes);
         return TINYDNG_E_OOM;
       }
-      n = td_lzw_encode(src, data_size, enc, cap, &tbl);
-      td_ctx_free(w->ctx, tbl.keys);
-      td_ctx_free(w->ctx, tbl.codes);
+      /* Use the pre-allocated hash table cached in the writer, falling back
+         to per-call allocation for writers that don't cache it. */
+      if (!w->lzw_tbl.keys) {
+        w->lzw_tbl.keys = (uint32_t *)td_ctx_alloc(
+            w->ctx, (size_t)TD_LZW_HASH_SIZE * sizeof(*w->lzw_tbl.keys), err);
+        w->lzw_tbl.codes = (uint16_t *)td_ctx_alloc(
+            w->ctx, (size_t)TD_LZW_HASH_SIZE * sizeof(*w->lzw_tbl.codes), err);
+        if (!w->lzw_tbl.keys || !w->lzw_tbl.codes) {
+          td_ctx_free(w->ctx, tmp);
+          td_ctx_free(w->ctx, enc);
+          td_ctx_free(w->ctx, w->lzw_tbl.keys);
+          td_ctx_free(w->ctx, w->lzw_tbl.codes);
+          w->lzw_tbl.keys = NULL;
+          w->lzw_tbl.codes = NULL;
+          return TINYDNG_E_OOM;
+        }
+      }
+      n = td_lzw_encode(src, data_size, enc, cap, &w->lzw_tbl);
       td_ctx_free(w->ctx, tmp);
       if (n < 0) {
         td_ctx_free(w->ctx, enc);
@@ -1320,6 +1327,22 @@ tinydng_status tinydng_writer_create(tinydng_context *ctx,
     td_ctx_free(ctx, w);
     return st;
   }
+  /* Pre-allocate the LZW hash table if LZW compression is selected so it can
+     be reused across strips/tiles without repeated alloc/free. */
+  if (comp == TINYDNG_COMPRESSION_LZW) {
+    w->lzw_tbl.keys = (uint32_t *)td_ctx_alloc(
+        ctx, (size_t)TD_LZW_HASH_SIZE * sizeof(uint32_t), err);
+    w->lzw_tbl.codes = (uint16_t *)td_ctx_alloc(
+        ctx, (size_t)TD_LZW_HASH_SIZE * sizeof(uint16_t), err);
+    if (!w->lzw_tbl.keys || !w->lzw_tbl.codes) {
+      td_ctx_free(ctx, w->lzw_tbl.keys);
+      td_ctx_free(ctx, w->lzw_tbl.codes);
+      td_ctx_free(ctx, w->w.extras);
+      td_ctx_free(ctx, w->segs);
+      td_ctx_free(ctx, w);
+      return TINYDNG_E_OOM;
+    }
+  }
   w->data_pos = w->bigtiff ? 16u : 8u;
   *out = w;
   return TINYDNG_OK;
@@ -1573,6 +1596,8 @@ tinydng_status tinydng_writer_finish(tinydng_writer *w, tinydng_error *err) {
 cleanup:
   td_ctx_free(w->ctx, w->w.extras);
   td_ctx_free(w->ctx, w->segs);
+  td_ctx_free(w->ctx, w->lzw_tbl.keys);
+  td_ctx_free(w->ctx, w->lzw_tbl.codes);
   w->finished = 1;
   td_ctx_free(w->ctx, w);
   return st;

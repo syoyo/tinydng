@@ -137,16 +137,25 @@ static void td_unpredict_h(uint8_t *buf, uint32_t w, uint32_t h, uint16_t spp,
               (uint8_t)(p[(size_t)x * spp + c] + p[((size_t)x - 1) * spp + c]);
         }
       } else if (bytes == 2u) {
-        uint16_t *p = (uint16_t *)buf + base;
+        /* Alignment-safe: work in byte offsets, read/write via memcpy. */
         for (x = 1; x < w; x++) {
-          p[(size_t)x * spp + c] =
-              (uint16_t)(p[(size_t)x * spp + c] + p[((size_t)x - 1) * spp + c]);
+          size_t off_c = ((size_t)base + (size_t)x * spp + c) * 2u;
+          size_t off_p = ((size_t)base + ((size_t)x - 1) * spp + c) * 2u;
+          uint16_t cur, prev;
+          memcpy(&cur, buf + off_c, 2);
+          memcpy(&prev, buf + off_p, 2);
+          cur = (uint16_t)(cur + prev);
+          memcpy(buf + off_c, &cur, 2);
         }
       } else if (bytes == 4u) {
-        uint32_t *p = (uint32_t *)buf + base;
         for (x = 1; x < w; x++) {
-          p[(size_t)x * spp + c] =
-              p[(size_t)x * spp + c] + p[((size_t)x - 1) * spp + c];
+          size_t off_c = ((size_t)base + (size_t)x * spp + c) * 4u;
+          size_t off_p = ((size_t)base + ((size_t)x - 1) * spp + c) * 4u;
+          uint32_t cur, prev;
+          memcpy(&cur, buf + off_c, 4);
+          memcpy(&prev, buf + off_p, 4);
+          cur = cur + prev;
+          memcpy(buf + off_c, &cur, 4);
         }
       }
     }

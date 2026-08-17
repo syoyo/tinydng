@@ -535,18 +535,69 @@ void td_ctx_free_all(tinydng_context *ctx) {
 
 void *td_ctx_realloc(tinydng_context *ctx, void *ptr, size_t old_size,
                      size_t new_size, tinydng_error *err) {
+  /* To avoid a transient 2× memory spike (old + new both live), temporarily
+     discount the old allocation from memory_used before the new allocation,
+     then let td_ctx_free re-subtract it after the copy.  This keeps the
+     allocator's accounting accurate while allowing grows that would
+     otherwise fail the cap check. */
+  td_alloc_header *h = NULL;
+  td_mutex *L;
   void *np;
+  size_t copy;
   if (!ctx) {
     return NULL;
   }
+  L = ctx->mt_active ? ctx->lock : NULL;
+  /* Validate old pointer. */
+  if (ptr && old_size > 0u) {
+    h = ((td_alloc_header *)ptr) - 1;
+    td_mutex_lock(L);
+    if (h->magic != TINYDNG_ALLOC_MAGIC || h->size != old_size) {
+      td_mutex_unlock(L);
+      td_set_error(err, TINYDNG_E_INTERNAL, TINYDNG_STAGE_ALLOC, 0, 0, 0,
+                   "td_ctx_realloc: invalid old block");
+      return NULL;
+    }
+    /* Temporarily discount old allocation from accounting. */
+    if (ctx->memory_used >= h->size) {
+      ctx->memory_used -= h->size;
+    } else {
+      ctx->memory_used = 0;
+    }
+    td_mutex_unlock(L);
+  }
   np = td_ctx_alloc(ctx, new_size, err);
   if (!np) {
+    /* Restore accounting if we discounted above. */
+    if (h) {
+      td_mutex_lock(L);
+      ctx->memory_used += old_size;
+      td_mutex_unlock(L);
+    }
     return NULL;
   }
-  if (ptr && old_size > 0u) {
-    size_t copy = old_size < new_size ? old_size : new_size;
+  if (h) {
+    copy = old_size < new_size ? old_size : new_size;
     memcpy(np, ptr, copy);
-    td_ctx_free(ctx, ptr);
+    /* Unlink the old header and free the raw block, restoring the
+       memory_used accounting (re-subtracting old_size). */
+    td_mutex_lock(L);
+    if (h->prev) {
+      h->prev->next = h->next;
+    } else {
+      ctx->alloc_head = h->next;
+    }
+    if (h->next) {
+      h->next->prev = h->prev;
+    }
+    if (ctx->memory_used >= h->size) {
+      ctx->memory_used -= h->size;
+    } else {
+      ctx->memory_used = 0;
+    }
+    h->magic = 0;
+    ctx->allocator.free(ctx->allocator.user_data, h);
+    td_mutex_unlock(L);
   }
   return np;
 }

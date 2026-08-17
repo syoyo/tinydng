@@ -1213,15 +1213,26 @@ tinydng_status tinydng_open_io(tinydng_context *ctx, tinydng_io io,
   doc->bigtiff = r.bigtiff;
   r.io = &doc->io;
 
-  /* BFS over IFDs. */
+  /* BFS over IFDs.  The visited set uses an open-addressing hash table
+     (FNV-1a + linear probing) for O(1) duplicate checks instead of the
+     previous O(n) linear scan. */
   qcap = 16;
   queue = (td_ifd_ref *)td_ctx_alloc(ctx, qcap * sizeof(td_ifd_ref), err);
-  vcap = 16;
+  vcap = 16; /* hash table capacity (power of 2, min 16) */
   visited = (uint64_t *)td_ctx_alloc(ctx, vcap * sizeof(uint64_t), err);
   if (!queue || !visited) {
     st = TINYDNG_E_OOM;
     goto done;
   }
+  /* Initialize hash table: 0 means empty slot (IFD offset 0 is invalid). */
+  {
+    size_t ii;
+    for (ii = 0; ii < vcap; ii++) {
+      visited[ii] = 0;
+    }
+  }
+  vcount = 0; /* number of occupied slots */
+
   if (first_ifd != 0u) {
     queue[qtail].off = first_ifd;
     queue[qtail].depth = 0;
@@ -1234,30 +1245,63 @@ tinydng_status tinydng_open_io(tinydng_context *ctx, tinydng_io io,
     tinydng_image_info tmp;
     uint64_t next_ifd = 0;
     size_t k;
-    int seen = 0;
 
     if (ref.off == 0u || ref.off >= r.size) {
       continue;
     }
-    for (k = 0; k < vcount; k++) {
-      if (visited[k] == ref.off) {
-        seen = 1;
-        break;
+    /* Hash-table lookup: FNV-1a hash → open-address with linear probing. */
+    {
+      uint64_t fnv = ref.off;
+      size_t mask = vcap - 1u;
+      size_t idx = (size_t)((fnv ^ (fnv >> 33)) * 0xff51afd7ed558ccdu) & mask;
+      int seen = 0;
+      while (visited[idx] != 0u) {
+        if (visited[idx] == ref.off) {
+          seen = 1;
+          break;
+        }
+        idx = (idx + 1u) & mask;
       }
-    }
-    if (seen) {
-      continue;
-    }
-    if (vcount == vcap) {
-      uint64_t *nv =
-          (uint64_t *)td_grow_array(ctx, visited, &vcap, sizeof(uint64_t), err);
-      if (!nv) {
-        st = TINYDNG_E_OOM;
-        goto done;
+      if (seen) {
+        continue;
       }
-      visited = nv;
+      /* Insert into hash table; grow if load > 75%. */
+      if (vcount * 4u >= vcap * 3u) {
+        size_t new_cap = vcap * 2u;
+        uint64_t *nv = (uint64_t *)td_ctx_alloc(
+            ctx, new_cap * sizeof(uint64_t), err);
+        size_t jj;
+        if (!nv) {
+          st = TINYDNG_E_OOM;
+          goto done;
+        }
+        for (jj = 0; jj < new_cap; jj++) {
+          nv[jj] = 0;
+        }
+        /* Re-insert all existing entries. */
+        for (jj = 0; jj < vcap; jj++) {
+          if (visited[jj] != 0u) {
+            uint64_t rv = visited[jj];
+            size_t rm = new_cap - 1u;
+            size_t ri = (size_t)((rv ^ (rv >> 33)) * 0xff51afd7ed558ccdu) & rm;
+            while (nv[ri] != 0u) {
+              ri = (ri + 1u) & rm;
+            }
+            nv[ri] = rv;
+          }
+        }
+        td_ctx_free(ctx, visited);
+        visited = nv;
+        vcap = new_cap;
+        mask = vcap - 1u;
+        idx = (size_t)((fnv ^ (fnv >> 33)) * 0xff51afd7ed558ccdu) & mask;
+        while (visited[idx] != 0u) {
+          idx = (idx + 1u) & mask;
+        }
+      }
+      visited[idx] = ref.off;
+      vcount++;
     }
-    visited[vcount++] = ref.off;
 
     if (ifd_seq >= ctx->max_images) {
       td_set_error(err, TINYDNG_E_UNSUPPORTED, TINYDNG_STAGE_IFD, ifd_seq, 0,
