@@ -306,7 +306,12 @@ int td_psd_unpredict_plane(tinydng_context *ctx, uint8_t *plane, uint32_t w,
     return 1;
   }
   if (depth == 16u) {
-    size_t row = (size_t)w * 2u;
+    size_t row;
+    if (!td_safe_mul_size((size_t)w, 2u, &row)) {
+      td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0, 0,
+                   "PSD: 16-bit row size overflow");
+      return 0;
+    }
     for (y = 0; y < h; y++) {
       uint8_t *p = plane + (size_t)y * row;
       uint32_t x;
@@ -322,7 +327,12 @@ int td_psd_unpredict_plane(tinydng_context *ctx, uint8_t *plane, uint32_t w,
     return 1;
   }
   if (depth == 32u) {
-    size_t row = (size_t)w * 4u;
+    size_t row;
+    if (!td_safe_mul_size((size_t)w, 4u, &row)) {
+      td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0, 0,
+                   "PSD: 32-bit row size overflow");
+      return 0;
+    }
     uint8_t *tmp = (uint8_t *)td_ctx_alloc(ctx, row, err);
     if (!tmp) {
       return 0;
@@ -526,7 +536,7 @@ static tinydng_status td_psd_parse_color_mode(tinydng_context *ctx,
   if (len > 0u) {
     psd->color_mode_data = td_psd_read_copy(ctx, r, at + 4u, len, err);
     if (!psd->color_mode_data) {
-      return err->status ? err->status : TINYDNG_E_OOM;
+      return td_error_status_or(err, TINYDNG_E_OOM);
     }
     psd->color_mode_data_size = len;
   }
@@ -884,7 +894,7 @@ static tinydng_status td_psd_parse_layer_records(tinydng_context *ctx,
 
       if (!td_psd_read_pascal(ctx, r, p, extra_end, 4u, &L->name, &name_adv,
                               err)) {
-        return err->status ? err->status : TINYDNG_E_PARSE;
+        return td_error_status_or(err, TINYDNG_E_PARSE);
       }
       p += name_adv;
 
@@ -1061,7 +1071,7 @@ static int td_psd_is_link_key(uint32_t key) {
 static uint64_t td_psd_scan_magic(const td_reader *r, uint64_t from,
                                   uint64_t limit) {
   uint64_t p;
-  for (p = from; p + 4u <= limit; p++) {
+  for (p = from; p < limit && limit - p >= 4u; p++) {
     uint8_t b4[4];
     const uint8_t *v = td_io_view(r->io, r->size, p, 4u, b4, sizeof(b4));
     if (!v) {
@@ -1085,7 +1095,10 @@ static tinydng_status td_psd_parse_link_block(tinydng_context *ctx,
                                               const tinydng_psd_block *blk,
                                               tinydng_error *err) {
   uint64_t cur = blk->offset;
-  uint64_t end = blk->offset + blk->length;
+  uint64_t end;
+  if (!td_safe_add_u64(blk->offset, blk->length, &end)) {
+    return TINYDNG_E_BOUNDS;
+  }
   size_t cap = psd->smart_object_count;
 
   while (end - cur >= 8u && cur < end) {
@@ -1100,11 +1113,14 @@ static tinydng_status td_psd_parse_link_block(tinydng_context *ctx,
     if (!td_r_u64(r, cur, &entry_len)) {
       break;
     }
-    if (entry_len < 8u || entry_len > end - (cur + 8u)) {
+    if (entry_len < 8u || cur > end || end - cur < 8u ||
+        entry_len > end - cur - 8u) {
       break;
     }
     p = cur + 8u;
-    entry_end = p + entry_len;
+    if (!td_safe_add_u64(p, entry_len, &entry_end)) {
+      break;
+    }
 
     if (!td_r_u32(r, p, &kind)) {
       break;
@@ -1380,8 +1396,16 @@ static tinydng_status td_psd_build_composite(tinydng_context *ctx,
   img->planar_configuration = (channels > 1u) ? 2u : 1u;
   img->predictor = 1u;
 
-  row_bytes = ((uint64_t)psd->width * psd->depth + 7u) / 8u;
-  plane_bytes = row_bytes * (uint64_t)psd->height; /* fits: pixels capped */
+  {
+    uint64_t bits;
+    if (!td_safe_mul_u64((uint64_t)psd->width, psd->depth, &bits)) {
+      return TINYDNG_E_BOUNDS;
+    }
+    row_bytes = bits / 8u + ((bits % 8u) != 0u);
+    if (!td_safe_mul_u64(row_bytes, (uint64_t)psd->height, &plane_bytes)) {
+      return TINYDNG_E_BOUNDS;
+    }
+  }
 
   if (comp == TINYDNG_PSD_COMP_RAW) {
     tinydng_segment *segs;
@@ -1389,6 +1413,15 @@ static tinydng_status td_psd_build_composite(tinydng_context *ctx,
     size_t bytes;
     img->compression = TINYDNG_COMPRESSION_NONE;
     img->rows_per_strip = psd->height;
+    if (at > r->size - 2u ||
+        (channels != 0u && plane_bytes >
+         (r->size - (at + 2u)) / (uint64_t)channels)) {
+      td_ctx_free(ctx, doc->images);
+      doc->images = NULL;
+      doc->image_count = 0;
+      psd->has_composite = 0;
+      return TINYDNG_OK;
+    }
     if (!td_safe_mul_size((size_t)channels, sizeof(tinydng_segment),
                           &bytes)) {
       return TINYDNG_E_BOUNDS;
@@ -1445,7 +1478,7 @@ static tinydng_status td_psd_build_composite(tinydng_context *ctx,
     }
     table = td_psd_read_copy(ctx, r, at + 2u, ebytes, err);
     if (!table) {
-      return err->status ? err->status : TINYDNG_E_OOM;
+      return td_error_status_or(err, TINYDNG_E_OOM);
     }
     segs = (tinydng_segment *)td_ctx_calloc(ctx, seg_bytes, err);
     if (!segs) {
@@ -1599,7 +1632,7 @@ tinydng_status tinydng_psd_read_block(tinydng_context *ctx,
     buf = td_psd_read_copy(ctx, &r, offset, (size_t)length, err);
   }
   if (!buf) {
-    return err->status ? err->status : TINYDNG_E_OOM;
+    return td_error_status_or(err, TINYDNG_E_OOM);
   }
   *out_data = buf;
   *out_size = (size_t)length;
@@ -1643,7 +1676,15 @@ static uint8_t *td_psd_load_plane(tinydng_context *ctx,
   r.big_endian = 1;
   (void)is_psb; /* only consulted on the RLE (PackBits) path */
 
-  row_bytes = ((size_t)w * depth + 7u) / 8u;
+  {
+    size_t bits;
+    if (!td_safe_mul_size((size_t)w, (size_t)depth, &bits)) {
+      td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0, 0,
+                   "PSD: channel row size overflow");
+      return NULL;
+    }
+    row_bytes = bits / 8u + ((bits % 8u) != 0u);
+  }
   if (!td_safe_mul_size(row_bytes, (size_t)h, &plane_bytes) ||
       plane_bytes == 0u) {
     td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0, 0,
@@ -1743,7 +1784,11 @@ static uint8_t *td_psd_load_plane(tinydng_context *ctx,
                        running, "PSD: RLE row decode mismatch");
           goto fail;
         }
-        running += n;
+        if (!td_safe_add_u64(running, n, &running)) {
+          td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0,
+                       running, "PSD: RLE data offset overflow");
+          goto fail;
+        }
       }
       td_ctx_free(ctx, table);
       td_ctx_free(ctx, rowbuf);
@@ -1800,7 +1845,10 @@ fail:
 static void td_psd_scatter_plane(const uint8_t *plane, uint32_t w, uint32_t h,
                                  uint16_t depth, uint8_t *dst,
                                  size_t pixel_stride, int invert1) {
-  size_t n_pixels = (size_t)w * h;
+  size_t n_pixels;
+  if (!td_safe_mul_size((size_t)w, (size_t)h, &n_pixels)) {
+    return;
+  }
   size_t i;
   if (depth == 8u) {
     for (i = 0; i < n_pixels; i++) {
@@ -1820,7 +1868,7 @@ static void td_psd_scatter_plane(const uint8_t *plane, uint32_t w, uint32_t h,
       memcpy(dst + i * pixel_stride, &v, 4u);
     }
   } else { /* depth 1: packed MSB-first, rows byte-aligned */
-    size_t row_bytes = ((size_t)w + 7u) / 8u;
+    size_t row_bytes = (size_t)w / 8u + (((size_t)w % 8u) != 0u);
     uint32_t y, x;
     for (y = 0; y < h; y++) {
       const uint8_t *rp = plane + (size_t)y * row_bytes;
@@ -1875,8 +1923,11 @@ static tinydng_status td_psd_run_tasks(tinydng_context *ctx,
   }
   for (i = 0; i < n; i++) {
     if (!tasks[i].ok) {
-      *err = tasks[i].err;
-      return err->status ? err->status : TINYDNG_E_DECODE;
+      if (err) {
+        *err = tasks[i].err;
+      }
+      return tasks[i].err.status != TINYDNG_OK ? tasks[i].err.status
+                                               : TINYDNG_E_DECODE;
     }
   }
   return TINYDNG_OK;
@@ -2110,8 +2161,10 @@ tinydng_status tinydng_psd_decode_layer_channel(
     if (owns) {
       td_ctx_free(ctx, dst);
     }
-    *err = task.err;
-    return err->status ? err->status : TINYDNG_E_DECODE;
+    if (err) {
+      *err = task.err;
+    }
+    return task.err.status != TINYDNG_OK ? task.err.status : TINYDNG_E_DECODE;
   }
   out->data = dst;
   out->size = total;
@@ -2191,7 +2244,7 @@ tinydng_status tinydng_psd_decode_thumbnail(tinydng_context *ctx,
     }
     jbuf = td_psd_read_copy(ctx, &r, res->offset + 28u, jlen, err);
     if (!jbuf) {
-      return err->status ? err->status : TINYDNG_E_OOM;
+      return td_error_status_or(err, TINYDNG_E_OOM);
     }
     pixels = stbi_load_from_memory(jbuf, (int)jlen, &w, &h, &comp, 3);
     td_ctx_free(ctx, jbuf);
@@ -2202,7 +2255,14 @@ tinydng_status tinydng_psd_decode_thumbnail(tinydng_context *ctx,
       return TINYDNG_E_DECODE;
     }
     {
-      size_t n = (size_t)w * (size_t)h * 3u;
+      size_t n, pixel_count;
+      if (!td_safe_mul_size((size_t)w, (size_t)h, &pixel_count) ||
+          !td_safe_mul_size(pixel_count, 3u, &n)) {
+        stbi_image_free(pixels);
+        td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0,
+                     res->offset, "PSD: thumbnail output size overflow");
+        return TINYDNG_E_BOUNDS;
+      }
       uint8_t *buf = (uint8_t *)td_ctx_alloc(ctx, n, err);
       if (!buf) {
         stbi_image_free(pixels);
@@ -2447,7 +2507,14 @@ tinydng_status tinydng_psd_smart_object_decode(tinydng_context *ctx,
       return TINYDNG_E_DECODE;
     }
     {
-      size_t n = (size_t)w * (size_t)h * (size_t)comp;
+      size_t n, pixels_count;
+      if (!td_safe_mul_size((size_t)w, (size_t)h, &pixels_count) ||
+          !td_safe_mul_size(pixels_count, (size_t)comp, &n)) {
+        stbi_image_free(pixels);
+        td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0,
+                     so->data_offset, "PSD: smart object output size overflow");
+        return TINYDNG_E_BOUNDS;
+      }
       uint8_t *buf = (uint8_t *)td_ctx_alloc(ctx, n, err);
       if (!buf) {
         stbi_image_free(pixels);

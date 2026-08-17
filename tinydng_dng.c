@@ -60,7 +60,10 @@ static size_t td_read_reals(const td_reader *r, uint16_t type, uint64_t off,
     return 0;
   }
   for (i = 0; i < n; i++) {
-    if (!td_r_val_real(r, type, off + (uint64_t)i * (uint64_t)ts, &out[i])) {
+    uint64_t delta, at;
+    if (!td_safe_mul_u64((uint64_t)i, (uint64_t)ts, &delta) ||
+        !td_safe_add_u64(off, delta, &at) ||
+        !td_r_val_real(r, type, at, &out[i])) {
       return i;
     }
   }
@@ -76,7 +79,10 @@ static size_t td_read_uints(const td_reader *r, uint16_t type, uint64_t off,
     return 0;
   }
   for (i = 0; i < n; i++) {
-    if (!td_r_val_uint(r, type, off + (uint64_t)i * (uint64_t)ts, &out[i])) {
+    uint64_t delta, at;
+    if (!td_safe_mul_u64((uint64_t)i, (uint64_t)ts, &delta) ||
+        !td_safe_add_u64(off, delta, &at) ||
+        !td_r_val_uint(r, type, at, &out[i])) {
       return i;
     }
   }
@@ -243,7 +249,9 @@ static int td_parse_opcode_list(tinydng_context *ctx, const td_reader *r,
   if (count < 4u || !td_r_u32(&br, pos, &num_opcodes)) {
     return 1;
   }
-  pos += 4u;
+  if (!td_safe_add_u64(pos, 4u, &pos)) {
+    return 1;
+  }
   if (num_opcodes > TD_MAX_OPCODES) {
     return 1; /* suspicious: skip */
   }
@@ -251,18 +259,26 @@ static int td_parse_opcode_list(tinydng_context *ctx, const td_reader *r,
   for (i = 0; i < num_opcodes; i++) {
     uint32_t id = 0, ver = 0, flags = 0, nbytes = 0;
     uint64_t saved;
-    if (!td_r_u32(&br, pos, &id) || !td_r_u32(&br, pos + 4u, &ver) ||
-        !td_r_u32(&br, pos + 8u, &flags) || !td_r_u32(&br, pos + 12u, &nbytes)) {
+    uint64_t p4, p8, p12;
+    if (!td_safe_add_u64(pos, 4u, &p4) || !td_safe_add_u64(pos, 8u, &p8) ||
+        !td_safe_add_u64(pos, 12u, &p12) ||
+        !td_r_u32(&br, pos, &id) || !td_r_u32(&br, p4, &ver) ||
+        !td_r_u32(&br, p8, &flags) || !td_r_u32(&br, p12, &nbytes)) {
       return 1;
     }
     (void)ver;
     (void)flags;
-    pos += 16u;
-    saved = pos;
-    if (nbytes < 4u || saved + nbytes > end) {
+    if (!td_safe_add_u64(pos, 16u, &pos)) {
       return 1;
     }
-
+    saved = pos;
+    {
+      uint64_t opcode_end;
+      if (nbytes < 4u || !td_safe_add_u64(saved, nbytes, &opcode_end) ||
+          opcode_end > end) {
+        return 1;
+      }
+    }
     /* Capture every opcode generically (raw big-endian params). */
     if (!td_capture_opcode(ctx, &br, img, list_index, id, ver, flags, saved,
                            nbytes, err)) {
@@ -323,7 +339,7 @@ static int td_parse_opcode_list(tinydng_context *ctx, const td_reader *r,
       memset(&gm, 0, sizeof(gm));
       /* The 76-byte header (10 u32 + 4 f64 + 1 u32) must fit in this opcode. */
       if (nbytes < 76u) {
-        pos = saved + nbytes;
+        (void)td_safe_add_u64(saved, nbytes, &pos);
         continue;
       }
       for (j = 0; j < 10u; j++) {
@@ -352,7 +368,7 @@ static int td_parse_opcode_list(tinydng_context *ctx, const td_reader *r,
           !td_safe_mul_u64(prod, (uint64_t)map_planes, &num_items) ||
           num_items == 0u || num_items > TD_MAX_GAINMAP_ITEMS ||
           num_items > ((uint64_t)nbytes - 76u) / 4u) {
-        pos = saved + nbytes;
+        (void)td_safe_add_u64(saved, nbytes, &pos);
         continue;
       }
       if (!td_safe_mul_size((size_t)num_items, sizeof(float), &pbytes)) {
@@ -391,7 +407,9 @@ static int td_parse_opcode_list(tinydng_context *ctx, const td_reader *r,
         return 0;
       }
     }
-    pos = saved + nbytes;
+    if (!td_safe_add_u64(saved, nbytes, &pos)) {
+      return 1;
+    }
   }
   return 1;
 }

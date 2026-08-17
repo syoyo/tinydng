@@ -1827,11 +1827,10 @@ int tdng_lj92_encode(uint16_t* image, int width, int height, int bitdepth,
 // found before the end of the search range.
 static int stream_find_marker(ljp* self, uint64_t off, uint64_t* marker_off) {
   tdng_lj92_stream* s = (tdng_lj92_stream*)self->stream_user;
-  uint64_t end = (self->stream_size != UINT64_MAX)
-                     ? self->stream_size
-                     : off + 65536;
+  uint64_t end = (self->stream_size != UINT64_MAX) ? self->stream_size :
+      ((UINT64_MAX - off < 65536u) ? UINT64_MAX : off + 65536u);
   uint64_t pos = off;
-  while (pos + 1 < end) {
+  while (pos < end && end - pos >= 2u) {
     if (!srefill(s, pos, 2)) break;
     u8 b0 = s->buf[(size_t)(pos - s->buf_off)];
     if (b0 == 0xFF) {
@@ -1856,7 +1855,12 @@ static int stream_find_marker(ljp* self, uint64_t off, uint64_t* marker_off) {
 static int stream_destuff_entropy(ljp* self, uint64_t stream_pos) {
   tdng_lj92_stream* s = (tdng_lj92_stream*)self->stream_user;
   uint64_t sz = self->stream_size;
-  uint64_t end = (sz != UINT64_MAX) ? sz : stream_pos + 64ULL * 1024 * 1024;
+  uint64_t end = sz;
+  if (end == UINT64_MAX) {
+    const uint64_t window = 64ULL * 1024u * 1024u;
+    end = (UINT64_MAX - stream_pos < window) ? UINT64_MAX
+                                              : stream_pos + window;
+  }
   if (end < stream_pos) return TDNG_LJ92_ERROR_CORRUPT;
   // Hardening: cap_needed would overflow `int` for huge streams.
   uint64_t remain = end - stream_pos;
@@ -1899,7 +1903,9 @@ static int stream_destuff_entropy(ljp* self, uint64_t stream_pos) {
 // self->stream_scanstart to the absolute offset of the entropy payload.
 static int stream_parse_headers(ljp* self, uint64_t soi_off) {
   tdng_lj92_stream* s = (tdng_lj92_stream*)self->stream_user;
-  uint64_t pos = soi_off + 2;
+  uint64_t pos;
+  if (UINT64_MAX - soi_off < 2u) return TDNG_LJ92_ERROR_CORRUPT;
+  pos = soi_off + 2u;
   u8 scratch[65536];
   self->x = 0;
   self->y = 0;
@@ -1910,15 +1916,26 @@ static int stream_parse_headers(ljp* self, uint64_t soi_off) {
     uint64_t mo = 0;
     int m = stream_find_marker(self, pos, &mo);
     if (m < 0) return TDNG_LJ92_ERROR_CORRUPT;
-    if (m == 0xD8) { pos = mo + 2; continue; }
+    if (m == 0xD8) {
+      if (UINT64_MAX - mo < 2u) return TDNG_LJ92_ERROR_CORRUPT;
+      pos = mo + 2u;
+      continue;
+    }
     if (m == 0xD9) return TDNG_LJ92_ERROR_CORRUPT;  // EOI before SOS
+    if (UINT64_MAX - mo < 2u) return TDNG_LJ92_ERROR_CORRUPT;
     uint16_t segsize = 0;
     if (!sread(s, mo + 2, &segsize, 2)) return TDNG_LJ92_ERROR_CORRUPT;
     segsize = (uint16_t)((segsize >> 8) | (segsize << 8));
     if (segsize < 2) return TDNG_LJ92_ERROR_CORRUPT;
-    uint64_t sd = mo + 2;  // start of the segment (its Ln length field)
-    uint64_t se = sd + (uint64_t)segsize;
-    if (se < sd) return TDNG_LJ92_ERROR_CORRUPT;  // u64 wrap
+    uint64_t sd, se;  // sd is the segment's Ln length field
+    if (UINT64_MAX - mo < 2u) {
+      return TDNG_LJ92_ERROR_CORRUPT;
+    }
+    sd = mo + 2u;
+    if (UINT64_MAX - sd < (uint64_t)segsize) {
+      return TDNG_LJ92_ERROR_CORRUPT;
+    }
+    se = sd + (uint64_t)segsize;
     size_t payload_len = (size_t)segsize;
     if (payload_len > sizeof(scratch)) return TDNG_LJ92_ERROR_CORRUPT;
 

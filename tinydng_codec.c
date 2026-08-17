@@ -74,6 +74,11 @@ static tinydng_status td_compute_geom(tinydng_context *ctx,
                  "invalid decode geometry");
     return TINYDNG_E_PARSE;
   }
+  if (g->planar != 1u && g->planar != 2u) {
+    td_set_error(err, TINYDNG_E_PARSE, TINYDNG_STAGE_DECODE, 0, 0, 0,
+                 "invalid planar configuration %u", (unsigned)g->planar);
+    return TINYDNG_E_PARSE;
+  }
   if (!td_safe_mul_size((size_t)g->spp, g->out_bytes, &g->pixel_stride) ||
       !td_safe_mul_size((size_t)g->width, g->pixel_stride, &g->row_stride) ||
       !td_safe_mul_size((size_t)g->height, g->row_stride, &g->image_size)) {
@@ -240,7 +245,7 @@ static int td_stored_block_size(const td_geom *g, uint32_t bw, uint32_t bh,
     if (!td_safe_mul_size(spr, (size_t)g->bps, &bits)) {
       return 0;
     }
-    in_row = (bits + 7u) / 8u;
+    in_row = bits / 8u + ((bits % 8u) != 0u);
   } else {
     return 0;
   }
@@ -273,26 +278,40 @@ static tinydng_status td_fill_block_from_stored(const td_geom *g, int big_endian
 
   if (g->bps == 8u || g->bps == 16u || g->bps == 32u) {
     size_t stored_bytes = (size_t)g->bps / 8u;
-    size_t in_row_bytes = (size_t)bw * g->spp * stored_bytes;
+    size_t samples_per_row, in_row_bytes;
+    if (!td_safe_mul_size((size_t)bw, (size_t)g->spp, &samples_per_row) ||
+        !td_safe_mul_size(samples_per_row, stored_bytes, &in_row_bytes)) {
+      td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0, 0,
+                   "stored row size overflow");
+      return TINYDNG_E_BOUNDS;
+    }
     int need_swap = (stored_bytes > 1u) && (big_endian != td_host_big());
     for (y = 0; y < bh; y++) {
       memcpy(block + (size_t)y * in_row_bytes, src + (size_t)y * in_row_bytes,
              in_row_bytes);
     }
     if (need_swap) {
-      size_t total_samples = (size_t)bw * bh * g->spp;
+      size_t total_samples;
       size_t i;
+      if (!td_safe_mul_size(samples_per_row, (size_t)bh, &total_samples)) {
+        td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0, 0,
+                     "stored sample count overflow");
+        return TINYDNG_E_BOUNDS;
+      }
       if (stored_bytes == 2u) {
-        uint16_t *p = (uint16_t *)block;
         for (i = 0; i < total_samples; i++) {
-          p[i] = (uint16_t)((p[i] >> 8) | (p[i] << 8));
+          uint16_t v;
+          memcpy(&v, block + i * 2u, sizeof(v));
+          v = (uint16_t)((v >> 8) | (v << 8));
+          memcpy(block + i * 2u, &v, sizeof(v));
         }
       } else {
-        uint32_t *p = (uint32_t *)block;
         for (i = 0; i < total_samples; i++) {
-          uint32_t v = p[i];
-          p[i] = ((v >> 24) & 0xFFu) | ((v >> 8) & 0xFF00u) |
-                 ((v << 8) & 0xFF0000u) | ((v << 24) & 0xFF000000u);
+          uint32_t v;
+          memcpy(&v, block + i * 4u, sizeof(v));
+          v = ((v >> 24) & 0xFFu) | ((v >> 8) & 0xFF00u) |
+              ((v << 8) & 0xFF0000u) | ((v << 24) & 0xFF000000u);
+          memcpy(block + i * 4u, &v, sizeof(v));
         }
       }
     }
@@ -301,8 +320,14 @@ static tinydng_status td_fill_block_from_stored(const td_geom *g, int big_endian
 
   /* Packed sub-byte depths (10/12/14): MSB-first, rows byte-aligned. */
   {
-    size_t samples_per_row = (size_t)bw * g->spp;
-    size_t in_row_bytes = (samples_per_row * g->bps + 7u) / 8u;
+    size_t samples_per_row, bits_per_row, in_row_bytes;
+    if (!td_safe_mul_size((size_t)bw, (size_t)g->spp, &samples_per_row) ||
+        !td_safe_mul_size(samples_per_row, (size_t)g->bps, &bits_per_row)) {
+      td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0, 0,
+                   "packed row size overflow");
+      return TINYDNG_E_BOUNDS;
+    }
+    in_row_bytes = bits_per_row / 8u + ((bits_per_row % 8u) != 0u);
     for (y = 0; y < bh; y++) {
       const uint8_t *rp = src + (size_t)y * in_row_bytes;
       size_t row_base = (size_t)y * samples_per_row;
@@ -355,7 +380,7 @@ static tinydng_status td_decode_block_uncompressed(
   }
   src = td_segment_bytes(ctx, io, io_size, seg->offset, need, &owned, err);
   if (!src) {
-    return err->status ? err->status : TINYDNG_E_BOUNDS;
+    return td_error_status_or(err, TINYDNG_E_BOUNDS);
   }
   st = td_fill_block_from_stored(g, big_endian, src, need, bw, bh, block, err);
   if (owned) {
@@ -548,7 +573,7 @@ static tinydng_status td_decode_block_compressed(
   src = td_segment_bytes(ctx, io, io_size, seg->offset, (size_t)seg->byte_count,
                          &owned, err);
   if (!src) {
-    return err->status ? err->status : TINYDNG_E_BOUNDS;
+    return td_error_status_or(err, TINYDNG_E_BOUNDS);
   }
   stored = (uint8_t *)td_ctx_alloc(ctx, need, err);
   if (!stored) {
@@ -640,7 +665,7 @@ static tinydng_status td_decode_block_baseline(tinydng_context *ctx,
   src = td_segment_bytes(ctx, io, io_size, seg->offset, (size_t)seg->byte_count,
                          &owned, err);
   if (!src) {
-    return err->status ? err->status : TINYDNG_E_BOUNDS;
+    return td_error_status_or(err, TINYDNG_E_BOUNDS);
   }
   pixels = stbi_load_from_memory(src, (int)seg->byte_count, &w, &h, &comp,
                                  (int)g->spp);
@@ -699,6 +724,7 @@ static tinydng_status td_decode_block_ljpeg(tinydng_context *ctx,
   uint8_t *owned = NULL;
   const uint8_t *src;
   tdng_lj92 lj = NULL;
+  uint16_t *lj_target = NULL;
   int w = 0, h = 0, bits = 0, comps = 0;
   int ret;
   tinydng_status st = TINYDNG_OK;
@@ -716,7 +742,7 @@ static tinydng_status td_decode_block_ljpeg(tinydng_context *ctx,
     src = td_segment_bytes(ctx, io, io_size, seg->offset,
                            (size_t)seg->byte_count, &owned, err);
     if (!src) {
-      return err->status ? err->status : TINYDNG_E_BOUNDS;
+      return td_error_status_or(err, TINYDNG_E_BOUNDS);
     }
     ret = tdng_lj92_open(&lj, src, (int)seg->byte_count, &w, &h, &bits, &comps);
   } else {
@@ -751,7 +777,23 @@ static tinydng_status td_decode_block_ljpeg(tinydng_context *ctx,
     goto cleanup;
   }
 
-  ret = tdng_lj92_decode(lj, (uint16_t *)block,
+  {
+    size_t samples, target_bytes;
+    if (!td_safe_mul_size((size_t)w, (size_t)comps, &samples) ||
+        !td_safe_mul_size(samples, (size_t)h, &samples) ||
+        !td_safe_mul_size(samples, sizeof(*lj_target), &target_bytes)) {
+      td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0,
+                   seg->offset, "ljpeg output size overflow");
+      st = TINYDNG_E_BOUNDS;
+      goto cleanup;
+    }
+    lj_target = (uint16_t *)td_ctx_alloc(ctx, target_bytes, err);
+    if (!lj_target) {
+      st = TINYDNG_E_OOM;
+      goto cleanup;
+    }
+  }
+  ret = tdng_lj92_decode(lj, lj_target,
                          (int)((size_t)w * (size_t)comps), 0, NULL, 0);
   if (ret != TDNG_LJ92_ERROR_NONE) {
     td_set_error(err, TINYDNG_E_DECODE, TINYDNG_STAGE_DECODE, 0, 0, seg->offset,
@@ -759,6 +801,8 @@ static tinydng_status td_decode_block_ljpeg(tinydng_context *ctx,
     st = TINYDNG_E_DECODE;
     goto cleanup;
   }
+  memcpy(block, lj_target, (size_t)w * (size_t)comps * (size_t)h *
+                              sizeof(*lj_target));
 
 cleanup:
   if (lj) {
@@ -766,6 +810,9 @@ cleanup:
   }
   if (owned) {
     td_ctx_free(ctx, owned);
+  }
+  if (lj_target) {
+    td_ctx_free(ctx, lj_target);
   }
   return st;
 }
@@ -1021,7 +1068,7 @@ static int td_decode_one_segment(td_decode_par *par, const tinydng_segment *seg,
     return 0;
   }
   if (!td_apply_predictor(ctx, gseg, target, bw, bh, err)) {
-    if (err->status == TINYDNG_OK) {
+    if (!err || err->status == TINYDNG_OK) {
       td_set_error(err, TINYDNG_E_DECODE, TINYDNG_STAGE_DECODE, 0, 0, 0,
                    "predictor failed");
     }
@@ -1136,7 +1183,9 @@ static tinydng_status td_decode_window(tinydng_context *ctx,
   for (t = 0; t < n; t++) {
     td_ctx_free(ctx, workers[t].block);
     if (st == TINYDNG_OK && workers[t].err.status != TINYDNG_OK) {
-      *err = workers[t].err;
+      if (err) {
+        *err = workers[t].err;
+      }
       st = workers[t].err.status;
     }
   }

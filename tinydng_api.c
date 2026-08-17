@@ -579,8 +579,8 @@ void *td_ctx_realloc(tinydng_context *ctx, void *ptr, size_t old_size,
   if (h) {
     copy = old_size < new_size ? old_size : new_size;
     memcpy(np, ptr, copy);
-    /* Unlink the old header and free the raw block, restoring the
-       memory_used accounting (re-subtracting old_size). */
+    /* Unlink and free the old header.  Its size was already discounted
+       before allocating the replacement, so do not subtract it again. */
     td_mutex_lock(L);
     if (h->prev) {
       h->prev->next = h->next;
@@ -589,11 +589,6 @@ void *td_ctx_realloc(tinydng_context *ctx, void *ptr, size_t old_size,
     }
     if (h->next) {
       h->next->prev = h->prev;
-    }
-    if (ctx->memory_used >= h->size) {
-      ctx->memory_used -= h->size;
-    } else {
-      ctx->memory_used = 0;
     }
     h->magic = 0;
     ctx->allocator.free(ctx->allocator.user_data, h);

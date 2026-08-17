@@ -273,12 +273,15 @@ typedef struct td_psdw_payload {
 static uint8_t *td_psdw_plane_be(tinydng_context *ctx, const uint8_t *host,
                                  uint32_t w, uint32_t h, uint16_t depth,
                                  size_t *out_size, tinydng_error *err) {
-  size_t n_samples = (size_t)w * h;
+  size_t n_samples;
   size_t bytes = (size_t)depth / 8u;
   size_t total;
   uint8_t *out;
   size_t i;
-  if (!td_safe_mul_size(n_samples, bytes, &total)) {
+  if (!td_safe_mul_size((size_t)w, (size_t)h, &n_samples) ||
+      !td_safe_mul_size(n_samples, bytes, &total)) {
+    td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                 "PSD writer: plane size overflow");
     return NULL;
   }
   out = (uint8_t *)td_ctx_alloc(ctx, total, err);
@@ -318,18 +321,26 @@ static tinydng_status td_psdw_compress_plane(tinydng_context *ctx,
                                              uint16_t comp, int is_psb,
                                              td_psdw_payload *out,
                                              tinydng_error *err) {
-  size_t row_bytes = ((size_t)w * depth + 7u) / 8u;
+  size_t bits, row_bytes;
+  if (!td_safe_mul_size((size_t)w, (size_t)depth, &bits)) {
+    td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                 "PSD writer: row size overflow");
+    return TINYDNG_E_BOUNDS;
+  }
+  row_bytes = bits / 8u + ((bits % 8u) != 0u);
   memset(out, 0, sizeof(*out));
 
   if (comp == TINYDNG_PSD_COMP_RLE && h > 0u && row_bytes > 0u) {
     size_t esz = is_psb ? 4u : 2u;
-    size_t table_bytes = (size_t)h * esz;
-    size_t worst_row = row_bytes + (row_bytes + 127u) / 128u;
+    size_t table_bytes, worst_row, overhead;
     size_t cap, y, op;
     uint8_t *buf;
     uint64_t limit = is_psb ? 0xFFFFFFFFu : 0xFFFFu;
     int fallback = 0;
-    if (!td_safe_mul_size(worst_row, (size_t)h, &cap) ||
+    if (!td_safe_mul_size((size_t)h, esz, &table_bytes) ||
+        !td_safe_add_size(row_bytes, 127u, &overhead) ||
+        !td_safe_add_size(row_bytes, overhead / 128u, &worst_row) ||
+        !td_safe_mul_size(worst_row, (size_t)h, &cap) ||
         !td_safe_add_size(cap, table_bytes, &cap)) {
       return TINYDNG_E_BOUNDS;
     }
@@ -460,7 +471,16 @@ static tinydng_status td_psdw_validate(tinydng_context *ctx,
                    "PSD writer: layer %zu channel count out of range", i);
       return TINYDNG_E_INVALID_ARG;
     }
-    need = (size_t)((uint64_t)lw * (uint64_t)lh) * sample_bytes;
+    {
+      uint64_t layer_pixels;
+      if (!td_safe_mul_u64((uint64_t)lw, (uint64_t)lh, &layer_pixels) ||
+          layer_pixels > (uint64_t)SIZE_MAX ||
+          !td_safe_mul_size((size_t)layer_pixels, sample_bytes, &need)) {
+        td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                     "PSD writer: layer channel size overflow");
+        return TINYDNG_E_BOUNDS;
+      }
+    }
     for (c = 0; c < L->channel_count; c++) {
       const tinydng_psd_write_channel *ch = &L->channels[c];
       if (ch->id < -1) {
@@ -568,7 +588,7 @@ static tinydng_status td_psdw_layer_info(td_psdw *w,
       stored = td_psdw_plane_be(ctx, ch->data, lw, lh, doc->depth,
                                 &stored_size, err);
       if (!stored) {
-        st = err->status ? err->status : TINYDNG_E_OOM;
+        st = td_error_status_or(err, TINYDNG_E_OOM);
         break;
       }
       st = td_psdw_compress_plane(ctx, stored, stored_size, lw, lh,
@@ -756,8 +776,15 @@ tinydng_status tinydng_psd_write_memory(tinydng_context *ctx,
   {
     uint32_t channels = doc->channel_count;
     size_t sample_bytes = (size_t)doc->depth / 8u;
-    size_t plane_samples = (size_t)doc->width * doc->height;
-    size_t plane_size = plane_samples * sample_bytes;
+    size_t plane_samples, plane_size;
+    if (!td_safe_mul_size((size_t)doc->width, (size_t)doc->height,
+                          &plane_samples) ||
+        !td_safe_mul_size(plane_samples, sample_bytes, &plane_size)) {
+      td_ctx_free(ctx, w.p);
+      td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                   "PSD writer: composite plane size overflow");
+      return TINYDNG_E_BOUNDS;
+    }
     uint8_t *plane = (uint8_t *)td_ctx_alloc(ctx, plane_size ? plane_size
                                                              : 1u,
                                              err);
@@ -858,11 +885,11 @@ tinydng_status tinydng_psd_write_memory(tinydng_context *ctx,
 
   if (w.failed) {
     td_ctx_free(ctx, w.p);
-    if (err->status == TINYDNG_OK) {
+    if (!err || err->status == TINYDNG_OK) {
       td_set_error(err, TINYDNG_E_OOM, TINYDNG_STAGE_WRITE, 0, 0, 0,
                    "PSD writer: buffer growth failed");
     }
-    return err->status;
+    return td_error_status_or(err, TINYDNG_E_OOM);
   }
   *out_data = w.p;
   *out_size = w.len;

@@ -336,14 +336,20 @@ static int td_parse_entry_row(const td_reader *r, const uint8_t *row,
   }
   out->type_size = td_tiff_type_size(out->type);
   if (out->type_size == 0u) {
-    out->data_off = entry_pos + (r->bigtiff ? 12u : 8u); /* caller skips */
+    uint64_t delta = r->bigtiff ? 12u : 8u;
+    if (!td_safe_add_u64(entry_pos, delta, &out->data_off)) {
+      return 0;
+    }
+    /* caller skips */
     return 1;
   }
   if (!td_safe_mul_u64((uint64_t)out->type_size, out->count, &data_bytes)) {
     return 0;
   }
   if (data_bytes <= inline_cap) {
-    out->data_off = entry_pos + (r->bigtiff ? 12u : 8u);
+    if (!td_safe_add_u64(entry_pos, r->bigtiff ? 12u : 8u, &out->data_off)) {
+      return 0;
+    }
   } else if (r->bigtiff) {
     out->data_off = td_u64_from_buf(row + 12u, r->big_endian);
   } else {
@@ -513,7 +519,20 @@ static int td_read_scalar_uint(const td_reader *r, const td_entry *e,
   if (!td_read_scalar_uint64(r, e, &v)) {
     return 0;
   }
+  if (v > UINT32_MAX) {
+    return 0;
+  }
   *out = (uint32_t)v;
+  return 1;
+}
+
+static int td_read_scalar_uint16(const td_reader *r, const td_entry *e,
+                                 uint16_t *out) {
+  uint32_t v;
+  if (!td_read_scalar_uint(r, e, &v) || v > UINT16_MAX) {
+    return 0;
+  }
+  *out = (uint16_t)v;
   return 1;
 }
 
@@ -538,14 +557,18 @@ static void td_parse_metadata_ifd(tinydng_context *ctx, const td_reader *r,
     if (!td_r_u64(r, off, &num_entries)) {
       return;
     }
-    entries_start = off + 8u;
+    if (!td_safe_add_u64(off, 8u, &entries_start)) {
+      return;
+    }
   } else {
     uint16_t n;
     if (!td_r_u16(r, off, &n)) {
       return;
     }
     num_entries = (uint64_t)n;
-    entries_start = off + 2u;
+    if (!td_safe_add_u64(off, 2u, &entries_start)) {
+      return;
+    }
   }
   if (num_entries > (uint64_t)ctx->max_ifd_entries) {
     return;
@@ -559,7 +582,11 @@ static void td_parse_metadata_ifd(tinydng_context *ctx, const td_reader *r,
     }
     for (i = 0; i < num_entries; i++) {
       td_entry e;
-      uint64_t pos = entries_start + i * entry_stride;
+      uint64_t delta, pos;
+      if (!td_safe_mul_u64(i, entry_stride, &delta) ||
+          !td_safe_add_u64(entries_start, delta, &pos)) {
+        continue;
+      }
       if (!td_parse_entry_row(r, tbl + i * entry_stride, pos, &e) ||
           e.type_size == 0u) {
         continue;
@@ -609,7 +636,11 @@ static tinydng_status td_parse_ifd(tinydng_context *ctx, const td_reader *r,
                    ifd_off, "failed reading IFD entry count");
       return TINYDNG_E_BOUNDS;
     }
-    entries_start = ifd_off + 8u;
+    if (!td_safe_add_u64(ifd_off, 8u, &entries_start)) {
+      td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_IFD, ifd_index, 0,
+                   ifd_off, "IFD entry offset overflow");
+      return TINYDNG_E_BOUNDS;
+    }
   } else {
     uint16_t n;
     if (!td_r_u16(r, ifd_off, &n)) {
@@ -618,7 +649,11 @@ static tinydng_status td_parse_ifd(tinydng_context *ctx, const td_reader *r,
       return TINYDNG_E_BOUNDS;
     }
     num_entries = (uint64_t)n;
-    entries_start = ifd_off + 2u;
+    if (!td_safe_add_u64(ifd_off, 2u, &entries_start)) {
+      td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_IFD, ifd_index, 0,
+                   ifd_off, "IFD entry offset overflow");
+      return TINYDNG_E_BOUNDS;
+    }
   }
 
   if (num_entries > (uint64_t)ctx->max_ifd_entries) {
@@ -642,7 +677,14 @@ static tinydng_status td_parse_ifd(tinydng_context *ctx, const td_reader *r,
 
     for (i = 0; i < num_entries; i++) {
       td_entry e;
-      uint64_t pos = entries_start + i * entry_stride;
+      uint64_t delta, pos;
+      if (!td_safe_mul_u64(i, entry_stride, &delta) ||
+          !td_safe_add_u64(entries_start, delta, &pos)) {
+        td_ctx_free(ctx, owned);
+        td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_IFD, ifd_index, 0,
+                     entries_start, "IFD entry offset overflow");
+        return TINYDNG_E_BOUNDS;
+      }
       uint32_t sv;
       if (!td_parse_entry_row(r, tbl + i * entry_stride, pos, &e)) {
         td_ctx_free(ctx, owned);
@@ -678,35 +720,29 @@ static tinydng_status td_parse_ifd(tinydng_context *ctx, const td_reader *r,
         }
         break;
       case TD_TAG_SAMPLES_PER_PIXEL:
-        if (td_read_scalar_uint(r, &e, &sv)) {
-          b->samples_per_pixel = (uint16_t)sv;
+        if (td_read_scalar_uint16(r, &e, &b->samples_per_pixel)) {
           b->has_spp = 1;
         }
         break;
       case TD_TAG_COMPRESSION:
-        if (td_read_scalar_uint(r, &e, &sv)) {
-          b->compression = (uint16_t)sv;
+        if (td_read_scalar_uint16(r, &e, &b->compression)) {
           b->has_compression = 1;
         }
         break;
       case TD_TAG_PHOTOMETRIC:
-        if (td_read_scalar_uint(r, &e, &sv)) {
-          b->photometric = (uint16_t)sv;
+        if (td_read_scalar_uint16(r, &e, &b->photometric)) {
         }
         break;
       case TD_TAG_PLANAR_CONFIGURATION:
-        if (td_read_scalar_uint(r, &e, &sv)) {
-          b->planar_configuration = (uint16_t)sv;
+        if (td_read_scalar_uint16(r, &e, &b->planar_configuration)) {
         }
         break;
       case TD_TAG_PREDICTOR:
-        if (td_read_scalar_uint(r, &e, &sv)) {
-          b->predictor = (uint16_t)sv;
+        if (td_read_scalar_uint16(r, &e, &b->predictor)) {
         }
         break;
       case TD_TAG_SAMPLE_FORMAT:
-        if (td_read_scalar_uint(r, &e, &sv)) {
-          b->sample_format = (uint16_t)sv;
+        if (td_read_scalar_uint16(r, &e, &b->sample_format)) {
         }
         break;
       case TD_TAG_ROWS_PER_STRIP:
@@ -744,42 +780,42 @@ static tinydng_status td_parse_ifd(tinydng_context *ctx, const td_reader *r,
         if (!td_read_u64_array(ctx, r, &e, 1u << 24, &b->strip_offsets,
                                &b->strip_offset_count, ifd_index, err)) {
           td_ctx_free(ctx, owned);
-          return err->status;
+          return td_error_status_or(err, TINYDNG_E_PARSE);
         }
         break;
       case TD_TAG_STRIP_BYTE_COUNTS:
         if (!td_read_u64_array(ctx, r, &e, 1u << 24, &b->strip_byte_counts,
                                &b->strip_byte_count_count, ifd_index, err)) {
           td_ctx_free(ctx, owned);
-          return err->status;
+          return td_error_status_or(err, TINYDNG_E_PARSE);
         }
         break;
       case TD_TAG_TILE_OFFSETS:
         if (!td_read_u64_array(ctx, r, &e, 1u << 24, &b->tile_offsets,
                                &b->tile_offset_count, ifd_index, err)) {
           td_ctx_free(ctx, owned);
-          return err->status;
+          return td_error_status_or(err, TINYDNG_E_PARSE);
         }
         break;
       case TD_TAG_TILE_BYTE_COUNTS:
         if (!td_read_u64_array(ctx, r, &e, 1u << 24, &b->tile_byte_counts,
                                &b->tile_byte_count_count, ifd_index, err)) {
           td_ctx_free(ctx, owned);
-          return err->status;
+          return td_error_status_or(err, TINYDNG_E_PARSE);
         }
         break;
       case TD_TAG_SUB_IFDS:
         if (!td_read_u64_array(ctx, r, &e, 4096u, &b->sub_ifds,
                                &b->sub_ifd_count, ifd_index, err)) {
           td_ctx_free(ctx, owned);
-          return err->status;
+          return td_error_status_or(err, TINYDNG_E_PARSE);
         }
         break;
       default:
         if (!td_dng_handle_tag(ctx, r, img, ifd_index, e.tag, e.type, e.count,
                                e.data_off, err)) {
           td_ctx_free(ctx, owned);
-          return err->status ? err->status : TINYDNG_E_PARSE;
+          return td_error_status_or(err, TINYDNG_E_PARSE);
         }
         break;
       }
@@ -804,7 +840,7 @@ static tinydng_status td_parse_ifd(tinydng_context *ctx, const td_reader *r,
 /* ------------------------------------------------------------------ */
 
 static uint64_t td_ceil_div_u64(uint64_t a, uint64_t b) {
-  return (a + b - 1u) / b;
+  return b ? a / b + ((a % b) != 0u) : 0u;
 }
 
 static tinydng_status td_build_segments(tinydng_context *ctx, const td_reader *r,
@@ -829,6 +865,13 @@ static tinydng_status td_build_segments(tinydng_context *ctx, const td_reader *r
                  (unsigned)b->samples_per_pixel);
     return TINYDNG_E_UNSUPPORTED;
   }
+  if (b->planar_configuration != 1u && b->planar_configuration != 2u) {
+    td_set_error(err, TINYDNG_E_UNSUPPORTED, TINYDNG_STAGE_GEOMETRY, ifd_index,
+                 TD_TAG_PLANAR_CONFIGURATION, 0,
+                 "unsupported planar_configuration=%u",
+                 (unsigned)b->planar_configuration);
+    return TINYDNG_E_UNSUPPORTED;
+  }
   if (!td_safe_mul_u64((uint64_t)b->width, (uint64_t)b->height,
                        &pixel_count) ||
       (ctx->max_image_pixels && pixel_count > ctx->max_image_pixels)) {
@@ -844,7 +887,12 @@ static tinydng_status td_build_segments(tinydng_context *ctx, const td_reader *r
   if (tiled) {
     uint64_t across = td_ceil_div_u64(b->width, b->tile_width);
     uint64_t down = td_ceil_div_u64(b->height, b->tile_length);
-    uint64_t per_plane = across * down;
+    uint64_t per_plane;
+    if (!td_safe_mul_u64(across, down, &per_plane)) {
+      td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_GEOMETRY, ifd_index,
+                   TD_TAG_TILE_OFFSETS, 0, "tile grid size overflow");
+      return TINYDNG_E_BOUNDS;
+    }
     uint64_t expected = per_plane;
     if (b->planar_configuration == 2u) {
       if (!td_safe_mul_u64(per_plane, (uint64_t)b->samples_per_pixel,
@@ -914,7 +962,13 @@ static tinydng_status td_build_segments(tinydng_context *ctx, const td_reader *r
   if (tiled) {
     uint64_t across = td_ceil_div_u64(b->width, b->tile_width);
     uint64_t down = td_ceil_div_u64(b->height, b->tile_length);
-    uint64_t per_plane = across * down;
+    uint64_t per_plane;
+    if (!td_safe_mul_u64(across, down, &per_plane)) {
+      td_ctx_free(ctx, segs);
+      td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_GEOMETRY, ifd_index,
+                   TD_TAG_TILE_OFFSETS, 0, "tile grid size overflow");
+      return TINYDNG_E_BOUNDS;
+    }
     for (i = 0; i < count; i++) {
       uint64_t local = (per_plane > 0u) ? ((uint64_t)i % per_plane) : 0u;
       uint64_t col = (across > 0u) ? (local % across) : 0u;
@@ -1378,7 +1432,7 @@ tinydng_status tinydng_open_io(tinydng_context *ctx, tinydng_io io,
       if (!img) {
         td_free_image_payload(ctx, &tmp); /* tmp not yet moved into the doc */
         td_free_build(ctx, &b);
-        st = err->status ? err->status : TINYDNG_E_OOM;
+        st = td_error_status_or(err, TINYDNG_E_OOM);
         goto done;
       }
       /* move tmp metadata into the slot, then build segments */

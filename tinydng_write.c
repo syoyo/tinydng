@@ -99,9 +99,14 @@ static void td_put64(uint8_t *p, uint64_t v, int be) {
 /* Append serialized bytes to the extras buffer; returns pointer or NULL. */
 static const uint8_t *td_extras_put(td_writer *w, const uint8_t *bytes,
                                     size_t len) {
-  size_t padded = (len + 1u) & ~(size_t)1u; /* word-align */
+  size_t padded;
+  if (!td_safe_add_size(len, 1u, &padded)) {
+    w->failed = 1;
+    return NULL;
+  }
+  padded &= ~(size_t)1u; /* word-align */
   const uint8_t *ret;
-  if (w->extras_len + padded > w->extras_cap) {
+  if (padded > w->extras_cap || w->extras_len > w->extras_cap - padded) {
     w->failed = 1;
     return NULL;
   }
@@ -586,9 +591,15 @@ tinydng_status tinydng_write_io_memory_take(tinydng_context *ctx,
 /* Reserve `len` zeroed bytes in the extras buffer (even-aligned like
    td_extras_put); returns a writable pointer or NULL (w->failed set). */
 static uint8_t *td_reserve(td_writer *w, size_t len) {
-  size_t padded = (len + 1u) & ~(size_t)1u;
+  size_t padded;
+  if (!td_safe_add_size(len, 1u, &padded)) {
+    w->failed = 1;
+    return NULL;
+  }
+  padded &= ~(size_t)1u;
   uint8_t *ret;
-  if (w->failed || w->extras_len + padded > w->extras_cap) {
+  if (w->failed || padded > w->extras_cap ||
+      w->extras_len > w->extras_cap - padded) {
     w->failed = 1;
     return NULL;
   }
@@ -662,7 +673,9 @@ static size_t td_lj92_sink_write(void *user, const void *data, size_t len) {
   if (s->failed) {
     return 0;
   }
-  if (s->sink->write(s->sink, s->pos + s->written, data, len) != len) {
+  if (UINT64_MAX - s->pos < s->written ||
+      UINT64_MAX - (s->pos + s->written) < (uint64_t)len ||
+      s->sink->write(s->sink, s->pos + s->written, data, len) != len) {
     s->failed = 1;
     return 0;
   }
@@ -958,8 +971,21 @@ static tinydng_status td_writer_emit_ifd(const td_writer *w,
       td_put16(ep + 2, e->type, w->big_endian);
       td_put64(ep + 4, e->count, w->big_endian);
       if (e->ext_len > 0u) {
-        size_t padded = (e->ext_len + 1u) & ~(size_t)1u;
-        td_put64(ep + 12, extras_base + ext_running, w->big_endian);
+        size_t padded;
+        uint64_t ext_off;
+        if (!td_safe_add_size(e->ext_len, 1u, &padded) ||
+            !td_safe_add_u64(extras_base, (uint64_t)ext_running, &ext_off)) {
+          td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, e->tag,
+                       extras_base, "IFD extra offset overflow");
+          return TINYDNG_E_BOUNDS;
+        }
+        padded &= ~(size_t)1u;
+        td_put64(ep + 12, ext_off, w->big_endian);
+        if (padded > SIZE_MAX - ext_running) {
+          td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, e->tag,
+                       extras_base, "IFD extra size overflow");
+          return TINYDNG_E_BOUNDS;
+        }
         ext_running += padded;
       } else {
         memcpy(ep + 12, e->value, 8);
@@ -982,8 +1008,22 @@ static tinydng_status td_writer_emit_ifd(const td_writer *w,
       td_put16(ep + 2, e->type, w->big_endian);
       td_put32(ep + 4, (uint32_t)e->count, w->big_endian);
       if (e->ext_len > 0u) {
-        size_t padded = (e->ext_len + 1u) & ~(size_t)1u;
-        td_put32(ep + 8, (uint32_t)(extras_base + ext_running), w->big_endian);
+        size_t padded;
+        uint64_t ext_off;
+        if (!td_safe_add_size(e->ext_len, 1u, &padded) ||
+            !td_safe_add_u64(extras_base, (uint64_t)ext_running, &ext_off) ||
+            ext_off > UINT32_MAX) {
+          td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, e->tag,
+                       extras_base, "classic TIFF extra offset overflow");
+          return TINYDNG_E_BOUNDS;
+        }
+        padded &= ~(size_t)1u;
+        td_put32(ep + 8, (uint32_t)ext_off, w->big_endian);
+        if (padded > SIZE_MAX - ext_running) {
+          td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, e->tag,
+                       extras_base, "IFD extra size overflow");
+          return TINYDNG_E_BOUNDS;
+        }
         ext_running += padded;
       } else {
         memcpy(ep + 8, e->value, 4);
@@ -1524,7 +1564,15 @@ static tinydng_status td_writer_relayout_extras(tinydng_writer *w,
   for (i = 0; i < w->w.entry_count; i++) {
     td_wentry *e = &w->w.entries[i];
     if (e->ext_len > 0u) {
-      size_t padded = (e->ext_len + 1u) & ~(size_t)1u;
+      size_t padded;
+      if (!td_safe_add_size(e->ext_len, 1u, &padded) ||
+          padded > w->w.extras_cap || running > w->w.extras_cap - padded) {
+        td_ctx_free(w->ctx, nb);
+        td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, e->tag, 0,
+                     "IFD extras layout overflow");
+        return TINYDNG_E_BOUNDS;
+      }
+      padded &= ~(size_t)1u;
       memcpy(nb + running, e->ext, e->ext_len);
       if (padded > e->ext_len) {
         nb[running + e->ext_len] = 0;
@@ -1581,7 +1629,12 @@ tinydng_status tinydng_writer_finish(tinydng_writer *w, tinydng_error *err) {
       goto cleanup;
     }
   }
-  ifd_off = extras_base + w->w.extras_len;
+  if (!td_safe_add_u64(extras_base, (uint64_t)w->w.extras_len, &ifd_off)) {
+    td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, 0,
+                 extras_base, "writer IFD offset overflow");
+    st = TINYDNG_E_BOUNDS;
+    goto cleanup;
+  }
   if (!w->bigtiff && ifd_off > (uint64_t)UINT32_MAX) {
     td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, 0, ifd_off,
                  "classic TIFF offset limit exceeded");

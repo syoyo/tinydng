@@ -131,6 +131,11 @@ void td_set_error(tinydng_error *err, tinydng_status code, tinydng_stage stage,
                   uint32_t ifd_index, uint16_t tag, uint64_t offset,
                   const char *fmt, ...);
 
+static inline tinydng_status td_error_status_or(const tinydng_error *err,
+                                                tinydng_status fallback) {
+  return (err && err->status != TINYDNG_OK) ? err->status : fallback;
+}
+
 /* ------------------------------------------------------------------ */
 /* IO view helper                                                     */
 /* ------------------------------------------------------------------ */
