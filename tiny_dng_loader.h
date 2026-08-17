@@ -226,6 +226,11 @@ struct DNGImage {
   std::vector<unsigned int> strip_byte_counts;
   std::vector<unsigned int> strip_offsets;
 
+  // For tiled TIFF images. Entries are ordered according to TIFF's tile
+  // ordering; planar-separate images contain one tile set per sample plane.
+  std::vector<unsigned int> tile_byte_counts;
+  std::vector<unsigned int> tile_offsets;
+
   // Color profile
   std::string profile_name; // UTF-8 string
   // An array of flattened the pair of input/output value.
@@ -3999,28 +4004,30 @@ static bool ParseTIFFIFD(const StreamReader& sr,
         break;
 
       case TAG_TILE_OFFSETS:
-        if (len > 1) {
-          image.tile_offset = static_cast<unsigned int>(sr.tell());
-        } else {
-          if (!sr.read4(&image.tile_offset)) {
-            if (err) {
-              (*err) += "Failed to parse TileOffsets Tag.\n";
-            }
+        image.tile_offsets.clear();
+        for (size_t k = 0; k < len; ++k) {
+          unsigned int value = 0;
+          if (!sr.read_uint(type, &value)) {
+            if (err) (*err) += "Failed to parse TileOffsets Tag.\n";
+            return false;
           }
+          image.tile_offsets.push_back(value);
         }
+        if (!image.tile_offsets.empty()) image.tile_offset = image.tile_offsets[0];
         TINY_DNG_DPRINTF("tile_offt = %d\n", int(image.tile_offset));
         break;
 
       case TAG_TILE_BYTE_COUNTS:
-        if (len > 1) {
-          image.tile_byte_count = static_cast<unsigned int>(sr.tell());
-        } else {
-          if (!sr.read4(&image.tile_byte_count)) {
-            if (err) {
-              (*err) += "Failed to parse TileByteCounts Tag.\n";
-            }
+        image.tile_byte_counts.clear();
+        for (size_t k = 0; k < len; ++k) {
+          unsigned int value = 0;
+          if (!sr.read_uint(type, &value)) {
+            if (err) (*err) += "Failed to parse TileByteCounts Tag.\n";
+            return false;
           }
+          image.tile_byte_counts.push_back(value);
         }
+        if (!image.tile_byte_counts.empty()) image.tile_byte_count = image.tile_byte_counts[0];
         break;
 
       case TAG_CFA_PATTERN_DIM:
@@ -5152,6 +5159,127 @@ static int easyDecode(const unsigned char* compressed,
 
 }  // namespace lzw
 
+// Decode tiled TIFF images without requiring a host TIFF library. Supports
+// uncompressed, LZW and (when TINY_DNG_LOADER_ENABLE_ZIP is enabled) ZIP tiles,
+// including chunky and planar-separate sample layouts.
+static bool DecodeTiledImage(StreamReader& sr, DNGImage* image,
+                             bool swap_endian, std::string* err) {
+  if (!image || image->tile_width <= 0 || image->tile_length <= 0 ||
+      image->tile_offsets.empty() ||
+      image->tile_offsets.size() != image->tile_byte_counts.size()) {
+    if (err) (*err) += "Invalid tiled TIFF offset/count tables.\n";
+    return false;
+  }
+  if (image->bits_per_sample_original <= 0 ||
+      (image->bits_per_sample_original % 8) != 0 || image->width <= 0 ||
+      image->height <= 0 || image->samples_per_pixel <= 0 ||
+      image->samples_per_pixel > 4) {
+    if (err) (*err) += "Unsupported tiled TIFF sample layout.\n";
+    return false;
+  }
+  const size_t bytes_per_sample = size_t(image->bits_per_sample_original / 8);
+  const size_t spp = size_t(image->samples_per_pixel);
+  const size_t tile_pixels = size_t(image->tile_width) * image->tile_length;
+  const size_t tile_samples = image->planar_configuration == 2
+                                  ? tile_pixels : tile_pixels * spp;
+  const size_t tile_bytes = tile_samples * bytes_per_sample;
+  const size_t pixels = size_t(image->width) * image->height;
+  const size_t total_bytes = pixels * spp * bytes_per_sample;
+  if (!tile_bytes || !total_bytes || total_bytes > size_t(2) * 1024 * 1024 * 1024) {
+    if (err) (*err) += "Tiled TIFF image is too large.\n";
+    return false;
+  }
+  const size_t tiles_x = (size_t(image->width) + image->tile_width - 1) /
+                         image->tile_width;
+  const size_t tiles_y = (size_t(image->height) + image->tile_length - 1) /
+                         image->tile_length;
+  const size_t tiles_per_plane = tiles_x * tiles_y;
+  const size_t plane_count = image->planar_configuration == 2 ? spp : 1;
+  if (image->tile_offsets.size() < tiles_per_plane * plane_count) {
+    if (err) (*err) += "Tiled TIFF has too few tile records.\n";
+    return false;
+  }
+  image->bits_per_sample = image->bits_per_sample_original;
+  image->data.assign(total_bytes, 0);
+  std::vector<unsigned char> decoded(tile_bytes);
+  for (size_t plane = 0; plane < plane_count; ++plane) {
+    for (size_t ty = 0; ty < tiles_y; ++ty) {
+      for (size_t tx = 0; tx < tiles_x; ++tx) {
+        const size_t index = plane * tiles_per_plane + ty * tiles_x + tx;
+        const size_t offset = image->tile_offsets[index];
+        const size_t count = image->tile_byte_counts[index];
+        if (!count || offset > sr.size() || count > sr.size() - offset) {
+          if (err) (*err) += "Invalid tiled TIFF tile range.\n";
+          return false;
+        }
+        const uint8_t* src = sr.map_abs_addr(offset, count);
+        if (!src) return false;
+        std::fill(decoded.begin(), decoded.end(), 0);
+        bool ok = false;
+        if (image->compression == COMPRESSION_NONE) {
+          if (count <= tile_bytes) {
+            std::memcpy(decoded.data(), src, count);
+            ok = true;
+          }
+        } else if (image->compression == COMPRESSION_LZW) {
+          ok = lzw::easyDecode(src, int(count), int(count * 8), decoded.data(),
+                               int(decoded.size()), swap_endian) > 0;
+        } else if (image->compression == COMPRESSION_ZIP) {
+#ifdef TINY_DNG_LOADER_ENABLE_ZIP
+          unsigned long out_size = static_cast<unsigned long>(decoded.size());
+          ok = DecompressZIP(decoded.data(), &out_size, src,
+                             static_cast<unsigned long>(count), err);
+#endif
+        }
+        if (!ok) {
+          if (err) (*err) += "Unsupported or invalid tiled TIFF compression.\n";
+          return false;
+        }
+        if (image->predictor == 2) {
+          const size_t row_samples = image->planar_configuration == 2
+              ? size_t(image->tile_width) : size_t(image->tile_width) * spp;
+          const size_t sample_stride = image->planar_configuration == 2
+              ? bytes_per_sample : spp * bytes_per_sample;
+          const size_t row_bytes = row_samples * bytes_per_sample;
+          for (size_t y = 0; y < size_t(image->tile_length); ++y) {
+            unsigned char* row = decoded.data() + y * row_bytes;
+            for (size_t x = 1; x < size_t(image->tile_width); ++x) {
+              for (size_t b = 0; b < sample_stride; ++b) {
+                row[x * sample_stride + b] = static_cast<unsigned char>(
+                    row[x * sample_stride + b] + row[(x - 1) * sample_stride + b]);
+              }
+            }
+          }
+        } else if (image->predictor != 0 && image->predictor != 1) {
+          if (err) (*err) += "Unsupported tiled TIFF predictor.\n";
+          return false;
+        }
+        const size_t x0 = tx * size_t(image->tile_width);
+        const size_t y0 = ty * size_t(image->tile_length);
+        const size_t rows = (std::min)(size_t(image->tile_length), size_t(image->height) - y0);
+        const size_t cols = (std::min)(size_t(image->tile_width), size_t(image->width) - x0);
+        for (size_t y = 0; y < rows; ++y) {
+          if (image->planar_configuration == 2) {
+            for (size_t x = 0; x < cols; ++x) {
+              const size_t dst = ((y0 + y) * image->width + x0 + x) * spp + plane;
+              const size_t src_sample = y * size_t(image->tile_width) + x;
+              std::memcpy(image->data.data() + dst * bytes_per_sample,
+                          decoded.data() + src_sample * bytes_per_sample,
+                          bytes_per_sample);
+            }
+          } else {
+            const size_t dst = ((y0 + y) * image->width + x0) * spp * bytes_per_sample;
+            const size_t src_bytes = y * size_t(image->tile_width) * spp * bytes_per_sample;
+            std::memcpy(image->data.data() + dst, decoded.data() + src_bytes,
+                        cols * spp * bytes_per_sample);
+          }
+        }
+      }
+    }
+  }
+  return true;
+}
+
 #if defined(_WIN32)
 namespace {
 
@@ -5329,6 +5457,12 @@ bool LoadDNGFromMemory(const char* mem, unsigned int size,
 
     TINY_DNG_DPRINTF("image[%d].compression = %d\n", int(i),
                      image->compression);
+
+    if (image->tile_width > 0 && image->tile_length > 0 &&
+        !image->tile_offsets.empty()) {
+      if (!DecodeTiledImage(sr, image, swap_endian, err)) return false;
+      continue;
+    }
 
     if (image->compression == COMPRESSION_NONE) {  // no compression
 

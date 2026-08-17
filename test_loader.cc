@@ -2,6 +2,8 @@
 #include <cstdlib>
 #include <iostream>
 
+#include <zlib.h>
+
 #define TINY_DNG_LOADER_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
 #define TINY_DNG_NO_EXCEPTION

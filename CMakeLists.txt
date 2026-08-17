@@ -47,6 +47,11 @@ add_executable(${EXE_TARGET}
   test_loader.cc
   )
 add_sanitizers(${EXE_TARGET})
+find_package(ZLIB REQUIRED)
+target_compile_definitions(${EXE_TARGET} PRIVATE
+  TINY_DNG_LOADER_ENABLE_ZIP=1
+  TINY_DNG_LOADER_USE_SYSTEM_ZLIB=1)
+target_link_libraries(${EXE_TARGET} PRIVATE ZLIB::ZLIB)
 
 add_library(tinydng_v2 STATIC
   tiny_dng_v2.c
