@@ -331,9 +331,12 @@ static int parseSof3(ljp* self, int marker) {
   // All share the same frame header format:
   //   Lf(2) P(1) Y(2) X(2) Nf(1) [Ci Hi/Vi Tqi]*Nf
   // A2: header alone is 8 bytes past the current ix.
-  if (self->ix + 8 > self->datalen) return TDNG_LJ92_ERROR_CORRUPT;
+  if (self->ix < 0 || self->ix > self->datalen ||
+      self->datalen - self->ix < 8) return TDNG_LJ92_ERROR_CORRUPT;
   int Lf = BEH(self->data[self->ix]);
-  if (Lf < 8 || self->ix + Lf > self->datalen) return TDNG_LJ92_ERROR_CORRUPT;
+  if (Lf < 8 || Lf > self->datalen - self->ix) {
+    return TDNG_LJ92_ERROR_CORRUPT;
+  }
 
   self->bits = self->data[self->ix + 2];
   self->y = BEH(self->data[self->ix + 3]);
@@ -354,9 +357,12 @@ static int parseSof3(ljp* self, int marker) {
 static int parseBlock(ljp* self, int marker) {
   (void)marker;
   // A2: need 2 bytes for the segment length.
-  if (self->ix + 2 > self->datalen) return TDNG_LJ92_ERROR_CORRUPT;
+  if (self->ix < 0 || self->ix > self->datalen ||
+      self->datalen - self->ix < 2) return TDNG_LJ92_ERROR_CORRUPT;
   int len = BEH(self->data[self->ix]);
-  if (len < 2 || self->ix + len > self->datalen) return TDNG_LJ92_ERROR_CORRUPT;
+  if (len < 2 || len > self->datalen - self->ix) {
+    return TDNG_LJ92_ERROR_CORRUPT;
+  }
   self->ix += len;
   return TDNG_LJ92_ERROR_NONE;
 }

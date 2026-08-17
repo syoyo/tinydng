@@ -11,6 +11,7 @@
  *   F  Duplicate string tag frees the old value (dng.c: td_set_ascii)
  */
 #include "td_test_util.h"
+#include "tiny_dng_ljpeg92_v2.h"
 
 typedef struct { uint16_t tag, type; uint32_t count, val; } ent;
 
@@ -323,6 +324,24 @@ static void case_ljpeg_ssss(void) {
   free(buf);
 }
 
+/* I: truncated SOF/segment lengths must fail before any signed offset
+ * arithmetic can advance past the supplied memory. */
+static void case_ljpeg_truncated_segment(void) {
+  static const uint8_t bad[] = {
+      0xFF, 0xD8,             /* SOI */
+      0xFF, 0xC3, 0xFF, 0xFF  /* SOF3 with an unavailable length field */
+  };
+  tdng_lj92 lj = NULL;
+  int w = 0, h = 0, bits = 0, comps = 0;
+  int ret = tdng_lj92_open(&lj, bad, (int)sizeof(bad), &w, &h, &bits,
+                           &comps);
+  CHECK(ret != TDNG_LJ92_ERROR_NONE && lj == NULL,
+        "I: truncated LJPEG segment rejected cleanly (ret=%d)", ret);
+  if (lj) {
+    tdng_lj92_close(lj);
+  }
+}
+
 /* H: JPEGInterchangeFormat byte-count clamp (tiff.c td_build_segments).
  * A 0 byte count (or one extending past EOF) used to reach the baseline
  * JPEG decoder with an empty input (fuzzer crash); it must now be clamped
@@ -427,6 +446,7 @@ int main(void) {
   case_linearization_stride();
   case_duplicate_tag();
   case_ljpeg_ssss();
+  case_ljpeg_truncated_segment();
   case_jpeg_if_clamp();
   printf(g_fail ? "SECURITY: FAILURES\n" : "SECURITY: ALL PASS\n");
   return g_fail;

@@ -704,6 +704,9 @@ static size_t td_lj92_stream_read(void *user, uint64_t off, void *dst,
   if (off > s->size || (uint64_t)len > (s->size - off)) {
     return 0;
   }
+  if (UINT64_MAX - s->base < off) {
+    return 0;
+  }
   return s->io->read(s->io, s->base + off, dst, len);
 }
 

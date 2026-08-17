@@ -31,6 +31,8 @@
 #define TD_PSD_MAX_LAYER_BLOCKS 512u
 #define TD_PSD_MAX_GLOBAL_BLOCKS 2048u
 #define TD_PSD_MAX_SMART_OBJECTS 256u
+#define TD_PSD_MAX_UNICODE_BYTES (16u * 1024u * 1024u)
+#define TD_PSD_SCAN_CHUNK 4096u
 
 /* ------------------------------------------------------------------ */
 /* Small read helpers                                                 */
@@ -218,13 +220,14 @@ static char *td_psd_read_unicode(tinydng_context *ctx, const td_reader *r,
   uint64_t bytes, total;
   uint8_t *raw;
   char *out;
-  if (end - at < 4u || !td_r_u32(r, at, &units)) {
+  if (at > end || end - at < 4u || !td_r_u32(r, at, &units)) {
     td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_METADATA, 0, 0, at,
                  "PSD: unicode string header out of range");
     return NULL;
   }
   bytes = (uint64_t)units * 2u;
-  if (!td_safe_add_u64(4u, bytes, &total) || total > end - at) {
+  if (bytes > (uint64_t)SIZE_MAX || bytes > TD_PSD_MAX_UNICODE_BYTES ||
+      !td_safe_add_u64(4u, bytes, &total) || total > end - at) {
     td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_METADATA, 0, 0, at,
                  "PSD: unicode string overruns section");
     return NULL;
@@ -1070,21 +1073,33 @@ static int td_psd_is_link_key(uint32_t key) {
    descriptor heuristic is needed. */
 static uint64_t td_psd_scan_magic(const td_reader *r, uint64_t from,
                                   uint64_t limit) {
-  uint64_t p;
-  for (p = from; p < limit && limit - p >= 4u; p++) {
-    uint8_t b4[4];
-    const uint8_t *v = td_io_view(r->io, r->size, p, 4u, b4, sizeof(b4));
+  uint64_t p = from;
+  uint8_t scratch[TD_PSD_SCAN_CHUNK];
+  while (p < limit && limit - p >= 4u) {
+    uint64_t remain = limit - p;
+    size_t want = (remain > sizeof(scratch)) ? sizeof(scratch) :
+                  (size_t)remain;
+    const uint8_t *v = td_io_view(r->io, r->size, p, want, scratch,
+                                 sizeof(scratch));
+    size_t i;
     if (!v) {
       return 0;
     }
-    if ((v[0] == '8' && v[1] == 'B' && v[2] == 'P' && v[3] == 'S') ||
-        (v[0] == 0xFFu && v[1] == 0xD8u && v[2] == 0xFFu) ||
-        (v[0] == 0x89u && v[1] == 'P' && v[2] == 'N' && v[3] == 'G') ||
-        (v[0] == 'I' && v[1] == 'I' && v[2] == 0x2Au && v[3] == 0x00u) ||
-        (v[0] == 'M' && v[1] == 'M' && v[2] == 0x00u &&
-         (v[3] == 0x2Au || v[3] == 0x2Bu))) {
-      return p;
+    for (i = 0; i + 4u <= want; i++) {
+      const uint8_t *q = v + i;
+      if ((q[0] == '8' && q[1] == 'B' && q[2] == 'P' && q[3] == 'S') ||
+          (q[0] == 0xFFu && q[1] == 0xD8u && q[2] == 0xFFu) ||
+          (q[0] == 0x89u && q[1] == 'P' && q[2] == 'N' && q[3] == 'G') ||
+          (q[0] == 'I' && q[1] == 'I' && q[2] == 0x2Au && q[3] == 0x00u) ||
+          (q[0] == 'M' && q[1] == 'M' && q[2] == 0x00u &&
+           (q[3] == 0x2Au || q[3] == 0x2Bu))) {
+        return p + (uint64_t)i;
+      }
     }
+    if (want <= 3u) {
+      break;
+    }
+    p += (uint64_t)(want - 3u);
   }
   return 0;
 }

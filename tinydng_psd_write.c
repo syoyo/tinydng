@@ -139,6 +139,17 @@ static void td_psdw_patch_len(td_psdw *w, int is_psb, size_t at,
   }
 }
 
+static int td_psdw_patch_u32_len(td_psdw *w, size_t at, uint64_t v,
+                                 tinydng_error *err) {
+  if (v > UINT32_MAX) {
+    td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, 0, at,
+                 "PSD writer: 32-bit section length overflow");
+    return 0;
+  }
+  td_psdw_patch_len(w, 0, at, v);
+  return 1;
+}
+
 /* Pascal string: 1 length byte + bytes, field padded to `pad`. */
 static void td_psdw_pascal(td_psdw *w, const char *s, uint32_t pad) {
   size_t n = s ? strlen(s) : 0u;
@@ -520,6 +531,12 @@ static void td_psdw_resources(td_psdw *w, const tinydng_psd_write_doc *doc) {
   td_psdw_u16(w, 1u);
 
   if (doc->icc && doc->icc_size > 0u) {
+    if (doc->icc_size > UINT32_MAX) {
+      td_set_error(w->err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, 0,
+                   section_at, "PSD writer: ICC resource length overflow");
+      w->failed = 1;
+      return;
+    }
     td_psdw_u32(w, TD_PSDW_SIG_8BIM);
     td_psdw_u16(w, 1039u);
     td_psdw_u16(w, 0u);
@@ -531,6 +548,12 @@ static void td_psdw_resources(td_psdw *w, const tinydng_psd_write_doc *doc) {
   }
   if (!w->failed) {
     uint64_t sz = (uint64_t)(w->len - section_at - 4u);
+    if (sz > UINT32_MAX) {
+      td_set_error(w->err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, 0,
+                   section_at, "PSD writer: resource section length overflow");
+      w->failed = 1;
+      return;
+    }
     w->p[section_at + 0u] = (uint8_t)(sz >> 24);
     w->p[section_at + 1u] = (uint8_t)(sz >> 16);
     w->p[section_at + 2u] = (uint8_t)(sz >> 8);
@@ -610,8 +633,25 @@ static tinydng_status td_psdw_layer_info(td_psdw *w,
     td_psdw_i32(w, L->right);
     td_psdw_u16(w, L->channel_count);
     for (c = 0; c < L->channel_count; c++) {
+      uint64_t channel_len;
+      if ((uint64_t)payloads[pi + c].size > UINT64_MAX - 2u) {
+        td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, 0,
+                     w->len, "PSD writer: channel length overflow");
+        st = TINYDNG_E_BOUNDS;
+        break;
+      }
+      channel_len = (uint64_t)payloads[pi + c].size + 2u;
+      if (!is_psb && channel_len > UINT32_MAX) {
+        td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, 0,
+                     w->len, "PSD writer: channel length overflow");
+        st = TINYDNG_E_BOUNDS;
+        break;
+      }
       td_psdw_u16(w, (uint16_t)L->channels[c].id);
-      td_psdw_len(w, is_psb, (uint64_t)payloads[pi + c].size + 2u);
+      td_psdw_len(w, is_psb, channel_len);
+    }
+    if (st != TINYDNG_OK) {
+      break;
     }
     pi += L->channel_count;
     td_psdw_u32(w, TD_PSDW_SIG_8BIM);
@@ -644,23 +684,35 @@ static tinydng_status td_psdw_layer_info(td_psdw *w,
         size_t start = w->len;
         td_psdw_unicode(w, L->name);
         if (!w->failed) {
-          uint32_t sz = (uint32_t)(w->len - start);
-          if (sz & 1u) {
-            td_psdw_u8(w, 0u);
+          uint64_t sz = (uint64_t)(w->len - start);
+          if (!td_psdw_patch_u32_len(w, luni_len_at, sz, err)) {
+            st = TINYDNG_E_BOUNDS;
           }
-          w->p[luni_len_at + 0u] = (uint8_t)(sz >> 24);
-          w->p[luni_len_at + 1u] = (uint8_t)(sz >> 16);
-          w->p[luni_len_at + 2u] = (uint8_t)(sz >> 8);
-          w->p[luni_len_at + 3u] = (uint8_t)(sz & 0xFFu);
+          if (st != TINYDNG_OK) {
+            continue;
+          }
+          if (sz & 1u) {
+            if (sz == UINT32_MAX) {
+              td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, 0,
+                           luni_len_at,
+                           "PSD writer: unicode name length overflow");
+              st = TINYDNG_E_BOUNDS;
+              continue;
+            }
+            td_psdw_u8(w, 0u);
+            sz++;
+          }
+          if (!td_psdw_patch_u32_len(w, luni_len_at, sz, err)) {
+            st = TINYDNG_E_BOUNDS;
+          }
         }
       }
     }
-    if (!w->failed) {
-      uint32_t sz = (uint32_t)(w->len - extra_at - 4u);
-      w->p[extra_at + 0u] = (uint8_t)(sz >> 24);
-      w->p[extra_at + 1u] = (uint8_t)(sz >> 16);
-      w->p[extra_at + 2u] = (uint8_t)(sz >> 8);
-      w->p[extra_at + 3u] = (uint8_t)(sz & 0xFFu);
+    if (!w->failed && st == TINYDNG_OK) {
+      uint64_t sz = (uint64_t)(w->len - extra_at - 4u);
+      if (!td_psdw_patch_u32_len(w, extra_at, sz, err)) {
+        st = TINYDNG_E_BOUNDS;
+      }
     }
   }
 
@@ -682,16 +734,28 @@ static tinydng_status td_psdw_layer_info(td_psdw *w,
   if (st != TINYDNG_OK) {
     return st;
   }
+  if (w->failed) {
+    return td_error_status_or(err, TINYDNG_E_OOM);
+  }
 
   /* Patch layer-info length (payload after the length field, even). */
   {
     size_t len_field = is_psb ? 8u : 4u;
     uint64_t payload = (uint64_t)(w->len - li_at - len_field);
     if (payload & 1u) {
+      if (!is_psb && payload == UINT32_MAX) {
+        td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, 0,
+                     li_at, "PSD writer: layer section length overflow");
+        return TINYDNG_E_BOUNDS;
+      }
       td_psdw_u8(w, 0u);
       payload++;
     }
-    td_psdw_patch_len(w, is_psb, li_at, payload);
+    if (is_psb) {
+      td_psdw_patch_len(w, 1, li_at, payload);
+    } else if (!td_psdw_patch_u32_len(w, li_at, payload, err)) {
+      return TINYDNG_E_BOUNDS;
+    }
   }
   return TINYDNG_OK;
 }
@@ -751,6 +815,11 @@ tinydng_status tinydng_psd_write_memory(tinydng_context *ctx,
 
   /* --- image resources --- */
   td_psdw_resources(&w, doc);
+  if (w.failed) {
+    st = td_error_status_or(err, TINYDNG_E_BOUNDS);
+    td_ctx_free(ctx, w.p);
+    return st;
+  }
 
   /* --- layer and mask info --- */
   lm_at = td_psdw_mark(&w, is_psb);
@@ -760,16 +829,32 @@ tinydng_status tinydng_psd_write_memory(tinydng_context *ctx,
       td_ctx_free(ctx, w.p);
       return st;
     }
+    if (w.failed) {
+      st = td_error_status_or(err, TINYDNG_E_OOM);
+      td_ctx_free(ctx, w.p);
+      return st;
+    }
     td_psdw_u32(&w, 0u); /* global layer mask info: empty */
   }
   {
     size_t len_field = is_psb ? 8u : 4u;
     uint64_t total = (uint64_t)(w.len - lm_at - len_field);
     if (total & 1u) {
+      if (!is_psb && total == UINT32_MAX) {
+        td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, 0,
+                     lm_at, "PSD writer: layer-mask section length overflow");
+        td_ctx_free(ctx, w.p);
+        return TINYDNG_E_BOUNDS;
+      }
       td_psdw_u8(&w, 0u);
       total++;
     }
-    td_psdw_patch_len(&w, is_psb, lm_at, total);
+    if (is_psb) {
+      td_psdw_patch_len(&w, 1, lm_at, total);
+    } else if (!td_psdw_patch_u32_len(&w, lm_at, total, err)) {
+      td_ctx_free(ctx, w.p);
+      return TINYDNG_E_BOUNDS;
+    }
   }
 
   /* --- composite image data --- */
