@@ -1,6 +1,10 @@
 //
 // TinyDNGWriter, single header only DNG writer in C++11.
 //
+// DEPRECATED: This v1 C++ writer has been superseded by the v3 pure C11 API
+// in tinydng.h (tinydng_write_file / tinydng_writer_*). This file is kept
+// for reference only and will be removed in a future release.
+//
 
 /*
 The MIT License (MIT)

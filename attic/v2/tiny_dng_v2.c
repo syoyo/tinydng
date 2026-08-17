@@ -1,3 +1,6 @@
+/* DEPRECATED: This v2 loader implementation has been superseded by the v3
+   pure C11 API in tinydng.h. This file is kept for reference only. */
+
 #include "tiny_dng_v2.h"
 
 #include "tiny_dng_ljpeg92_v2.h"

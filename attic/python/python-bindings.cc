@@ -1,3 +1,6 @@
+/* DEPRECATED: These Python bindings use the v1 C++ API. They need to be
+   rewritten to use the v3 pure C11 API (tinydng.h) before they can be
+   re-enabled. */
 #define TINY_DNG_LOADER_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
 #include "tiny_dng_loader.h"

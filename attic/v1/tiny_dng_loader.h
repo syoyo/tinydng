@@ -1,6 +1,10 @@
 //
 // TinyDNGLoader, single header only DNG/TIFF loader.
 //
+// DEPRECATED: This v1 C++ loader has been superseded by the v3 pure C11 API
+// in tinydng.h. This file is kept for reference only and will be removed
+// in a future release.
+//
 
 /*
 The MIT License (MIT)

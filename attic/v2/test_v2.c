@@ -1,3 +1,5 @@
+/* DEPRECATED: This v2 test has been superseded by the v3 tests in
+   tests/v3_test/. Kept for reference only. */
 #include <stdio.h>
 #include <string.h>
 #include "tiny_dng_v2.h"

@@ -1,3 +1,7 @@
+/* DEPRECATED: This v2 C loader has been superseded by the v3 pure C11 API
+   in tinydng.h. This file is kept for reference only and will be removed
+   in a future release. The LJPEG codec (tiny_dng_ljpeg92_v2.h) is still
+   used by v3 and is NOT deprecated. */
 #ifndef TINY_DNG_V2_H_
 #define TINY_DNG_V2_H_
 

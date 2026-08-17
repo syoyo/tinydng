@@ -1,3 +1,5 @@
+/* DEPRECATED: This v1 fuzzer has been superseded by the v3 fuzzers in
+   fuzzer/ (fuzz-v3.c, fuzz-v3-psd.c, etc.). Kept for reference only. */
 #include <stdint.h>
 #include <stddef.h>
 #define STB_IMAGE_IMPLEMENTATION

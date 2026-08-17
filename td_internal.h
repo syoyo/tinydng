@@ -247,6 +247,7 @@ int td_r_val_real(const td_reader *r, uint16_t type, uint64_t at, double *out);
 #define TD_TAG_ACTIVE_AREA 50829u
 #define TD_TAG_PROFILE_NAME 50936u
 #define TD_TAG_PROFILE_TONE_CURVE 50940u
+#define TD_TAG_PROFILE_EMBED_POLICY 50941u
 #define TD_TAG_FORWARD_MATRIX1 50964u
 #define TD_TAG_FORWARD_MATRIX2 50965u
 #define TD_TAG_OPCODE_LIST1 51008u

@@ -637,6 +637,16 @@ int td_dng_handle_tag(tinydng_context *ctx, const td_reader *r,
       img->raw.noise_profile_count = (uint16_t)n;
       break;
     }
+    case TD_TAG_PROFILE_EMBED_POLICY: {
+      uint64_t v;
+      if (td_read_uints(r, type, data_off, count, &v, 1)) {
+        if (v <= 2) {
+          img->raw.profile_embed_policy = (int8_t)v;
+          img->raw.has_profile_embed_policy = 1;
+        }
+      }
+      break;
+    }
     case TD_TAG_CR2_SLICES: {
       uint64_t v[3];
       size_t i, n = td_read_uints(r, type, data_off, count, v, 3);

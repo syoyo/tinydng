@@ -111,6 +111,80 @@ const char *tinydng_stage_string(tinydng_stage stage) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Quick format check                                                  */
+/* ------------------------------------------------------------------ */
+
+static int td_is_tiff_header(const uint8_t *p, size_t n) {
+  if (n < 4) {
+    return 0;
+  }
+  /* II = little-endian, MM = big-endian. */
+  if (p[0] == 'I' && p[1] == 'I') {
+    uint16_t ver = (uint16_t)p[2] | ((uint16_t)p[3] << 8);
+    return ver == 0x002a || ver == 0x002b; /* TIFF 6.0 or BigTIFF */
+  }
+  if (p[0] == 'M' && p[1] == 'M') {
+    uint16_t ver = ((uint16_t)p[2] << 8) | (uint16_t)p[3];
+    return ver == 0x002a || ver == 0x002b;
+  }
+  return 0;
+}
+
+static int td_is_psd_header(const uint8_t *p, size_t n) {
+  if (n < 4) {
+    return 0;
+  }
+  return p[0] == '8' && p[1] == 'B' && p[2] == 'P' && p[3] == 'S';
+}
+
+tinydng_status tinydng_is_dng_memory(const void *data, size_t size,
+                                     tinydng_error *err) {
+  const uint8_t *p;
+  tinydng_error_clear(err);
+  if (!data || size < 4) {
+    if (err) {
+      td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_NONE, 0, 0, 0,
+                   "is_dng: data is NULL or too small (%zu bytes)", size);
+    }
+    return TINYDNG_E_INVALID_ARG;
+  }
+  p = (const uint8_t *)data;
+  if (td_is_tiff_header(p, size) || td_is_psd_header(p, size)) {
+    return TINYDNG_OK;
+  }
+  if (err) {
+    td_set_error(err, TINYDNG_E_PARSE, TINYDNG_STAGE_HEADER, 0, 0, 0,
+                 "is_dng: not a TIFF/DNG/PSD header");
+  }
+  return TINYDNG_E_PARSE;
+}
+
+tinydng_status tinydng_is_dng(const char *path, tinydng_error *err) {
+  uint8_t hdr[4];
+  FILE *f;
+  size_t n;
+  tinydng_error_clear(err);
+  if (!path) {
+    if (err) {
+      td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_NONE, 0, 0, 0,
+                   "is_dng: path is NULL");
+    }
+    return TINYDNG_E_INVALID_ARG;
+  }
+  f = fopen(path, "rb");
+  if (!f) {
+    if (err) {
+      td_set_error(err, TINYDNG_E_IO, TINYDNG_STAGE_IO, 0, 0, 0,
+                   "is_dng: cannot open '%s'", path);
+    }
+    return TINYDNG_E_IO;
+  }
+  n = fread(hdr, 1, 4, f);
+  fclose(f);
+  return tinydng_is_dng_memory(hdr, n, err);
+}
+
+/* ------------------------------------------------------------------ */
 /* Safe arithmetic                                                    */
 /* ------------------------------------------------------------------ */
 

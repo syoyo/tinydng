@@ -158,6 +158,21 @@ typedef enum tinydng_sample_format {
   TINYDNG_SAMPLEFORMAT_IEEEFP = 3
 } tinydng_sample_format;
 
+/* Common LightSource values (EXIF tag 0x9206 / DNG CalibrationIlluminant). */
+#define TINYDNG_LIGHTSOURCE_UNKNOWN       0
+#define TINYDNG_LIGHTSOURCE_DAYLIGHT      1
+#define TINYDNG_LIGHTSOURCE_FLUORESCENT   2
+#define TINYDNG_LIGHTSOURCE_TUNGSTEN      3
+#define TINYDNG_LIGHTSOURCE_FLASH         4
+#define TINYDNG_LIGHTSOURCE_FINE_WEATHER  9
+#define TINYDNG_LIGHTSOURCE_CLOUDY        10
+#define TINYDNG_LIGHTSOURCE_SHADE         11
+#define TINYDNG_LIGHTSOURCE_DAYLIGHT_FLUORESCENT 12
+#define TINYDNG_LIGHTSOURCE_D50           20
+#define TINYDNG_LIGHTSOURCE_D55           21
+#define TINYDNG_LIGHTSOURCE_D65           22
+#define TINYDNG_LIGHTSOURCE_D75           23
+
 typedef struct tinydng_exif {
   char *make;
   char *model;
@@ -254,6 +269,8 @@ typedef struct tinydng_raw_info {
   uint16_t cr2_slices[3];
   uint8_t has_cr2_slices;
   char *semantic_name; /* Apple ProRAW */
+  int8_t profile_embed_policy; /* 0=allow copy, 1=embed if used, 2=embed never; -1=not set */
+  uint8_t has_profile_embed_policy;
   uint16_t *linearization_table;
   size_t linearization_table_count;
   tinydng_gainmap *gainmaps;
@@ -313,6 +330,17 @@ typedef struct tinydng_image_info {
   tinydng_field *custom_fields;
   size_t custom_field_count;
 } tinydng_image_info;
+
+/* ------------------------------------------------------------------ */
+/* Quick format check (no full parse)                                  */
+/* ------------------------------------------------------------------ */
+
+/* Returns TINYDNG_OK if `path` starts with a valid TIFF/PSD/PSB header. */
+tinydng_status tinydng_is_dng(const char *path, tinydng_error *err);
+
+/* Returns TINYDNG_OK if `data`/`size` starts with a valid TIFF/PSD/PSB header. */
+tinydng_status tinydng_is_dng_memory(const void *data, size_t size,
+                                     tinydng_error *err);
 
 /* ------------------------------------------------------------------ */
 /* Open / accessors                                                   */
