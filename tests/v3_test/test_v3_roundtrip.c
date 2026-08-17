@@ -249,6 +249,81 @@ static int test_region_segment(tinydng_context *ctx) {
   return rc;
 }
 
+static int roundtrip_bigtiff(tinydng_context *ctx, const char *name,
+                             uint16_t comp, int rgb, uint16_t bps, uint32_t W,
+                             uint32_t H) {
+  tinydng_error e;
+  uint16_t spp = rgb ? 3u : 1u;
+  size_t sb = (size_t)bps / 8u;
+  size_t ns = (size_t)W * H * spp;
+  size_t bytes = ns * sb;
+  uint8_t *src = (uint8_t *)malloc(bytes);
+  tinydng_write_image wi;
+  tinydng_write_options wo;
+  tinydng_document *doc = NULL;
+  tinydng_pixels px;
+  uint8_t *blob = NULL;
+  size_t blob_len = 0;
+  int rc = 0;
+  size_t i;
+
+  for (i = 0; i < bytes; i++) {
+    src[i] = (uint8_t)((i * 2654435761u) >> ((i & 3u) * 8u));
+  }
+
+  memset(&wi, 0, sizeof(wi));
+  wi.width = W;
+  wi.height = H;
+  wi.samples_per_pixel = spp;
+  wi.bits_per_sample = bps;
+  wi.sample_format = TINYDNG_SAMPLEFORMAT_UINT;
+  wi.data = src;
+  wi.data_size = bytes;
+  memset(&wo, 0, sizeof(wo));
+  wo.compression = comp;
+  wo.bigtiff = 1;
+
+  if (tinydng_write_memory(ctx, &wi, &wo, &blob, &blob_len, &e) != TINYDNG_OK) {
+    CHECK(0, "%s: write failed: %s", name, e.message);
+    free(src);
+    return 1;
+  }
+  /* Verify BigTIFF magic (version 43 = 0x002B LE) */
+  if (blob_len >= 4 && blob[2] == 0x2B && blob[3] == 0x00) {
+    printf("  %-22s header=BigTIFF OK\n", name);
+  } else {
+    CHECK(0, "%s: expected BigTIFF header", name);
+    tinydng_buffer_free(ctx, blob);
+    free(src);
+    return 1;
+  }
+  if (tinydng_open_memory(ctx, blob, blob_len, NULL, &doc, &e) != TINYDNG_OK) {
+    CHECK(0, "%s: reopen failed: %s", name, e.message);
+    tinydng_buffer_free(ctx, blob);
+    free(src);
+    return 1;
+  }
+  if (tinydng_decode_image(ctx, doc, 0, NULL, &px, &e) != TINYDNG_OK) {
+    CHECK(0, "%s: decode failed: %s", name, e.message);
+    tinydng_document_destroy(ctx, doc);
+    tinydng_buffer_free(ctx, blob);
+    free(src);
+    return 1;
+  }
+  if (px.size != bytes || memcmp(px.data, src, bytes) != 0) {
+    CHECK(0, "%s: pixel mismatch (size %zu vs %zu)", name, px.size, bytes);
+    rc = 1;
+  } else {
+    printf("  %-22s %ux%u spp=%u bps=%u BigTIFF -> MATCH\n", name, W, H, spp,
+           bps);
+  }
+  tinydng_pixels_free(ctx, &px);
+  tinydng_document_destroy(ctx, doc);
+  tinydng_buffer_free(ctx, blob);
+  free(src);
+  return rc;
+}
+
 int main(void) {
   tinydng_context *ctx = tinydng_context_create(NULL, NULL);
   if (!ctx) {
@@ -269,6 +344,15 @@ int main(void) {
   test_dng_metadata(ctx);
   printf("== region/segment ==\n");
   test_region_segment(ctx);
+  printf("== BigTIFF roundtrips ==\n");
+  roundtrip_bigtiff(ctx, "bigtiff none mono8", TINYDNG_COMPRESSION_NONE, 0, 8,
+                    64, 48);
+  roundtrip_bigtiff(ctx, "bigtiff none rgb16", TINYDNG_COMPRESSION_NONE, 1, 16,
+                    100, 80);
+  roundtrip_bigtiff(ctx, "bigtiff lzw mono16", TINYDNG_COMPRESSION_LZW, 0, 16,
+                    200, 150);
+  roundtrip_bigtiff(ctx, "bigtiff ljpeg mono16", TINYDNG_COMPRESSION_NEW_JPEG,
+                    0, 16, 256, 192);
 
   printf("memory leak check: used=%zu\n", tinydng_context_memory_used(ctx));
   if (tinydng_context_memory_used(ctx) != 0u) {

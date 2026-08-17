@@ -271,8 +271,8 @@ typedef struct td_ifd_build {
   uint16_t predictor;
   uint32_t rows_per_strip;
   uint32_t tile_width, tile_length;
-  uint32_t jpeg_if_offset;
-  uint32_t jpeg_if_byte_count;
+  uint64_t jpeg_if_offset;
+  uint64_t jpeg_if_byte_count;
   uint32_t new_subfile_type;
 
   uint64_t *strip_offsets;

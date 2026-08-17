@@ -131,6 +131,9 @@ static int td_val_uint_from_buf(const uint8_t *p, uint16_t type,
     case TD_TYPE_IFD8:
       *out = td_u64_from_buf(p, big_endian);
       return 1;
+    case TD_TYPE_SLONG8:
+      *out = (uint64_t)(int64_t)td_u64_from_buf(p, big_endian);
+      return 1;
     default:
       return 0;
   }
@@ -496,13 +499,18 @@ static void *td_grow_array(tinydng_context *ctx, void *ptr, size_t *cap,
   return np;
 }
 
-static int td_read_scalar_uint(const td_reader *r, const td_entry *e,
-                               uint32_t *out) {
-  uint64_t v;
+static int td_read_scalar_uint64(const td_reader *r, const td_entry *e,
+                                 uint64_t *out) {
   if (e->count < 1u || e->type_size == 0u) {
     return 0;
   }
-  if (!td_r_val_uint(r, e->type, e->data_off, &v)) {
+  return td_r_val_uint(r, e->type, e->data_off, out);
+}
+
+static int td_read_scalar_uint(const td_reader *r, const td_entry *e,
+                               uint32_t *out) {
+  uint64_t v;
+  if (!td_read_scalar_uint64(r, e, &v)) {
     return 0;
   }
   *out = (uint32_t)v;
@@ -710,18 +718,18 @@ static tinydng_status td_parse_ifd(tinydng_context *ctx, const td_reader *r,
         }
         break;
       case TD_TAG_JPEG_IF_OFFSET:
-        (void)td_read_scalar_uint(r, &e, &b->jpeg_if_offset);
+        (void)td_read_scalar_uint64(r, &e, &b->jpeg_if_offset);
         break;
       case TD_TAG_JPEG_IF_BYTE_COUNT:
-        (void)td_read_scalar_uint(r, &e, &b->jpeg_if_byte_count);
+        (void)td_read_scalar_uint64(r, &e, &b->jpeg_if_byte_count);
         break;
       case TD_TAG_NEW_SUBFILE_TYPE:
         (void)td_read_scalar_uint(r, &e, &b->new_subfile_type);
         break;
       case TD_TAG_EXIF_IFD: {
-        uint32_t exif_off;
-        if (td_read_scalar_uint(r, &e, &exif_off)) {
-          td_parse_metadata_ifd(ctx, r, (uint64_t)exif_off, img, ifd_index, err);
+        uint64_t exif_off;
+        if (td_read_scalar_uint64(r, &e, &exif_off)) {
+          td_parse_metadata_ifd(ctx, r, exif_off, img, ifd_index, err);
         }
         break;
       }

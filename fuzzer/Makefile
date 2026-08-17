@@ -13,9 +13,9 @@ all:
 	clang++ -std=c++11 -fsanitize=address,fuzzer -g -O0  -o fuzzer_loader -I../ fuzz-loader.cc -pthread
 	#clang++ -std=c++11 -fsanitize=address,fuzzer -g -O0  -o fuzzer_writer -I../ fuzz-writer.cc -pthread
 
-.PHONY: v3 v3-read v3-write v3-psd v3-psd-write psd-seeds clean-v3
+.PHONY: v3 v3-read v3-write v3-bigtiff v3-psd v3-psd-write psd-seeds clean-v3
 
-v3: v3-read v3-write v3-psd v3-psd-write
+v3: v3-read v3-write v3-bigtiff v3-psd v3-psd-write
 
 v3-read:
 	$(CLANG) $(CFLAGS) fuzz-v3.c $(V3_SRCS) $(PSD_SRCS) -lpthread -o fuzz-v3
@@ -25,6 +25,9 @@ v3-write:
 
 v3-psd:
 	$(CLANG) $(CFLAGS) fuzz-v3-psd.c $(V3_SRCS) $(PSD_SRCS) -lpthread -o fuzz-v3-psd
+
+v3-bigtiff:
+	$(CLANG) $(CFLAGS) fuzz-v3-bigtiff.c $(V3_SRCS) $(PSD_SRCS) -lpthread -o fuzz-v3-bigtiff
 
 v3-psd-write:
 	$(CLANG) $(CFLAGS) fuzz-v3-psd-write.c $(V3_SRCS) $(PSD_SRCS) -lpthread \
@@ -37,4 +40,4 @@ psd-seeds:
 	mkdir -p seeds-psd && ./gen_psd seeds-psd
 
 clean-v3:
-	rm -f fuzz-v3 fuzz-v3-write fuzz-v3-psd fuzz-v3-psd-write gen_psd
+	rm -f fuzz-v3 fuzz-v3-write fuzz-v3-bigtiff fuzz-v3-psd fuzz-v3-psd-write gen_psd

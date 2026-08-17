@@ -152,6 +152,432 @@ static int test_bigtiff(tinydng_context *ctx) {
   return rc;
 }
 
+/* BigTIFF big-endian byte order. */
+static int test_bigtiff_be(tinydng_context *ctx) {
+  uint32_t w = 32, h = 24, i;
+  size_t strip_len = (size_t)w * h;
+  uint8_t *img = (uint8_t *)malloc(strip_len);
+  size_t strip_off = 16, ifd_off, total;
+  uint8_t *buf, *e;
+  int n = 0;
+  tinydng_error err;
+  tinydng_document *doc = NULL;
+  tinydng_pixels px;
+  int rc = 0;
+  const int NENT = 9;
+
+  for (i = 0; i < strip_len; i++) {
+    img[i] = (uint8_t)((i * 73u + 5u) & 0xffu);
+  }
+  ifd_off = strip_off + strip_len + (strip_len & 1u);
+  total = ifd_off + 8u + (size_t)NENT * 20u + 8u;
+  buf = (uint8_t *)calloc(1, total);
+  buf[0] = 'M';
+  buf[1] = 'M';
+  tdt_pu16(buf + 2, 43, 1);
+  tdt_pu16(buf + 4, 8, 1);
+  tdt_pu16(buf + 6, 0, 1);
+  tdt_pu64(buf + 8, ifd_off, 1);
+  memcpy(buf + strip_off, img, strip_len);
+  tdt_pu64(buf + ifd_off, (uint64_t)NENT, 1);
+  e = buf + ifd_off + 8u;
+#define BENT_BE(tag, type, cnt, val)            \
+  do {                                          \
+    tdt_pu16(e + n * 20 + 0, (tag), 1);         \
+    tdt_pu16(e + n * 20 + 2, (type), 1);        \
+    tdt_pu64(e + n * 20 + 4, (cnt), 1);         \
+    tdt_pu64(e + n * 20 + 12, (val), 1);        \
+    n++;                                        \
+  } while (0)
+  /* All values use LONG8 (type 16) to avoid endianness alignment issues
+     when writing via tdt_pu64. */
+  BENT_BE(256, 16, 1, w);
+  BENT_BE(257, 16, 1, h);
+  BENT_BE(258, 16, 1, 8);
+  BENT_BE(259, 16, 1, 1);
+  BENT_BE(262, 16, 1, 1);
+  BENT_BE(273, 16, 1, strip_off);
+  BENT_BE(277, 16, 1, 1);
+  BENT_BE(278, 16, 1, h);
+  BENT_BE(279, 16, 1, strip_len);
+#undef BENT_BE
+  tdt_pu64(buf + ifd_off + 8u + (size_t)NENT * 20u, 0, 1);
+
+  if (tinydng_open_memory(ctx, buf, total, NULL, &doc, &err) == TINYDNG_OK &&
+      tinydng_decode_image(ctx, doc, 0, NULL, &px, &err) == TINYDNG_OK) {
+    CHECK(px.width == w && px.height == h && px.size == strip_len,
+          "bigtiff BE dims");
+    CHECK(memcmp(px.data, img, strip_len) == 0, "bigtiff BE pixels");
+    printf("  BigTIFF BE (v43, LONG8) %ux%u decoded OK\n", w, h);
+    tinydng_pixels_free(ctx, &px);
+    tinydng_document_destroy(ctx, doc);
+  } else {
+    CHECK(0, "bigtiff BE open/decode: %s", err.message);
+    rc = 1;
+  }
+  free(buf);
+  free(img);
+  return rc;
+}
+
+/* BigTIFF with tiled layout (TileWidth/TileLength + tile offsets as LONG8). */
+static int test_bigtiff_tiled(tinydng_context *ctx) {
+  uint32_t W = 48, H = 40, TW = 16, TL = 8;
+  uint32_t across = (W + TW - 1u) / TW;
+  uint32_t down = (H + TL - 1u) / TL;
+  uint32_t ntiles = across * down;
+  size_t tile_bytes = (size_t)TW * TL;
+  size_t img_bytes = (size_t)W * H;
+  uint8_t *img = (uint8_t *)calloc(1, img_bytes);
+  uint32_t t;
+  /* IFD: 10 entries */
+  const int NENT = 10;
+  /* Layout: header(16) | tile data | tile_offsets(ntiles*8) |
+     tile_bytecounts(ntiles*8) | IFD(8+NENT*20+8) */
+  size_t data_off = 16;
+  size_t toff_off, tbc_off, ifd_off, total;
+  uint8_t *buf, *e;
+  int n = 0;
+  tinydng_error err;
+  tinydng_document *doc = NULL;
+  tinydng_pixels px;
+  int rc = 0;
+
+  for (t = 0; t < (uint32_t)img_bytes; t++) {
+    img[t] = (uint8_t)((t * 41u + 7u) & 0xffu);
+  }
+
+  /* tile data starts at data_off, followed by offset/count arrays, then IFD */
+  toff_off = data_off + (size_t)ntiles * tile_bytes;
+  toff_off = (toff_off + 7u) & ~(size_t)7u; /* align to 8 */
+  tbc_off = toff_off + (size_t)ntiles * 8u;
+  ifd_off = tbc_off + (size_t)ntiles * 8u;
+  ifd_off = (ifd_off + 7u) & ~(size_t)7u; /* align to 8 */
+  total = ifd_off + 8u + (size_t)NENT * 20u + 8u;
+  buf = (uint8_t *)calloc(1, total);
+
+  /* Write header */
+  buf[0] = 'I'; buf[1] = 'I';
+  tdt_pu16(buf + 2, 43, 0);
+  tdt_pu16(buf + 4, 8, 0);
+  tdt_pu16(buf + 6, 0, 0);
+  tdt_pu64(buf + 8, ifd_off, 0);
+
+  /* Write tiles (zero-padded to full tile dims) */
+  for (t = 0; t < ntiles; t++) {
+    uint32_t tx = (t % across) * TW;
+    uint32_t ty = (t / across) * TL;
+    uint32_t tw = TW, th = TL;
+    uint32_t x, y;
+    if (tx + tw > W) tw = W - tx;
+    if (ty + th > H) th = H - ty;
+    for (y = 0; y < th; y++) {
+      for (x = 0; x < tw; x++) {
+        uint32_t gx = tx + x, gy = ty + y;
+        buf[data_off + (size_t)t * tile_bytes + (size_t)y * TW + x] =
+            img[gy * W + gx];
+      }
+    }
+  }
+
+  /* Write tile offset and byte count arrays */
+  for (t = 0; t < ntiles; t++) {
+    uint64_t off = data_off + (size_t)t * tile_bytes;
+    uint64_t bc = tile_bytes;
+    tdt_pu64(buf + toff_off + (size_t)t * 8u, off, 0);
+    tdt_pu64(buf + tbc_off + (size_t)t * 8u, bc, 0);
+  }
+
+  /* IFD */
+  tdt_pu64(buf + ifd_off, (uint64_t)NENT, 0);
+  e = buf + ifd_off + 8u;
+#define BTENT(tag, type, cnt, val)             \
+  do {                                        \
+    tdt_pu16(e + n * 20 + 0, (tag), 0);       \
+    tdt_pu16(e + n * 20 + 2, (type), 0);      \
+    tdt_pu64(e + n * 20 + 4, (cnt), 0);       \
+    tdt_pu64(e + n * 20 + 12, (val), 0);      \
+    n++;                                      \
+  } while (0)
+  BTENT(256, 4, 1, W);
+  BTENT(257, 4, 1, H);
+  BTENT(258, 3, 1, 8);
+  BTENT(259, 3, 1, 1);
+  BTENT(262, 3, 1, 1);
+  BTENT(322, 4, 1, TW);  /* TileWidth */
+  BTENT(323, 4, 1, TL);  /* TileLength */
+  BTENT(324, 16, ntiles, toff_off); /* TileOffsets LONG8 */
+  BTENT(325, 16, ntiles, tbc_off); /* TileByteCounts LONG8 */
+  BTENT(339, 3, 1, 1);   /* SampleFormat UINT */
+#undef BTENT
+  tdt_pu64(buf + ifd_off + 8u + (size_t)NENT * 20u, 0, 0);
+
+  if (tinydng_open_memory(ctx, buf, total, NULL, &doc, &err) == TINYDNG_OK &&
+      tinydng_decode_image(ctx, doc, 0, NULL, &px, &err) == TINYDNG_OK) {
+    CHECK(px.width == W && px.height == H && px.size == img_bytes,
+          "bigtiff tiled dims");
+    CHECK(memcmp(px.data, img, img_bytes) == 0, "bigtiff tiled pixels");
+    printf("  BigTIFF tiled %ux%u (%ux%u tiles, %u total) decoded OK\n",
+           W, H, TW, TL, ntiles);
+    tinydng_pixels_free(ctx, &px);
+    tinydng_document_destroy(ctx, doc);
+  } else {
+    CHECK(0, "bigtiff tiled open/decode: %s", err.message);
+    rc = 1;
+  }
+  free(buf);
+  free(img);
+  return rc;
+}
+
+/* BigTIFF with LONG (type 4) strip offsets instead of LONG8 (type 16).
+   Verifies the reader handles mixed classic values inside a BigTIFF file. */
+static int test_bigtiff_long_offsets(tinydng_context *ctx) {
+  uint32_t w = 20, h = 16, i;
+  size_t strip_len = (size_t)w * h;
+  uint8_t *img = (uint8_t *)malloc(strip_len);
+  size_t strip_off = 16, ifd_off, total;
+  uint8_t *buf, *e;
+  int n = 0;
+  tinydng_error err;
+  tinydng_document *doc = NULL;
+  tinydng_pixels px;
+  int rc = 0;
+  const int NENT = 9;
+
+  for (i = 0; i < strip_len; i++) {
+    img[i] = (uint8_t)((i * 53u + 11u) & 0xffu);
+  }
+  ifd_off = strip_off + strip_len + (strip_len & 1u);
+  total = ifd_off + 8u + (size_t)NENT * 20u + 8u;
+  buf = (uint8_t *)calloc(1, total);
+  buf[0] = 'I'; buf[1] = 'I';
+  tdt_pu16(buf + 2, 43, 0);
+  tdt_pu16(buf + 4, 8, 0);
+  tdt_pu16(buf + 6, 0, 0);
+  tdt_pu64(buf + 8, ifd_off, 0);
+  memcpy(buf + strip_off, img, strip_len);
+  tdt_pu64(buf + ifd_off, (uint64_t)NENT, 0);
+  e = buf + ifd_off + 8u;
+  /* Use LONG (type 4) for strip offsets/counts — classic value type in a
+     BigTIFF container. The reader must accept both. */
+#define BENT_L(tag, cnt, val)                    \
+  do {                                           \
+    tdt_pu16(e + n * 20 + 0, (tag), 0);          \
+    tdt_pu16(e + n * 20 + 2, 4, 0);  /* LONG */ \
+    tdt_pu64(e + n * 20 + 4, (cnt), 0);          \
+    tdt_pu64(e + n * 20 + 12, (val), 0);         \
+    n++;                                         \
+  } while (0)
+  BENT_L(256, 1, w);
+  BENT_L(257, 1, h);
+  BENT_L(258, 1, 8);     /* BitsPerSample SHORT */
+  BENT_L(259, 1, 1);     /* Compression NONE SHORT */
+  BENT_L(262, 1, 1);     /* Photometric MINISBLACK SHORT */
+  BENT_L(273, 1, strip_off);  /* StripOffsets LONG */
+  BENT_L(277, 1, 1);     /* SamplesPerPixel SHORT */
+  BENT_L(278, 1, h);     /* RowsPerStrip LONG */
+  BENT_L(279, 1, strip_len);  /* StripByteCounts LONG */
+#undef BENT_L
+  tdt_pu64(buf + ifd_off + 8u + (size_t)NENT * 20u, 0, 0);
+
+  if (tinydng_open_memory(ctx, buf, total, NULL, &doc, &err) == TINYDNG_OK &&
+      tinydng_decode_image(ctx, doc, 0, NULL, &px, &err) == TINYDNG_OK) {
+    CHECK(px.width == w && px.height == h && px.size == strip_len,
+          "bigtiff long-offsets dims");
+    CHECK(memcmp(px.data, img, strip_len) == 0, "bigtiff long-offsets pixels");
+    printf("  BigTIFF LONG-offsets %ux%u decoded OK\n", w, h);
+    tinydng_pixels_free(ctx, &px);
+    tinydng_document_destroy(ctx, doc);
+  } else {
+    CHECK(0, "bigtiff long-offsets open/decode: %s", err.message);
+    rc = 1;
+  }
+  free(buf);
+  free(img);
+  return rc;
+}
+
+/* BigTIFF with predictor=2 (horizontal differencing). */
+static int test_bigtiff_predictor2(tinydng_context *ctx) {
+  uint32_t w = 40, h = 20, x, y;
+  uint16_t *orig = (uint16_t *)malloc((size_t)w * h * 2);
+  uint8_t *strip = (uint8_t *)malloc((size_t)w * h * 2);
+  size_t strip_len = (size_t)w * h * 2;
+  size_t strip_off = 16, ifd_off, total;
+  uint8_t *buf, *e;
+  int n = 0;
+  tinydng_error err;
+  tinydng_document *doc = NULL;
+  tinydng_pixels px;
+  int rc = 0;
+  const int NENT = 10;
+
+  for (y = 0; y < h; y++) {
+    for (x = 0; x < w; x++) {
+      orig[y * w + x] = (uint16_t)((x * 311u + y * 1009u + 42u) & 0xffffu);
+    }
+  }
+  /* Encode horizontal differences. */
+  for (y = 0; y < h; y++) {
+    uint16_t prev = 0;
+    for (x = 0; x < w; x++) {
+      uint16_t cur = orig[y * w + x];
+      tdt_pu16(strip + ((size_t)y * w + x) * 2u, (uint16_t)(cur - prev), 0);
+      prev = cur;
+    }
+  }
+
+  ifd_off = strip_off + strip_len + (strip_len & 1u);
+  total = ifd_off + 8u + (size_t)NENT * 20u + 8u;
+  buf = (uint8_t *)calloc(1, total);
+  buf[0] = 'I'; buf[1] = 'I';
+  tdt_pu16(buf + 2, 43, 0);
+  tdt_pu16(buf + 4, 8, 0);
+  tdt_pu16(buf + 6, 0, 0);
+  tdt_pu64(buf + 8, ifd_off, 0);
+  memcpy(buf + strip_off, strip, strip_len);
+  tdt_pu64(buf + ifd_off, (uint64_t)NENT, 0);
+  e = buf + ifd_off + 8u;
+#define BENT_P(tag, type, cnt, val)            \
+  do {                                         \
+    tdt_pu16(e + n * 20 + 0, (tag), 0);        \
+    tdt_pu16(e + n * 20 + 2, (type), 0);       \
+    tdt_pu64(e + n * 20 + 4, (cnt), 0);        \
+    tdt_pu64(e + n * 20 + 12, (val), 0);       \
+    n++;                                       \
+  } while (0)
+  BENT_P(256, 4, 1, w);
+  BENT_P(257, 4, 1, h);
+  BENT_P(258, 3, 1, 16);
+  BENT_P(259, 3, 1, 1);
+  BENT_P(262, 3, 1, 1);
+  BENT_P(273, 16, 1, strip_off);
+  BENT_P(277, 3, 1, 1);
+  BENT_P(278, 4, 1, h);
+  BENT_P(279, 16, 1, strip_len);
+  BENT_P(317, 3, 1, 2);  /* Predictor = 2 */
+#undef BENT_P
+  tdt_pu64(buf + ifd_off + 8u + (size_t)NENT * 20u, 0, 0);
+
+  if (tinydng_open_memory(ctx, buf, total, NULL, &doc, &err) == TINYDNG_OK &&
+      tinydng_decode_image(ctx, doc, 0, NULL, &px, &err) == TINYDNG_OK) {
+    CHECK(px.width == w && px.height == h && px.size == strip_len,
+          "bigtiff predictor2 dims");
+    CHECK(memcmp(px.data, orig, strip_len) == 0, "bigtiff predictor2 pixels");
+    printf("  BigTIFF predictor 2 %ux%u decoded OK\n", w, h);
+    tinydng_pixels_free(ctx, &px);
+    tinydng_document_destroy(ctx, doc);
+  } else {
+    CHECK(0, "bigtiff predictor2 open/decode: %s", err.message);
+    rc = 1;
+  }
+  free(buf);
+  free(strip);
+  free(orig);
+  return rc;
+}
+
+/* BigTIFF with a SubIFD: IFD0 has SubIFD tag 330 pointing to a second IFD
+   with the strip data. Exercises the SubIFD parser inside a BigTIFF file. */
+static int test_bigtiff_subifds(tinydng_context *ctx) {
+  uint32_t w = 24, h = 18, i;
+  size_t strip_len = (size_t)w * h;
+  uint8_t *img = (uint8_t *)malloc(strip_len);
+  /* IFD0: 8 entries (incl. SubIFD tag 330). SubIFD: 7 entries. */
+  const int N0 = 8, N1 = 7;
+  size_t strip_off = 16;
+  size_t sub_ifd_off, ifd0_off, total;
+  uint8_t *buf, *e;
+  int n;
+  tinydng_error err;
+  tinydng_document *doc = NULL;
+  tinydng_pixels px;
+  int rc = 0;
+  tinydng_open_options opts;
+
+  for (i = 0; i < strip_len; i++) {
+    img[i] = (uint8_t)((i * 37u + 19u) & 0xffu);
+  }
+
+  /* Layout: header(16) | strip(1296) | pad | subIFD(8+N1*20+8) | IFD0(8+N0*20+8) */
+  sub_ifd_off = strip_off + strip_len + (strip_len & 1u);
+  ifd0_off = sub_ifd_off + 8u + (size_t)N1 * 20u + 8u;
+  total = ifd0_off + 8u + (size_t)N0 * 20u + 8u;
+  buf = (uint8_t *)calloc(1, total);
+
+  /* Header */
+  buf[0] = 'I'; buf[1] = 'I';
+  tdt_pu16(buf + 2, 43, 0);
+  tdt_pu16(buf + 4, 8, 0);
+  tdt_pu16(buf + 6, 0, 0);
+  tdt_pu64(buf + 8, ifd0_off, 0);
+  memcpy(buf + strip_off, img, strip_len);
+
+  /* SubIFD (with strip data) */
+  n = 0;
+  tdt_pu64(buf + sub_ifd_off, (uint64_t)N1, 0);
+  e = buf + sub_ifd_off + 8u;
+#define SIFD(tag, type, cnt, val)              \
+  do {                                         \
+    tdt_pu16(e + n * 20 + 0, (tag), 0);        \
+    tdt_pu16(e + n * 20 + 2, (type), 0);       \
+    tdt_pu64(e + n * 20 + 4, (cnt), 0);        \
+    tdt_pu64(e + n * 20 + 12, (val), 0);       \
+    n++;                                       \
+  } while (0)
+  SIFD(256, 4, 1, w);
+  SIFD(257, 4, 1, h);
+  SIFD(258, 3, 1, 8);
+  SIFD(259, 3, 1, 1);
+  SIFD(262, 3, 1, 1);
+  SIFD(273, 16, 1, strip_off);
+  SIFD(279, 16, 1, strip_len);
+#undef SIFD
+  tdt_pu64(buf + sub_ifd_off + 8u + (size_t)N1 * 20u, 0, 0);
+
+  /* IFD0 (minimal: points to SubIFD, has NewSubfileType=4 for SubIFD) */
+  n = 0;
+  tdt_pu64(buf + ifd0_off, (uint64_t)N0, 0);
+  e = buf + ifd0_off + 8u;
+#define IFD0(tag, type, cnt, val)              \
+  do {                                         \
+    tdt_pu16(e + n * 20 + 0, (tag), 0);        \
+    tdt_pu16(e + n * 20 + 2, (type), 0);       \
+    tdt_pu64(e + n * 20 + 4, (cnt), 0);        \
+    tdt_pu64(e + n * 20 + 12, (val), 0);       \
+    n++;                                       \
+  } while (0)
+  IFD0(256, 4, 1, w);
+  IFD0(257, 4, 1, h);
+  IFD0(258, 3, 1, 8);
+  IFD0(259, 3, 1, 1);
+  IFD0(262, 3, 1, 1);
+  IFD0(273, 16, 1, strip_off);  /* IFD0 also points at the strip (as fallback) */
+  IFD0(279, 16, 1, strip_len);
+  IFD0(330, 18, 1, sub_ifd_off);  /* SubIFDs tag, type IFD8, count 1 */
+#undef IFD0
+  tdt_pu64(buf + ifd0_off + 8u + (size_t)N0 * 20u, 0, 0);
+
+  memset(&opts, 0, sizeof(opts));
+  opts.flags = TINYDNG_OPEN_PARSE_SUBIFDS;
+  if (tinydng_open_memory(ctx, buf, total, &opts, &doc, &err) == TINYDNG_OK &&
+      tinydng_decode_image(ctx, doc, 0, NULL, &px, &err) == TINYDNG_OK) {
+    CHECK(px.width == w && px.height == h && px.size == strip_len,
+          "bigtiff subifds dims");
+    CHECK(memcmp(px.data, img, strip_len) == 0, "bigtiff subifds pixels");
+    printf("  BigTIFF SubIFDs %ux%u decoded OK\n", w, h);
+    tinydng_pixels_free(ctx, &px);
+    tinydng_document_destroy(ctx, doc);
+  } else {
+    CHECK(0, "bigtiff subifds open/decode: %s", err.message);
+    rc = 1;
+  }
+  free(buf);
+  free(img);
+  return rc;
+}
+
 static int test_predictor2(tinydng_context *ctx) {
   uint32_t w = 50, h = 8, x, y;
   uint16_t *orig = (uint16_t *)malloc((size_t)w * h * 2);
@@ -381,6 +807,11 @@ int main(int argc, char **argv) {
   }
   printf("== decode tests ==\n");
   test_bigtiff(ctx);
+  test_bigtiff_be(ctx);
+  test_bigtiff_tiled(ctx);
+  test_bigtiff_long_offsets(ctx);
+  test_bigtiff_predictor2(ctx);
+  test_bigtiff_subifds(ctx);
   test_predictor2(ctx);
   test_predictor3(ctx);
   test_packed12(ctx);
