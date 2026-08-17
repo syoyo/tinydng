@@ -928,9 +928,12 @@ static int td_decode_one_segment(td_decode_par *par, const tinydng_segment *seg,
   uint8_t *target;
   int direct;
 
-  /* Skip segments that don't overlap the window. */
-  if (seg->x >= par->win_x + par->win_w || seg->y >= par->win_y + par->win_h ||
-      seg->x + seg->w <= par->win_x || seg->y + seg->h <= par->win_y) {
+  /* Skip segments that don't overlap the window.
+     Use uint64_t to avoid uint32 overflow in seg->x + seg->w. */
+  if ((uint64_t)seg->x >= (uint64_t)par->win_x + par->win_w ||
+      (uint64_t)seg->y >= (uint64_t)par->win_y + par->win_h ||
+      (uint64_t)seg->x + seg->w <= par->win_x ||
+      (uint64_t)seg->y + seg->h <= par->win_y) {
     return 1;
   }
   td_block_dims(par->img, seg, &bw, &bh);

@@ -333,6 +333,14 @@ tinydng_status tinydng_io_open_mmap(tinydng_context *ctx, const char *path,
                    "GetFileSizeEx failed for '%s'", path);
       return TINYDNG_E_IO;
     }
+    if ((uint64_t)li.QuadPart > (uint64_t)SIZE_MAX) {
+      CloseHandle(m->file);
+      td_ctx_free(ctx, m);
+      td_set_error(err, TINYDNG_E_IO, TINYDNG_STAGE_IO, 0, 0, 0,
+                   "file too large for mmap on this platform (%lld bytes)",
+                   (long long)li.QuadPart);
+      return TINYDNG_E_IO;
+    }
     m->size = (size_t)li.QuadPart;
     m->mapping =
         CreateFileMappingA(m->file, NULL, PAGE_READONLY, 0, 0, NULL);
@@ -369,6 +377,14 @@ tinydng_status tinydng_io_open_mmap(tinydng_context *ctx, const char *path,
       td_ctx_free(ctx, m);
       td_set_error(err, TINYDNG_E_IO, TINYDNG_STAGE_IO, 0, 0, 0,
                    "fstat failed for '%s'", path);
+      return TINYDNG_E_IO;
+    }
+    if ((uint64_t)st.st_size > (uint64_t)SIZE_MAX) {
+      close(m->fd);
+      td_ctx_free(ctx, m);
+      td_set_error(err, TINYDNG_E_IO, TINYDNG_STAGE_IO, 0, 0, 0,
+                   "file too large for mmap on this platform (%lld bytes)",
+                   (long long)st.st_size);
       return TINYDNG_E_IO;
     }
     m->size = (size_t)st.st_size;

@@ -666,8 +666,15 @@ static tinydng_status td_parse_ifd(tinydng_context *ctx, const td_reader *r,
         break;
       case TD_TAG_BITS_PER_SAMPLE:
         if (td_read_scalar_uint(r, &e, &sv)) {
-          b->bits_per_sample = (uint16_t)sv;
-          b->has_bps = 1;
+          if (sv > 0xFFFFu) {
+            td_set_error(err, TINYDNG_E_UNSUPPORTED, TINYDNG_STAGE_IFD,
+                         ifd_index, TD_TAG_BITS_PER_SAMPLE, 0,
+                         "bits_per_sample %llu exceeds 16-bit range",
+                         (unsigned long long)sv);
+          } else {
+            b->bits_per_sample = (uint16_t)sv;
+            b->has_bps = 1;
+          }
         }
         break;
       case TD_TAG_SAMPLES_PER_PIXEL:
@@ -840,7 +847,13 @@ static tinydng_status td_build_segments(tinydng_context *ctx, const td_reader *r
     uint64_t per_plane = across * down;
     uint64_t expected = per_plane;
     if (b->planar_configuration == 2u) {
-      expected = per_plane * (uint64_t)b->samples_per_pixel;
+      if (!td_safe_mul_u64(per_plane, (uint64_t)b->samples_per_pixel,
+                           &expected)) {
+        td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_GEOMETRY, ifd_index,
+                     TD_TAG_TILE_OFFSETS, 0,
+                     "tile count overflow for planar layout");
+        return TINYDNG_E_BOUNDS;
+      }
     }
     if (b->tile_offset_count != b->tile_byte_count_count ||
         (uint64_t)b->tile_offset_count != expected) {
@@ -863,7 +876,13 @@ static tinydng_status td_build_segments(tinydng_context *ctx, const td_reader *r
           td_ceil_div_u64(b->height, b->rows_per_strip);
       uint64_t expected = strips_per_plane;
       if (b->planar_configuration == 2u) {
-        expected = strips_per_plane * (uint64_t)b->samples_per_pixel;
+        if (!td_safe_mul_u64(strips_per_plane,
+                             (uint64_t)b->samples_per_pixel, &expected)) {
+          td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_GEOMETRY,
+                       ifd_index, TD_TAG_STRIP_OFFSETS, 0,
+                       "strip count overflow for planar layout");
+          return TINYDNG_E_BOUNDS;
+        }
       }
       if (b->strip_offset_count != b->strip_byte_count_count ||
           b->strip_offset_count == 0u ||
@@ -1313,6 +1332,7 @@ tinydng_status tinydng_open_io(tinydng_context *ctx, tinydng_io io,
     memset(&tmp, 0, sizeof(tmp));
     st = td_parse_ifd(ctx, &r, ref.off, ifd_seq, &tmp, &b, &next_ifd, err);
     if (st != TINYDNG_OK) {
+      td_free_image_payload(ctx, &tmp);
       td_free_build(ctx, &b);
       goto done;
     }
