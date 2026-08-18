@@ -29,8 +29,8 @@ jobs:
             CIBW_ARCHS_WINDOWS: "AMD64 x86"
             # disable aarm64 build since its too slow to build(docker + qemu)
             CIBW_ARCHS_LINUX: "x86_64 i686"
-            # it looks cibuildwheel fails to add version string to wheel file for python 3.6, so skip it
-            CIBW_SKIP: pp*
+            # cibuildwheel cannot reliably add the version string for Python 3.6.
+            CIBW_SKIP: "cp36-* pp*"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -57,11 +57,11 @@ jobs:
         # Disable building PyPy wheels on all platforms
         env:
             CIBW_ARCHS_WINDOWS: "ARM64"
-            CIBW_SKIP: pp*
+            CIBW_SKIP: "cp36-* pp*"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: cibw-wheels-${{ matrix.os }}-${{ strategy.job-index }}
+          name: cibw-wheels-windows-arm64
           path: ./wheelhouse/*.whl
 
   make_sdist:
@@ -82,7 +82,7 @@ jobs:
         path: dist/*.tar.gz
 
   upload_all:
-    needs: [build_wheels, build_wheels, make_sdist]
+    needs: [build_wheels, build_win_arm64_wheels, make_sdist]
     runs-on: ubuntu-latest
     environment: release
     permissions:
