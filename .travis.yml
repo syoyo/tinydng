@@ -9,5 +9,6 @@ compiler:
   - clang
 
 script:
-- make
-- ./test
+- cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DTINYDNG_WERROR=ON
+- cmake --build build --parallel 4
+- ctest --test-dir build --output-on-failure
