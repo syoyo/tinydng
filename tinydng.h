@@ -74,6 +74,7 @@ typedef struct tinydng_config {
   uint32_t max_ifd_entries;    /* per-IFD entry cap; 0 => 4096         */
   uint32_t max_psd_layers;     /* PSD layer cap; 0 => 4096             */
   uint32_t max_psd_resources;  /* PSD 8BIM resource cap; 0 => 2048     */
+  uint32_t max_psd_segments;   /* composite (RLE) seg cap; 0 => 1<<20  */
   uint32_t max_embed_depth;    /* smart-object recursion; 0 => 4       */
 } tinydng_config;
 
@@ -373,7 +374,10 @@ tinydng_status tinydng_image_segment(const tinydng_image_info *img, size_t i,
 
 typedef enum tinydng_decode_flags {
   TINYDNG_DEC_NONE = 0,
-  TINYDNG_DEC_UNPREDICT = 1u << 0,  /* apply horizontal/FP predictor    */
+  /* TINYDNG_DEC_UNPREDICT is currently a no-op by design: the decoded output
+     already has the TIFF/LJPEG predictor applied by default, so there is no
+     separate "unpredict" step to enable. Kept for API compatibility. */
+  TINYDNG_DEC_UNPREDICT = 1u << 0,
   TINYDNG_DEC_KEEP_PACKED = 1u << 1 /* leave sub-byte packing intact     */
 } tinydng_decode_flags;
 

@@ -1233,6 +1233,11 @@ tinydng_status tinydng_writer_create(tinydng_context *ctx,
     }
   }
   td_add_short(&w->w, TD_TAG_COMPRESSION, comp);
+  if (comp == TINYDNG_COMPRESSION_NEW_JPEG) {
+    /* The lossless-JPEG payload is always encoded with the horizontal
+       (left) predictor; advertise it so external readers decode correctly. */
+    td_add_short(&w->w, TD_TAG_PREDICTOR, 1u);
+  }
   td_add_short(&w->w, TD_TAG_PHOTOMETRIC, photo);
   td_add_short(&w->w, TD_TAG_SAMPLES_PER_PIXEL, spp);
   {

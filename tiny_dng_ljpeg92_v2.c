@@ -236,7 +236,9 @@ static int find(ljp* self) {
 }
 
 // swap endian
-#define BEH(ptr) ((((int)(*&ptr)) << 8) | (*(&ptr + 1)))
+// Big-endian 16-bit read. Replaces the old BEH() macro, which relied on
+// `&ptr + 1` pointer arithmetic off a function parameter (fragile / UB-ish).
+static inline int be16(const u8* p) { return ((int)p[0] << 8) | (int)p[1]; }
 
 // Build a direct-lookup Huffman table from a DHT payload whose Lh length
 // field sits at `huffhead[0]` with `avail` bytes available. On success
@@ -246,7 +248,7 @@ static int build_huff_lut(const u8* huffhead, int avail, int* hufflen_out,
                           u16** lut_out, int* maxbits_out) {
   // A2: need at least 2 bytes for Lh.
   if (avail < 2) return TDNG_LJ92_ERROR_CORRUPT;
-  int hufflen = BEH(huffhead[0]);
+  int hufflen = be16(&huffhead[0]);
   // A5: DHT payload is Lh + Tc/Th(1) + L[1..16] + V[]; need at least 19
   // bytes and must not run off the end.
   u8 bits[17];  // local copy so we never mutate the (possibly read-only) input
@@ -333,14 +335,14 @@ static int parseSof3(ljp* self, int marker) {
   // A2: header alone is 8 bytes past the current ix.
   if (self->ix < 0 || self->ix > self->datalen ||
       self->datalen - self->ix < 8) return TDNG_LJ92_ERROR_CORRUPT;
-  int Lf = BEH(self->data[self->ix]);
+  int Lf = be16(&self->data[self->ix]);
   if (Lf < 8 || Lf > self->datalen - self->ix) {
     return TDNG_LJ92_ERROR_CORRUPT;
   }
 
   self->bits = self->data[self->ix + 2];
-  self->y = BEH(self->data[self->ix + 3]);
-  self->x = BEH(self->data[self->ix + 5]);
+  self->y = be16(&self->data[self->ix + 3]);
+  self->x = be16(&self->data[self->ix + 5]);
   self->components = self->data[self->ix + 7];
   self->sof_marker = marker;
   self->ix += Lf;
@@ -359,7 +361,7 @@ static int parseBlock(ljp* self, int marker) {
   // A2: need 2 bytes for the segment length.
   if (self->ix < 0 || self->ix > self->datalen ||
       self->datalen - self->ix < 2) return TDNG_LJ92_ERROR_CORRUPT;
-  int len = BEH(self->data[self->ix]);
+  int len = be16(&self->data[self->ix]);
   if (len < 2 || len > self->datalen - self->ix) {
     return TDNG_LJ92_ERROR_CORRUPT;
   }
@@ -797,7 +799,7 @@ static int parse_sos_payload(const u8* payload, int payload_len,
   // Hardening: SOS = Ls(2) Ns(1) [Cs Td/Ta]*Ns Ss Se Ah/Al.
   // Need at least 3 bytes to read Ls and Ns.
   if (payload_len < 3) return TDNG_LJ92_ERROR_CORRUPT;
-  int Ls = BEH(payload[0]);
+  int Ls = be16(&payload[0]);
   int compcount = payload[2];
   if (Ls < 6 + 2 * compcount || Ls > payload_len) {
     return TDNG_LJ92_ERROR_CORRUPT;
@@ -1059,11 +1061,46 @@ int tdng_lj92_open(tdng_lj92* lj, const uint8_t* data, int datalen, int* width,
 int tdng_lj92_decode(tdng_lj92 lj, uint16_t* target, int writeLength,
                      int skipLength, uint16_t* linearize,
                      int linearizeLength) {
-  (void)writeLength;  // reserved; legacy parsePred6 row-chunking was removed
   ljp* self = lj;
   if (!self) return TDNG_LJ92_ERROR_BAD_HANDLE;
+  // Hardening: legacy per-row skip support was removed from the decoder, so a
+  // non-zero skipLength would make the scan loops write `skipLength` extra
+  // samples past `target` every row (out_stride = W*NC + skipLength). Reject it
+  // rather than risking an out-of-bounds write. The integrated tinydng codec
+  // always passes skipLength = 0.
+  if (skipLength != 0) return TDNG_LJ92_ERROR_CORRUPT;
+  // Hardening: reject degenerate/overflowing dimensions. The scan loops index
+  // `out_stride = W*NC` samples per row; guard the per-row stride against int
+  // overflow and the pixel count against size_t overflow before writing.
+  if (self->x <= 0 || self->y <= 0 || self->components <= 0) {
+    return TDNG_LJ92_ERROR_CORRUPT;
+  }
+  if (self->x > (INT_MAX / self->components)) {
+    return TDNG_LJ92_ERROR_CORRUPT;
+  }
+  {
+    uint64_t need = (uint64_t)(uint32_t)self->x * (uint64_t)self->components *
+                    (uint64_t)self->y;
+    if (need > (uint64_t)SIZE_MAX / sizeof(u16)) {
+      return TDNG_LJ92_ERROR_CORRUPT;
+    }
+    // Hardening: `writeLength` (reserved) is the per-row sample count the caller
+    // allocated in `target`. The decoder writes exactly (W*NC)*H samples, so
+    // reject if that would exceed the caller's capacity (writeLength * H). This
+    // protects the standalone API against an undersized `target` buffer. The
+    // integrated tinydng codec always passes writeLength = W*NC, so this is a
+    // no-op for the integrated path.
+    if (writeLength > 0) {
+      size_t cap_samples;
+      if (!td_safe_mul_size((size_t)writeLength, (size_t)self->y,
+                            &cap_samples) ||
+          (uint64_t)cap_samples < need) {
+        return TDNG_LJ92_ERROR_CORRUPT;
+      }
+    }
+  }
   self->image = target;
-  self->skiplen = skipLength;
+  self->skiplen = 0;
   self->linearize = linearize;
   self->linlen = linearizeLength;
   if (self->is_streaming) return parseScanStreaming(self);

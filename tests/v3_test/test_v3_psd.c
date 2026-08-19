@@ -736,6 +736,89 @@ static void corpus_one(tinydng_context *ctx, const char *path) {
 
 /* ------------------------------------------------------------------ */
 
+/* max_psd_segments cap: an RLE composite whose segment table would exceed the
+   configured cap must be dropped gracefully (image_count == 0) rather than
+   allocating a huge table/buffer. The same PSD opened with the default cap
+   parses the composite normally, confirming the cap (not corruption) triggered
+   the degradation. */
+static int test_psd_segment_cap(tinydng_context *ctx) {
+  tinydng_error e;
+  uint32_t W = 4, H = 4;
+  uint16_t channels = 3, depth = 8;
+  size_t sb = (size_t)depth / 8u;
+  size_t comp_bytes = (size_t)W * H * channels * sb;
+  uint8_t *composite = (uint8_t *)malloc(comp_bytes ? comp_bytes : 1u);
+  uint8_t *blob = NULL;
+  size_t blob_len = 0;
+  tinydng_psd_write_doc wd;
+  tinydng_psd_write_options wo;
+  tinydng_config ccfg;
+  tinydng_context *cctx = NULL;
+  tinydng_document *doc = NULL;
+  int rc = 0;
+  size_t i;
+
+  if (!composite) {
+    CHECK(0, "segment-cap: alloc");
+    return 1;
+  }
+  for (i = 0; i < comp_bytes; i++) composite[i] = (uint8_t)(i * 7u);
+
+  memset(&wd, 0, sizeof(wd));
+  wd.width = W;
+  wd.height = H;
+  wd.depth = depth;
+  wd.color_mode = (uint16_t)TINYDNG_PSD_RGB;
+  wd.channel_count = channels;
+  wd.composite = composite;
+  wd.composite_size = comp_bytes;
+  memset(&wo, 0, sizeof(wo));
+  wo.compression = TINYDNG_PSD_COMP_RLE;
+
+  if (tinydng_psd_write_memory(ctx, &wd, &wo, &blob, &blob_len, &e) !=
+      TINYDNG_OK) {
+    CHECK(0, "segment-cap: write failed: %s", e.message);
+    free(composite);
+    return 1;
+  }
+
+  /* Default cap: composite parses normally. */
+  {
+    tinydng_document *d0 = NULL;
+    if (tinydng_open_memory(ctx, blob, blob_len, NULL, &d0, &e) != TINYDNG_OK) {
+      CHECK(0, "segment-cap: default open failed: %s", e.message);
+      rc = 1;
+    } else {
+      CHECK(tinydng_image_count(d0) >= 1u, "segment-cap: default has composite");
+      tinydng_document_destroy(ctx, d0);
+    }
+  }
+
+  /* Tiny cap (1): RLE composite (height*channels = 12 > 1) is dropped. */
+  memset(&ccfg, 0, sizeof(ccfg));
+  ccfg.max_psd_segments = 1u;
+  cctx = tinydng_context_create(&ccfg, NULL);
+  if (!cctx) {
+    CHECK(0, "segment-cap: capped context create failed");
+    rc = 1;
+  } else {
+    if (tinydng_open_memory(cctx, blob, blob_len, NULL, &doc, &e) !=
+        TINYDNG_OK) {
+      CHECK(0, "segment-cap: capped open failed: %s", e.message);
+      rc = 1;
+    } else {
+      CHECK(tinydng_image_count(doc) == 0u,
+            "segment-cap: composite dropped under tiny cap");
+      tinydng_document_destroy(cctx, doc);
+    }
+    tinydng_context_destroy(cctx);
+  }
+
+  tinydng_buffer_free(ctx, blob);
+  free(composite);
+  return rc;
+}
+
 int main(int argc, char **argv) {
   tinydng_error e;
   tinydng_context *ctx = tinydng_context_create(NULL, &e);
@@ -797,6 +880,7 @@ int main(int argc, char **argv) {
   test_truncation(ctx);
   test_hostile(ctx);
   test_smart_object_nesting(ctx);
+  test_psd_segment_cap(ctx);
 
   {
     size_t leak = tinydng_context_memory_used(ctx);

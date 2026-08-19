@@ -50,11 +50,13 @@ struct tinydng_context {
   uint32_t max_ifd_entries;
   uint32_t max_psd_layers;
   uint32_t max_psd_resources;
+  uint32_t max_psd_segments; /* cap on composite (RLE) segment count */
   uint32_t max_embed_depth;
   td_alloc_header *alloc_head;
   int alloc_failed;
   td_mutex *lock;  /* guards allocator + stdio reads while mt_active (may be NULL) */
   int mt_active;   /* set only for the duration of a multi-threaded decode */
+  td_mutex *decode_guard; /* serializes overlapping decodes on this ctx (recursive) */
 };
 
 #define TD_DOC_FORMAT_TIFF 0u
@@ -97,6 +99,7 @@ void td_free_image_payload(tinydng_context *ctx, tinydng_image_info *img);
    Returns NULL on failure or when threads are disabled; lock/unlock are
    NULL-safe no-ops, so callers never branch on the build configuration. */
 td_mutex *td_mutex_create(tinydng_context *ctx);
+td_mutex *td_mutex_create_recursive(tinydng_context *ctx);
 void td_mutex_destroy(tinydng_context *ctx, td_mutex *m);
 void td_mutex_lock(td_mutex *m);
 void td_mutex_unlock(td_mutex *m);

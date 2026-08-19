@@ -971,6 +971,8 @@ static tinydng_status td_psd_parse_layer_records(tinydng_context *ctx,
         ch->compression = TINYDNG_PSD_COMP_RAW;
         ch->data_offset = cur;
         ch->data_length = 0u;
+        /* No image bytes follow a 0-length channel, so leave `cur` unchanged
+           (the next channel's data starts at the current position). */
         continue;
       }
       if (clen > end - cur) {
@@ -1486,6 +1488,15 @@ static tinydng_status td_psd_build_composite(tinydng_context *ctx,
       psd->has_composite = 0;
       return TINYDNG_OK;
     }
+    if (entries64 > (uint64_t)ctx->max_psd_segments) {
+      /* An enormous RLE composite would allocate a correspondingly huge
+         segment table and pixel buffer; refuse it gracefully. */
+      td_ctx_free(ctx, doc->images);
+      doc->images = NULL;
+      doc->image_count = 0;
+      psd->has_composite = 0;
+      return TINYDNG_OK;
+    }
     entries = (size_t)entries64;
     if (!td_safe_mul_size(entries, (size_t)esz, &ebytes) ||
         !td_safe_mul_size(entries, sizeof(tinydng_segment), &seg_bytes)) {
@@ -1713,24 +1724,28 @@ static uint8_t *td_psd_load_plane(tinydng_context *ctx,
 
   switch (ch->compression) {
     case TINYDNG_PSD_COMP_RAW: {
-      if (ch->data_length < plane_bytes) {
-        td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0,
-                     ch->data_offset, "PSD: raw channel too small");
-        goto fail;
+      if (ch->data_length == 0u) {
+        /* A zero-length channel carries no image bytes; the plane was
+           allocated zeroed above, so leave it as all-black. */
+        break;
       }
-      if (!td_io_view(r.io, r.size, ch->data_offset, plane_bytes, plane,
-                      plane_bytes)) {
+      size_t copy = ch->data_length;
+      if (copy > plane_bytes) {
+        copy = plane_bytes;
+      }
+      if (!td_io_view(r.io, r.size, ch->data_offset, copy, plane, copy)) {
         td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0,
                      ch->data_offset, "PSD: raw channel out of file");
         goto fail;
       }
       {
-        const uint8_t *v = td_io_view(r.io, r.size, ch->data_offset,
-                                      plane_bytes, plane, plane_bytes);
+        const uint8_t *v = td_io_view(r.io, r.size, ch->data_offset, copy,
+                                      plane, copy);
         if (v != plane) {
-          memcpy(plane, v, plane_bytes);
+          memcpy(plane, v, copy);
         }
       }
+      /* Any tail beyond the channel data length stays zeroed. */
       break;
     }
 #ifndef TINYDNG_NO_PACKBITS
@@ -1923,6 +1938,8 @@ static tinydng_status td_psd_run_tasks(tinydng_context *ctx,
   unsigned want = (opts && opts->num_threads) ? opts->num_threads
                                               : td_cpu_count();
   size_t i;
+  /* Serialize with other decodes on this context (see td_decode_window). */
+  td_mutex_lock(ctx->decode_guard);
   if (n > 1u && want > 1u && ctx->lock != NULL && td_threads_available()) {
     unsigned run = (n > (size_t)TD_MAX_DECODE_THREADS)
                        ? TD_MAX_DECODE_THREADS
@@ -1938,13 +1955,16 @@ static tinydng_status td_psd_run_tasks(tinydng_context *ctx,
   }
   for (i = 0; i < n; i++) {
     if (!tasks[i].ok) {
+      tinydng_status s = tasks[i].err.status != TINYDNG_OK ? tasks[i].err.status
+                                                           : TINYDNG_E_DECODE;
       if (err) {
         *err = tasks[i].err;
       }
-      return tasks[i].err.status != TINYDNG_OK ? tasks[i].err.status
-                                               : TINYDNG_E_DECODE;
+      td_mutex_unlock(ctx->decode_guard);
+      return s;
     }
   }
+  td_mutex_unlock(ctx->decode_guard);
   return TINYDNG_OK;
 }
 

@@ -37,11 +37,17 @@ typedef struct td_geom {
   size_t pixel_stride;    /* spp * out_bytes (chunky)        */
   size_t row_stride;      /* width * pixel_stride            */
   size_t image_size;      /* row_stride * height             */
+  uint16_t packed;        /* 1 => keep raw sub-byte packed bytes */
 } td_geom;
 
+/* Forward decls (defined below). */
+static int td_packed_row_bytes(uint32_t width, uint16_t spp, uint16_t bps,
+                               size_t *out);
+
 static tinydng_status td_compute_geom(tinydng_context *ctx,
-                                      const tinydng_image_info *img,
-                                      td_geom *g, tinydng_error *err) {
+                                       const tinydng_image_info *img,
+                                       td_geom *g, int keep_packed,
+                                       tinydng_error *err) {
   uint16_t out_bps;
   (void)ctx;
   memset(g, 0, sizeof(*g));
@@ -52,6 +58,30 @@ static tinydng_status td_compute_geom(tinydng_context *ctx,
   g->sample_format = img->sample_format;
   g->planar = img->planar_configuration;
   g->predictor = img->predictor;
+
+  /* Sub-byte packed output is only defined for chunky (planar config 1)
+     sub-byte samples; planar images fall back to the unpacked layout. */
+  g->packed = (uint16_t)((keep_packed && g->bps > 8u && g->bps < 16u &&
+                          g->planar != 2u) ? 1u : 0u);
+  if (g->packed) {
+    size_t rowb;
+    g->out_bps = g->bps;
+    g->out_bytes = (size_t)(g->bps + 7u) / 8u;
+    if (g->spp == 0u || g->width == 0u || g->height == 0u) {
+      td_set_error(err, TINYDNG_E_PARSE, TINYDNG_STAGE_DECODE, 0, 0, 0,
+                   "invalid decode geometry");
+      return TINYDNG_E_PARSE;
+    }
+    if (!td_packed_row_bytes(g->width, g->spp, g->bps, &rowb) ||
+        !td_safe_mul_size(rowb, (size_t)g->height, &g->image_size)) {
+      td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0, 0,
+                   "decoded image size overflow");
+      return TINYDNG_E_BOUNDS;
+    }
+    g->pixel_stride = rowb; /* per-row packed bytes (no per-pixel stride) */
+    g->row_stride = rowb;
+    return TINYDNG_OK;
+  }
 
   if (img->compression == TINYDNG_COMPRESSION_LOSSY_JPEG) {
     out_bps = 8; /* baseline/lossy JPEG decodes to 8-bit */
@@ -229,6 +259,19 @@ static int td_apply_predictor(tinydng_context *ctx, const td_geom *g,
 /* ------------------------------------------------------------------ */
 
 /* Bytes of stored (pre-decode) sample data for one bw*bh block. */
+/* Byte count of one row of MSB-first packed samples (width*spp*bps bits,
+   rounded up to a whole byte). Rows are independent and byte-aligned. */
+static int td_packed_row_bytes(uint32_t width, uint16_t spp, uint16_t bps,
+                               size_t *out) {
+  size_t bits;
+  if (!td_safe_mul_size((size_t)width, (size_t)spp, &bits) ||
+      !td_safe_mul_size(bits, (size_t)bps, &bits)) {
+    return 0;
+  }
+  *out = bits / 8u + ((bits % 8u) != 0u);
+  return 1;
+}
+
 static int td_stored_block_size(const td_geom *g, uint32_t bw, uint32_t bh,
                                 size_t *out) {
   size_t spr, in_row, total;
@@ -274,6 +317,21 @@ static tinydng_status td_fill_block_from_stored(const td_geom *g, int big_endian
     td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0, 0,
                  "stored data too small: need=%zu have=%zu", need, src_len);
     return TINYDNG_E_BOUNDS;
+  }
+
+  if (g->packed) {
+    /* KEEP_PACKED: emit the raw stored bytes (already MSB-first, row-aligned,
+       predictor already applied at the sample level by the encoder). */
+    size_t rowb;
+    if (!td_packed_row_bytes(bw, g->spp, g->bps, &rowb)) {
+      td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0, 0,
+                   "packed row size overflow");
+      return TINYDNG_E_BOUNDS;
+    }
+    for (y = 0; y < bh; y++) {
+      memcpy(block + (size_t)y * rowb, src + (size_t)y * rowb, rowb);
+    }
+    return TINYDNG_OK;
   }
 
   if (g->bps == 8u || g->bps == 16u || g->bps == 32u) {
@@ -350,7 +408,8 @@ static tinydng_status td_fill_block_from_stored(const td_geom *g, int big_endian
         if (g->out_bytes == 1u) {
           ((uint8_t *)block)[row_base + s] = (uint8_t)v;
         } else {
-          ((uint16_t *)block)[row_base + s] = (uint16_t)v;
+          uint16_t w = (uint16_t)v;
+          memcpy((uint8_t *)block + (row_base + s) * 2u, &w, sizeof(w));
         }
       }
     }
@@ -931,6 +990,84 @@ static void td_blit_block_planar(const td_geom *g, const uint8_t *block,
   }
 }
 
+/* Copy `nsamp` MSB-first packed samples (each `bps` bits) from `src` beginning
+   at sample index `src0` into `dst` beginning at sample index `dst0`.
+   Used by the KEEP_PACKED blit for horizontal sub-window clipping. */
+static void td_packed_copy_samples(const uint8_t *src, uint8_t *dst,
+                                   size_t src0, size_t dst0, size_t nsamp,
+                                   uint16_t bps) {
+  size_t s;
+  for (s = 0; s < nsamp; s++) {
+    size_t src_bit = (src0 + s) * bps;
+    size_t dst_bit = (dst0 + s) * bps;
+    uint32_t v = 0;
+    int b;
+    for (b = 0; b < (int)bps; b++) {
+      size_t sb = src_bit + (size_t)b;
+      int bit = (src[sb >> 3u] >> (7 - (int)(sb & 7u))) & 1;
+      v = (v << 1) | (uint32_t)bit;
+    }
+    for (b = 0; b < (int)bps; b++) {
+      size_t db = dst_bit + (size_t)b;
+      int bit = (int)((v >> ((int)bps - 1 - b)) & 1u);
+      uint8_t mask = (uint8_t)(1u << (7 - (int)(db & 7u)));
+      if (bit) {
+        dst[db >> 3u] |= mask;
+      } else {
+        dst[db >> 3u] &= (uint8_t)~mask;
+      }
+    }
+  }
+}
+
+/* Blit a decoded packed block (rows of byte-aligned MSB-first samples) into
+   the packed destination raster window. Horizontal clipping bit-copies the
+   affected sample range so arbitrary sub-windows remain correct. */
+static void td_blit_block_packed(const td_geom *g, const uint8_t *block,
+                                 uint32_t bw, uint32_t bh, uint32_t seg_x,
+                                 uint32_t seg_y, uint8_t *dst, uint32_t dst_x0,
+                                 uint32_t dst_y0, uint32_t dst_w, uint32_t dst_h,
+                                 size_t dst_row_stride) {
+  uint32_t copy_w, copy_h, ty;
+  size_t block_row;
+  int64_t rel_x, rel_y;
+  uint32_t src_off_x = 0, src_off_y = 0;
+  if (!td_packed_row_bytes(bw, g->spp, g->bps, &block_row)) {
+    return; /* overflow: nothing safe to do */
+  }
+  rel_x = (int64_t)seg_x - (int64_t)dst_x0;
+  rel_y = (int64_t)seg_y - (int64_t)dst_y0;
+  if (rel_x < 0) {
+    src_off_x = (uint32_t)(-rel_x);
+    rel_x = 0;
+  }
+  if (rel_y < 0) {
+    src_off_y = (uint32_t)(-rel_y);
+    rel_y = 0;
+  }
+  if ((uint32_t)rel_x >= dst_w || (uint32_t)rel_y >= dst_h) {
+    return;
+  }
+  if (src_off_x >= bw || src_off_y >= bh) {
+    return;
+  }
+  copy_w = bw - src_off_x;
+  if (copy_w > dst_w - (uint32_t)rel_x) {
+    copy_w = dst_w - (uint32_t)rel_x;
+  }
+  copy_h = bh - src_off_y;
+  if (copy_h > dst_h - (uint32_t)rel_y) {
+    copy_h = dst_h - (uint32_t)rel_y;
+  }
+  for (ty = 0; ty < copy_h; ty++) {
+    const uint8_t *sp = block + (size_t)(src_off_y + ty) * block_row;
+    uint8_t *dp = dst + (size_t)((uint32_t)rel_y + ty) * dst_row_stride;
+    td_packed_copy_samples(sp, dp, (size_t)src_off_x * g->spp,
+                           (size_t)((uint32_t)rel_x) * g->spp,
+                           (size_t)copy_w * g->spp, g->bps);
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Core: decode segments overlapping a destination window             */
 /* ------------------------------------------------------------------ */
@@ -1003,9 +1140,17 @@ static int td_decode_one_segment(td_decode_par *par, const tinydng_segment *seg,
     target = par->dst + (size_t)(seg->y - par->win_y) * par->dst_row_stride;
   } else {
     size_t block_px;
-    if (!td_safe_mul_size((size_t)bw, (size_t)bh, &block_px) ||
-        !td_safe_mul_size(block_px, (size_t)gseg->spp, &block_samples) ||
-        !td_safe_mul_size(block_samples, gseg->out_bytes, &need)) {
+    if (gseg->packed) {
+      size_t rowb;
+      if (!td_packed_row_bytes(bw, gseg->spp, gseg->bps, &rowb) ||
+          !td_safe_mul_size(rowb, (size_t)bh, &need)) {
+        td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0, 0,
+                     "block size overflow");
+        return 0;
+      }
+    } else if (!td_safe_mul_size((size_t)bw, (size_t)bh, &block_px) ||
+               !td_safe_mul_size(block_px, (size_t)gseg->spp, &block_samples) ||
+               !td_safe_mul_size(block_samples, gseg->out_bytes, &need)) {
       td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0, 0,
                    "block size overflow");
       return 0;
@@ -1070,7 +1215,7 @@ static int td_decode_one_segment(td_decode_par *par, const tinydng_segment *seg,
   if (st != TINYDNG_OK) {
     return 0;
   }
-  if (!td_apply_predictor(ctx, gseg, target, bw, bh, err)) {
+  if (!gseg->packed && !td_apply_predictor(ctx, gseg, target, bw, bh, err)) {
     if (!err || err->status == TINYDNG_OK) {
       td_set_error(err, TINYDNG_E_DECODE, TINYDNG_STAGE_DECODE, 0, 0, 0,
                    "predictor failed");
@@ -1081,6 +1226,10 @@ static int td_decode_one_segment(td_decode_par *par, const tinydng_segment *seg,
     td_blit_block_planar(par->g, target, bw, bh, seg->plane, seg->x, seg->y,
                          par->dst, par->win_x, par->win_y, par->win_w,
                          par->win_h, par->dst_row_stride);
+  } else if (gseg->packed) {
+    td_blit_block_packed(par->g, target, bw, bh, seg->x, seg->y, par->dst,
+                         par->win_x, par->win_y, par->win_w, par->win_h,
+                         par->dst_row_stride);
   } else if (!direct) {
     td_blit_block(par->g, target, bw, bh, seg->x, seg->y, par->dst, par->win_x,
                   par->win_y, par->win_w, par->win_h, par->dst_row_stride);
@@ -1127,6 +1276,11 @@ static tinydng_status td_decode_window(tinydng_context *ctx,
   int parallel;
   tinydng_status st = TINYDNG_OK;
 
+  /* Serialize overlapping decodes on the same context: the allocator and
+     mt_active are shared, so two concurrent decode calls would corrupt state.
+     The mutex is recursive so a PSD smart-object decode (same thread) nests. */
+  td_mutex_lock(ctx->decode_guard);
+
   memset(&par, 0, sizeof(par));
   par.ctx = ctx;
   par.io = (tinydng_io *)&doc->io;
@@ -1164,7 +1318,8 @@ static tinydng_status td_decode_window(tinydng_context *ctx,
   workers = (td_decode_worker_arg *)td_ctx_alloc(
       ctx, (size_t)n * sizeof(*workers), err);
   if (!workers) {
-    return TINYDNG_E_OOM;
+    st = TINYDNG_E_OOM;
+    goto done;
   }
   for (t = 0; t < n; t++) {
     workers[t].par = &par;
@@ -1193,6 +1348,8 @@ static tinydng_status td_decode_window(tinydng_context *ctx,
     }
   }
   td_ctx_free(ctx, workers);
+done:
+  td_mutex_unlock(ctx->decode_guard);
   return st;
 }
 
@@ -1266,7 +1423,9 @@ tinydng_status tinydng_decode_image(tinydng_context *ctx,
                  "image index out of range");
     return TINYDNG_E_INVALID_ARG;
   }
-  st = td_compute_geom(ctx, img, &g, err);
+  st = td_compute_geom(ctx, img, &g,
+                        (opts && (opts->flags & TINYDNG_DEC_KEEP_PACKED)) ? 1 : 0,
+                        err);
   if (st != TINYDNG_OK) {
     return st;
   }
@@ -1316,7 +1475,9 @@ tinydng_status tinydng_decode_region(tinydng_context *ctx,
   if (!img) {
     return TINYDNG_E_INVALID_ARG;
   }
-  st = td_compute_geom(ctx, img, &g, err);
+  st = td_compute_geom(ctx, img, &g,
+                        (opts && (opts->flags & TINYDNG_DEC_KEEP_PACKED)) ? 1 : 0,
+                        err);
   if (st != TINYDNG_OK) {
     return st;
   }
@@ -1325,8 +1486,17 @@ tinydng_status tinydng_decode_region(tinydng_context *ctx,
                  "region out of bounds");
     return TINYDNG_E_INVALID_ARG;
   }
-  if (!td_safe_mul_size((size_t)w, g.pixel_stride, &region_row) ||
-      !td_safe_mul_size(region_row, (size_t)h, &region_size)) {
+  if (g.packed) {
+    size_t rrow;
+    if (!td_packed_row_bytes(w, g.spp, g.bps, &rrow) ||
+        !td_safe_mul_size(rrow, (size_t)h, &region_size)) {
+      td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0, 0,
+                   "region size overflow");
+      return TINYDNG_E_BOUNDS;
+    }
+    region_row = rrow;
+  } else if (!td_safe_mul_size((size_t)w, g.pixel_stride, &region_row) ||
+             !td_safe_mul_size(region_row, (size_t)h, &region_size)) {
     td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0, 0,
                  "region size overflow");
     return TINYDNG_E_BOUNDS;

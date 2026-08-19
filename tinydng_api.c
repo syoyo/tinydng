@@ -261,6 +261,41 @@ td_mutex *td_mutex_create(tinydng_context *ctx) {
 #endif
 }
 
+/* Recursive variant: required so a decode that internally triggers another
+   decode on the same context (e.g. a PSD smart-object) does not deadlock the
+   inter-decode guard. CRITICAL_SECTION is already recursive on Windows. */
+td_mutex *td_mutex_create_recursive(tinydng_context *ctx) {
+#if defined(TINYDNG_ENABLE_THREADS) && !defined(_WIN32)
+  td_mutex *m;
+  pthread_mutexattr_t attr;
+  if (!ctx) {
+    return NULL;
+  }
+  if (pthread_mutexattr_init(&attr) != 0) {
+    return NULL;
+  }
+  if (pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE) != 0) {
+    pthread_mutexattr_destroy(&attr);
+    return NULL;
+  }
+  m = (td_mutex *)ctx->allocator.alloc(ctx->allocator.user_data, sizeof(*m));
+  if (!m) {
+    pthread_mutexattr_destroy(&attr);
+    return NULL;
+  }
+  if (pthread_mutex_init(&m->m, &attr) != 0) {
+    ctx->allocator.free(ctx->allocator.user_data, m);
+    pthread_mutexattr_destroy(&attr);
+    return NULL;
+  }
+  pthread_mutexattr_destroy(&attr);
+  return m;
+#else
+  /* Windows CRITICAL_SECTION is recursive; threads-disabled returns NULL. */
+  return td_mutex_create(ctx);
+#endif
+}
+
 void td_mutex_destroy(tinydng_context *ctx, td_mutex *m) {
   if (!ctx || !m) {
     return;
@@ -633,6 +668,9 @@ tinydng_context *tinydng_context_create(const tinydng_config *config,
   tmp.max_psd_resources = (config && config->max_psd_resources > 0u)
                               ? config->max_psd_resources
                               : 2048u;
+  tmp.max_psd_segments = (config && config->max_psd_segments > 0u)
+                             ? config->max_psd_segments
+                             : (1u << 20);
   tmp.max_embed_depth =
       (config && config->max_embed_depth > 0u) ? config->max_embed_depth : 4u;
 
@@ -648,8 +686,9 @@ tinydng_context *tinydng_context_create(const tinydng_config *config,
      then stays serial). Allocation failure here is non-fatal for the same
      reason -- MT simply won't engage. */
   ctx->lock = td_mutex_create(ctx);
-  ctx->mt_active = 0;
-  return ctx;
+  ctx->decode_guard = td_mutex_create_recursive(ctx);
+   ctx->mt_active = 0;
+   return ctx;
 }
 
 void tinydng_context_destroy(tinydng_context *ctx) {
@@ -659,6 +698,7 @@ void tinydng_context_destroy(tinydng_context *ctx) {
   }
   alloc = ctx->allocator;
   td_mutex_destroy(ctx, ctx->lock);
+  td_mutex_destroy(ctx, ctx->decode_guard);
   td_ctx_free_all(ctx);
   alloc.free(alloc.user_data, ctx);
 }

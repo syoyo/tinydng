@@ -3,6 +3,7 @@
    The in-memory cases are self-contained; the fixtures live in data/.
    argv[1] = repository source dir. */
 #include "td_test_util.h"
+#include "tiny_dng_ljpeg92_v2.h"
 
 /* Build a minimal little-endian classic TIFF, single strip, spp=1. */
 static uint8_t *make_classic(uint32_t w, uint32_t h, uint16_t bps,
@@ -725,6 +726,62 @@ static int test_packed12(tinydng_context *ctx) {
           "packed 12-bit samples");
     printf("  packed 12-bit (%ux%u) OK\n", w, h);
     tinydng_pixels_free(ctx, &px);
+
+    /* KEEP_PACKED: output must be the raw packed bytes, bit-identical to the
+       source strip (predictor already applied at the sample level). */
+    {
+      tinydng_decode_options opts;
+      memset(&opts, 0, sizeof(opts));
+      opts.flags = TINYDNG_DEC_KEEP_PACKED;
+      if (tinydng_decode_image(ctx, doc, 0, &opts, &px, &err) == TINYDNG_OK) {
+        CHECK(px.bits_per_sample == 12 && px.size == strip_len,
+              "keep-packed dims");
+        CHECK(memcmp(px.data, strip, strip_len) == 0,
+              "keep-packed bytes match stored strip");
+        printf("  keep-packed (%ux%u) OK\n", w, h);
+        tinydng_pixels_free(ctx, &px);
+
+        /* Sub-window KEEP_PACKED must bit-copy the correct sample range. */
+        {
+          uint32_t rx = 3, ry = 2, rw = 10, rh = 4;
+          tinydng_pixels rpx;
+          size_t rrow = ((size_t)rw * 12u + 7u) / 8u;
+          size_t rsize = rrow * rh;
+          uint8_t *exp = (uint8_t *)calloc(1, rsize);
+          size_t yy, xx;
+          for (yy = 0; yy < rh; yy++) {
+            size_t bitpos = 0;
+            for (xx = 0; xx < rw; xx++) {
+              uint16_t v = orig[(ry + yy) * w + (rx + xx)];
+              int k;
+              for (k = 11; k >= 0; k--) {
+                size_t byte_i = bitpos >> 3;
+                size_t bit_i = 7u - (bitpos & 7u);
+                exp[yy * rrow + byte_i] |=
+                    (uint8_t)(((v >> k) & 1u) << bit_i);
+                bitpos++;
+              }
+            }
+          }
+          if (tinydng_decode_region(ctx, doc, 0, rx, ry, rw, rh, &opts, &rpx,
+                                    &err) == TINYDNG_OK) {
+            CHECK(rpx.bits_per_sample == 12 && rpx.size == rsize,
+                  "keep-packed region dims");
+            CHECK(memcmp(rpx.data, exp, rsize) == 0,
+                  "keep-packed region bytes");
+            printf("  keep-packed region (%ux%u @ %u,%u) OK\n", rw, rh, rx, ry);
+            tinydng_pixels_free(ctx, &rpx);
+          } else {
+            CHECK(0, "keep-packed region decode: %s", err.message);
+            rc = 1;
+          }
+          free(exp);
+        }
+      } else {
+        CHECK(0, "keep-packed decode: %s", err.message);
+        rc = 1;
+      }
+    }
     tinydng_document_destroy(ctx, doc);
   } else {
     CHECK(0, "packed12 open/decode: %s", err.message);
@@ -799,6 +856,89 @@ static int test_codec_fixtures(tinydng_context *ctx, const char *root) {
   return rc;
 }
 
+/* Direct LJPEG v2 API check: a non-zero skipLength must be rejected (it would
+   otherwise write past the target buffer), while skipLength=0 decodes normally.
+   Uses a self-contained LJPEG stream produced by the encoder. */
+static int test_lj92_skipLength(tinydng_context *ctx) {
+  (void)ctx;
+  const int w = 16, h = 16, comps = 1, bits = 12;
+  uint16_t *img = (uint16_t *)malloc((size_t)w * h * sizeof(uint16_t));
+  uint8_t *enc = NULL;
+  int encLen = 0;
+  tdng_lj92 lj = NULL;
+  int dw = 0, dh = 0, dbits = 0, dcomps = 0;
+  uint16_t *target = NULL;
+  int rc = 0;
+  size_t need, i;
+
+  if (!img) {
+    CHECK(0, "lj92 image alloc");
+    return 1;
+  }
+  for (i = 0; i < (size_t)w * h; i++) {
+    img[i] = (uint16_t)((i * 0x2C7u + 0x1Au) & 0xFFFu);
+  }
+  if (tdng_lj92_encode_ex(img, w, h, bits, comps, 1, w, 0, NULL, 0, &enc,
+                          &encLen) != TDNG_LJ92_ERROR_NONE ||
+      enc == NULL || encLen <= 0) {
+    CHECK(0, "lj92 encode failed");
+    free(img);
+    return 1;
+  }
+  if (tdng_lj92_open(&lj, enc, encLen, &dw, &dh, &dbits, &dcomps) !=
+          TDNG_LJ92_ERROR_NONE ||
+      dw != w || dh != h || dcomps != comps) {
+    CHECK(0, "lj92 open failed (dw=%d dh=%d comps=%d)", dw, dh, dcomps);
+    rc = 1;
+    goto done;
+  }
+  need = (size_t)dw * (size_t)dcomps * (size_t)dh;
+  if (need > SIZE_MAX / 2u) {
+    CHECK(0, "lj92 dims overflow");
+    rc = 1;
+    goto done;
+  }
+  target = (uint16_t *)malloc(need * 2u);
+  if (!target) {
+    CHECK(0, "lj92 target alloc");
+    rc = 1;
+    goto done;
+  }
+
+  /* skipLength != 0 must be rejected (no out-of-bounds write). */
+  {
+    int r = tdng_lj92_decode(lj, target, (int)((size_t)dw * dcomps), 1, NULL, 0);
+    CHECK(r == TDNG_LJ92_ERROR_CORRUPT,
+          "lj92 rejects skipLength=1 (got %d)", r);
+  }
+
+  /* skipLength == 0 must decode successfully and round-trip the samples. */
+  {
+    int r = tdng_lj92_decode(lj, target, (int)((size_t)dw * dcomps), 0, NULL, 0);
+    CHECK(r == TDNG_LJ92_ERROR_NONE, "lj92 decodes skipLength=0 (got %d)", r);
+    if (r == TDNG_LJ92_ERROR_NONE) {
+      size_t n = (size_t)w * h;
+      size_t bad = 0;
+      for (i = 0; i < n; i++) {
+        if (target[i] != img[i]) {
+          bad = 1;
+          break;
+        }
+      }
+      CHECK(bad == 0u, "lj92 round-trip mismatch");
+    }
+  }
+
+  printf("  lj92 skipLength rejection + round-trip OK\n");
+
+done:
+  if (lj) tdng_lj92_close(lj);
+  free(target);
+  free(enc);
+  free(img);
+  return rc;
+}
+
 int main(int argc, char **argv) {
   tinydng_context *ctx = tinydng_context_create(NULL, NULL);
   const char *root = (argc > 1) ? argv[1] : ".";
@@ -815,6 +955,7 @@ int main(int argc, char **argv) {
   test_predictor2(ctx);
   test_predictor3(ctx);
   test_packed12(ctx);
+  test_lj92_skipLength(ctx);
   printf("== cross-encoder codec fixtures ==\n");
   test_codec_fixtures(ctx, root);
 

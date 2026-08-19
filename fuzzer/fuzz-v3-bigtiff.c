@@ -42,6 +42,17 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         if (tinydng_decode_image(ctx, doc, i, NULL, &px, &err) == TINYDNG_OK) {
           tinydng_pixels_free(ctx, &px);
         }
+        /* Also exercise the KEEP_PACKED path (sub-byte packing preserved). */
+        {
+          tinydng_decode_options pkopts;
+          tinydng_pixels pxp;
+          memset(&pkopts, 0, sizeof(pkopts));
+          pkopts.flags = TINYDNG_DEC_KEEP_PACKED;
+          if (tinydng_decode_image(ctx, doc, i, &pkopts, &pxp, &err) ==
+              TINYDNG_OK) {
+            tinydng_pixels_free(ctx, &pxp);
+          }
+        }
       }
       tinydng_document_destroy(ctx, doc);
     }
