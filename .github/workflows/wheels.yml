@@ -19,7 +19,7 @@ jobs:
           fetch-tags: true  # Optional, use if you use setuptools_scm
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@v2.16.5
+        uses: pypa/cibuildwheel@v3.4.1
         # to supply options, put them in 'env', like:
         # env:
         #   CIBW_SOME_OPTION: value
@@ -29,8 +29,10 @@ jobs:
             CIBW_ARCHS_WINDOWS: "AMD64 x86"
             # disable aarm64 build since its too slow to build(docker + qemu)
             CIBW_ARCHS_LINUX: "x86_64 i686"
-            # cibuildwheel cannot reliably add the version string for Python 3.6.
-            CIBW_SKIP: "cp36-* pp*"
+            # Build the stable ABI wheel for regular CPython and a dedicated
+            # free-threaded wheel for CPython 3.14+.
+            CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-* cp314t-*"
+            CIBW_SKIP: "pp*"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -50,14 +52,15 @@ jobs:
           fetch-tags: true  # Optional, use if you use setuptools_scm
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@v2.16.5
+        uses: pypa/cibuildwheel@v3.4.1
         # to supply options, put them in 'env', like:
         # env:
         #   CIBW_SOME_OPTION: value
         # Disable building PyPy wheels on all platforms
         env:
             CIBW_ARCHS_WINDOWS: "ARM64"
-            CIBW_SKIP: "cp36-* pp*"
+            CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-* cp314t-*"
+            CIBW_SKIP: "pp*"
 
       - uses: actions/upload-artifact@v4
         with:

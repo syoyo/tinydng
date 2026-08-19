@@ -1,12 +1,26 @@
-include tiny_dng_loader.h
-include tiny_dng_writer.h
-include python/python-bindings.cc
+include python/python-bindings.c
+include tinydng.h
+include td_internal.h
+include tinydng_api.c
+include tinydng_io.c
+include tinydng_tiff.c
+include tinydng_dng.c
+include tinydng_codec.c
+include tinydng_write.c
+include tinydng_psd.c
+include tinydng_psd_write.c
+include tinydng_miniz.c
+include tinydng_stb_image.c
+include tiny_dng_ljpeg92_v2.c
+include tiny_dng_ljpeg92_v2.h
 include python/tinydng/__init__.py
 include pyproject.toml
 include setup.py
 include README.md
 include LICENSE
-include stb_image.h
-include miniz.c
 include miniz.h
 include miniz.LICENSE
+include stb_image.h
+
+# Deprecated v1/v2 implementations are not part of the Python distribution.
+prune attic

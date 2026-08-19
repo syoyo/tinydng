@@ -1,11 +1,12 @@
-import sys
+import sysconfig
 
-from setuptools import setup
-from pybind11.setup_helpers import Pybind11Extension
+from setuptools import Extension, setup
 
 dev_mode = False
 
 tinydng_compile_args = []
+free_threaded = str(sysconfig.get_config_var("Py_GIL_DISABLED")) == "1"
+python_defines = [("Py_GIL_DISABLED", "1")] if free_threaded else []
 
 if dev_mode:
   tinydng_compile_args.append('-O0')
@@ -13,20 +14,32 @@ if dev_mode:
   tinydng_compile_args.append('-fsanitize=address')
 
 ext_modules = [
-    Pybind11Extension("tinydng_ext",
-        # The v1 C++ API and its bindings are kept under attic/ after v3
-        # became the supported API.  Keep the legacy wheel build working for
-        # existing users until the bindings are ported to v3.
-        sorted(["attic/python/python-bindings.cc"]),
-        include_dirs=['.', 'attic/v1'],
-        cxx_std=11,
+    Extension("tinydng_ext",
+        sorted([
+            "python/python-bindings.c",
+            "tinydng_api.c",
+            "tinydng_io.c",
+            "tinydng_tiff.c",
+            "tinydng_dng.c",
+            "tinydng_codec.c",
+            "tinydng_write.c",
+            "tinydng_psd.c",
+            "tinydng_psd_write.c",
+            "tinydng_miniz.c",
+            "tinydng_stb_image.c",
+            "tiny_dng_ljpeg92_v2.c",
+        ]),
+        include_dirs=['.'],
+        define_macros=python_defines,
+        py_limited_api=not free_threaded,
         extra_compile_args=tinydng_compile_args
         ),
 ]
 
 setup(
     name="tinydng",
-    packages=['python/tinydng'],
+    package_dir={'': 'python'},
+    packages=['tinydng'],
     url="https://github.com/syoyo/tinydng",
     description="Tiny DNG loader/saver",
     long_description=open("./README.md", 'r', encoding='utf8').read(),

@@ -6,7 +6,6 @@ requires = [
     #"setuptools_scm>=8",
     "setuptools>=45",
     "setuptools_scm[toml]<8",
-    "pybind11>2.11.0",
     "wheel",
 ]
 build-backend = "setuptools.build_meta"
@@ -16,6 +15,7 @@ line-length = 140
 
 [project]
 name = "tinydng"
+requires-python = ">=3.10"
 #version = "0.1.0"
 
 authors = [
