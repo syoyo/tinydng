@@ -14,8 +14,11 @@ if dev_mode:
 
 ext_modules = [
     Pybind11Extension("tinydng_ext",
-        sorted(["python/python-bindings.cc"]),
-        include_dirs=['.'],
+        # The v1 C++ API and its bindings are kept under attic/ after v3
+        # became the supported API.  Keep the legacy wheel build working for
+        # existing users until the bindings are ported to v3.
+        sorted(["attic/python/python-bindings.cc"]),
+        include_dirs=['.', 'attic/v1'],
         cxx_std=11,
         extra_compile_args=tinydng_compile_args
         ),
