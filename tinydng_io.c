@@ -153,6 +153,29 @@ static int td_seek64(FILE *fp, uint64_t off) {
 #endif
 }
 
+static int td_seek_end64(FILE *fp) {
+#if defined(_WIN32)
+  return _fseeki64(fp, 0, SEEK_END);
+#elif defined(__unix__) || defined(__APPLE__) || defined(__linux__)
+  return fseeko(fp, 0, SEEK_END);
+#else
+  return fseek(fp, 0, SEEK_END);
+#endif
+}
+
+/* File size via a 64-bit ftell (long is only 32 bits on Win64). Returns
+ * -1 on failure. */
+static int64_t td_ftell64(FILE *fp) {
+#if defined(_WIN32)
+  return _ftelli64(fp);
+#elif defined(__unix__) || defined(__APPLE__) || defined(__linux__)
+  return (int64_t)ftello(fp);
+#else
+  long v = ftell(fp);
+  return (v < 0) ? (int64_t)-1 : (int64_t)v;
+#endif
+}
+
 static size_t td_stdio_read(tinydng_io *io, uint64_t off, void *dst,
                             size_t len) {
   td_io_stdio *s = (td_io_stdio *)io->backend;
@@ -196,7 +219,7 @@ tinydng_status tinydng_io_open_stdio(tinydng_context *ctx, const char *path,
                                      tinydng_io *out, tinydng_error *err) {
   td_io_stdio *s;
   FILE *fp;
-  long len_long;
+  int64_t len64;
   if (!ctx || !path || !out) {
     td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_IO, 0, 0, 0,
                  "null argument to io_open_stdio");
@@ -208,8 +231,8 @@ tinydng_status tinydng_io_open_stdio(tinydng_context *ctx, const char *path,
                  "fopen failed for '%s'", path);
     return TINYDNG_E_IO;
   }
-  if (fseek(fp, 0, SEEK_END) != 0 || (len_long = ftell(fp)) < 0 ||
-      fseek(fp, 0, SEEK_SET) != 0) {
+  if (td_seek_end64(fp) != 0 || (len64 = td_ftell64(fp)) < 0 ||
+      td_seek64(fp, 0) != 0) {
     fclose(fp);
     td_set_error(err, TINYDNG_E_IO, TINYDNG_STAGE_IO, 0, 0, 0,
                  "failed to size '%s'", path);
@@ -222,7 +245,7 @@ tinydng_status tinydng_io_open_stdio(tinydng_context *ctx, const char *path,
   }
   s->ctx = ctx;
   s->fp = fp;
-  s->size = (uint64_t)len_long;
+  s->size = (uint64_t)len64;
   memset(out, 0, sizeof(*out));
   out->read = td_stdio_read;
   out->size = td_stdio_size;

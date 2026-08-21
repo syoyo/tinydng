@@ -1524,6 +1524,19 @@ static tinydng_status td_psd_build_composite(tinydng_context *ctx,
             ((uint64_t)table[4u * i + 1u] << 16) |
             ((uint64_t)table[4u * i + 2u] << 8) | table[4u * i + 3u];
       }
+      /* Fail fast: every row's extent must stay inside the file. A garbled
+       * row length used to be caught only at decode time. */
+      if (running > r->size || n > (r->size - running)) {
+        td_ctx_free(ctx, table);
+        td_ctx_free(ctx, segs);
+        /* Treat as missing composite rather than failing the whole open. */
+        tinydng_error_clear(err);
+        td_ctx_free(ctx, doc->images);
+        doc->images = NULL;
+        doc->image_count = 0;
+        psd->has_composite = 0;
+        return TINYDNG_OK;
+      }
       segs[i].offset = running;
       segs[i].byte_count = n;
       segs[i].index = (uint32_t)i;
@@ -2049,40 +2062,48 @@ tinydng_status tinydng_psd_decode_layer(tinydng_context *ctx,
   }
 
   /* Build one task per decodable channel. Slot for id>=0 is its rank among
-     the non-negative ids (ids are almost always 0..n-1). */
-  for (i = 0; i < L->channel_count; i++) {
-    const tinydng_psd_channel *ch = &L->channels[i];
-    size_t slot, j;
-    if (ch->id < -1) {
-      continue; /* masks are not part of the interleaved output */
-    }
-    if (ch->id == -1) {
-      slot = alpha_slot;
-    } else {
-      slot = 0;
-      for (j = 0; j < L->channel_count; j++) {
-        if (L->channels[j].id >= 0 && L->channels[j].id < ch->id) {
-          slot++;
+     the non-negative ids (ids are almost always 0..n-1). A crafted file may
+     declare duplicate ids (or duplicate alpha channels); two tasks writing
+     the same output slot would race under threaded decode, so only the first
+     channel claiming a slot is queued. */
+  {
+    uint8_t slot_used[TD_PSD_MAX_LAYER_CHANNELS];
+    memset(slot_used, 0, sizeof(slot_used));
+    for (i = 0; i < L->channel_count; i++) {
+      const tinydng_psd_channel *ch = &L->channels[i];
+      size_t slot, j;
+      if (ch->id < -1) {
+        continue; /* masks are not part of the interleaved output */
+      }
+      if (ch->id == -1) {
+        slot = alpha_slot;
+      } else {
+        slot = 0;
+        for (j = 0; j < L->channel_count; j++) {
+          if (L->channels[j].id >= 0 && L->channels[j].id < ch->id) {
+            slot++;
+          }
         }
       }
+      if (slot >= spp || slot_used[slot]) {
+        continue;
+      }
+      slot_used[slot] = 1;
+      tasks[n_tasks].ctx = ctx;
+      tasks[n_tasks].doc = doc;
+      tasks[n_tasks].ch = ch;
+      tasks[n_tasks].w = L->width;
+      tasks[n_tasks].h = L->height;
+      tasks[n_tasks].depth = psd->depth;
+      tasks[n_tasks].is_psb = psd->is_psb;
+      tasks[n_tasks].dst = dst + slot * out_bytes;
+      tasks[n_tasks].pixel_stride = pixel_stride;
+      tasks[n_tasks].out_bytes = out_bytes;
+      tasks[n_tasks].invert1 = 1;
+      tinydng_error_clear(&tasks[n_tasks].err);
+      tasks[n_tasks].ok = 0;
+      n_tasks++;
     }
-    if (slot >= spp) {
-      continue;
-    }
-    tasks[n_tasks].ctx = ctx;
-    tasks[n_tasks].doc = doc;
-    tasks[n_tasks].ch = ch;
-    tasks[n_tasks].w = L->width;
-    tasks[n_tasks].h = L->height;
-    tasks[n_tasks].depth = psd->depth;
-    tasks[n_tasks].is_psb = psd->is_psb;
-    tasks[n_tasks].dst = dst + slot * out_bytes;
-    tasks[n_tasks].pixel_stride = pixel_stride;
-    tasks[n_tasks].out_bytes = out_bytes;
-    tasks[n_tasks].invert1 = 1;
-    tinydng_error_clear(&tasks[n_tasks].err);
-    tasks[n_tasks].ok = 0;
-    n_tasks++;
   }
   if (n_tasks == 0u) {
     if (owns) {
@@ -2217,6 +2238,37 @@ tinydng_status tinydng_psd_decode_layer_channel(
 /* Thumbnail                                                          */
 /* ------------------------------------------------------------------ */
 
+#ifndef TINYDNG_NO_BASELINE_JPEG
+/* Decompression-bomb guard for stb_image payloads: stb allocates through
+ * libc malloc, outside the tracked allocator and its memory cap. Probe the
+ * header and reject images whose decoded 8-bit size (w*h*channels) cannot
+ * fit the remaining memory budget. Returns 1 to proceed, 0 when rejected. */
+static int td_psd_stb_budget_ok(tinydng_context *ctx, const uint8_t *data,
+                                int data_len, unsigned desired) {
+  int w = 0, h = 0, comp = 0;
+  uint64_t channels, need, budget;
+  td_mutex *L;
+  if (!stbi_info_from_memory(data, data_len, &w, &h, &comp)) {
+    return 1; /* header already broken: stbi_load reports the real error */
+  }
+  if (w <= 0 || h <= 0) {
+    return 0;
+  }
+  channels = (desired > 0u) ? (uint64_t)desired : (uint64_t)(unsigned)comp;
+  if (!td_safe_mul_u64((uint64_t)(uint32_t)w, (uint64_t)(uint32_t)h, &need) ||
+      !td_safe_mul_u64(need, channels, &need)) {
+    return 0;
+  }
+  /* Same lock discipline as the tracked allocator (MT decode). */
+  L = ctx->mt_active ? ctx->lock : NULL;
+  td_mutex_lock(L);
+  budget = ctx->memory_cap_bytes ? (ctx->memory_cap_bytes - ctx->memory_used)
+                                 : UINT64_MAX;
+  td_mutex_unlock(L);
+  return need <= budget;
+}
+#endif
+
 tinydng_status tinydng_psd_decode_thumbnail(tinydng_context *ctx,
                                             const tinydng_document *doc,
                                             tinydng_pixels *out,
@@ -2231,8 +2283,7 @@ tinydng_status tinydng_psd_decode_thumbnail(tinydng_context *ctx,
   tinydng_error_clear(err);
   if (!ctx || !doc || !out) {
     return TINYDNG_E_INVALID_ARG;
-  }
-  memset(out, 0, sizeof(*out));
+  }  memset(out, 0, sizeof(*out));
   psd = tinydng_document_psd(doc);
   if (!psd) {
     return TINYDNG_E_INVALID_ARG;
@@ -2280,6 +2331,15 @@ tinydng_status tinydng_psd_decode_thumbnail(tinydng_context *ctx,
     jbuf = td_psd_read_copy(ctx, &r, res->offset + 28u, jlen, err);
     if (!jbuf) {
       return td_error_status_or(err, TINYDNG_E_OOM);
+    }
+    /* The embedded JPEG's own header governs the allocation; reject bombs
+     * regardless of the (already capped) tw/th resource fields. */
+    if (!td_psd_stb_budget_ok(ctx, jbuf, (int)jlen, 3u)) {
+      td_ctx_free(ctx, jbuf);
+      td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0,
+                   res->offset, "PSD: thumbnail decoded size exceeds memory "
+                                "budget");
+      return TINYDNG_E_BOUNDS;
     }
     pixels = stbi_load_from_memory(jbuf, (int)jlen, &w, &h, &comp, 3);
     td_ctx_free(ctx, jbuf);
@@ -2528,6 +2588,13 @@ tinydng_status tinydng_psd_smart_object_decode(tinydng_context *ctx,
                                 &payload, &payload_size, err);
     if (st != TINYDNG_OK) {
       return st;
+    }
+    if (!td_psd_stb_budget_ok(ctx, payload, (int)payload_size, 0u)) {
+      td_ctx_free(ctx, payload);
+      td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0,
+                   so->data_offset,
+                   "PSD: smart object decoded size exceeds memory budget");
+      return TINYDNG_E_BOUNDS;
     }
     pixels = stbi_load_from_memory(payload, (int)payload_size, &w, &h, &comp,
                                    0);

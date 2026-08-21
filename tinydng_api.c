@@ -687,8 +687,8 @@ tinydng_context *tinydng_context_create(const tinydng_config *config,
      reason -- MT simply won't engage. */
   ctx->lock = td_mutex_create(ctx);
   ctx->decode_guard = td_mutex_create_recursive(ctx);
-   ctx->mt_active = 0;
-   return ctx;
+  ctx->mt_active = 0;
+  return ctx;
 }
 
 void tinydng_context_destroy(tinydng_context *ctx) {

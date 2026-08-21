@@ -726,6 +726,39 @@ static tinydng_status td_decode_block_baseline(tinydng_context *ctx,
   if (!src) {
     return td_error_status_or(err, TINYDNG_E_BOUNDS);
   }
+  /* Decompression-bomb guard: stb_image allocates through libc malloc,
+   * outside the tracked allocator and its memory cap. Probe the header and
+   * reject images whose decoded size cannot fit the remaining budget before
+   * letting stb allocate. */
+  if (!stbi_info_from_memory(src, (int)seg->byte_count, &w, &h, &comp)) {
+    td_ctx_free(ctx, owned);
+    td_set_error(err, TINYDNG_E_DECODE, TINYDNG_STAGE_DECODE, 0, 0, seg->offset,
+                 "jpeg header parse failed: %s", stbi_failure_reason());
+    return TINYDNG_E_DECODE;
+  }
+  {
+    uint64_t need_px = (uint64_t)(uint32_t)w * (uint64_t)(uint32_t)h;
+    uint64_t need_bytes;
+    uint64_t budget;
+    /* Read the accounting under the allocator's lock discipline so a
+     * multi-threaded decode never races td_ctx_alloc's bookkeeping. */
+    td_mutex *L = ctx->mt_active ? ctx->lock : NULL;
+    td_mutex_lock(L);
+    budget = ctx->memory_cap_bytes ? (ctx->memory_cap_bytes - ctx->memory_used)
+                                   : UINT64_MAX;
+    td_mutex_unlock(L);
+    if (!td_safe_mul_u64(need_px, (uint64_t)((unsigned)g->spp),
+                         &need_bytes) ||
+        need_bytes > budget) {
+      td_ctx_free(ctx, owned);
+      td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0,
+                   seg->offset,
+                   "jpeg decoded size %dx%dx%u exceeds memory budget (%llu "
+                   "bytes left)",
+                   w, h, (unsigned)g->spp, (unsigned long long)budget);
+      return TINYDNG_E_BOUNDS;
+    }
+  }
   pixels = stbi_load_from_memory(src, (int)seg->byte_count, &w, &h, &comp,
                                  (int)g->spp);
   if (owned) {

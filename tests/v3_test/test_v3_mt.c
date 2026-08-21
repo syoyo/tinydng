@@ -255,11 +255,10 @@ static tinydng_status decode_stdio(tinydng_context *ctx, const char *path,
   if (st != TINYDNG_OK) {
     return st;
   }
+  /* tinydng_open_io takes ownership of io and closes it on every exit
+     (success and failure); closing again here would be a double free. */
   st = tinydng_open_io(ctx, io, NULL, &doc, &err);
   if (st != TINYDNG_OK) {
-    if (io.close) {
-      io.close(&io);
-    }
     return st;
   }
   st = tinydng_decode_image(ctx, doc, 0, &o, px, &err);

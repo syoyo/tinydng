@@ -274,8 +274,9 @@ static int td_parse_opcode_list(tinydng_context *ctx, const td_reader *r,
     saved = pos;
     {
       uint64_t opcode_end;
-      if (nbytes < 4u || !td_safe_add_u64(saved, nbytes, &opcode_end) ||
-          opcode_end > end) {
+      /* A zero/short payload is legal (an opcode without parameters); only
+       * an extent running past the list aborts the remaining opcodes. */
+      if (!td_safe_add_u64(saved, nbytes, &opcode_end) || opcode_end > end) {
         return 1;
       }
     }

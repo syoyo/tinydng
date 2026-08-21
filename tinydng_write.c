@@ -437,20 +437,44 @@ static size_t td_wio_file_write(tinydng_write_io *io, uint64_t off,
   return fwrite(data, 1, len, f->fp);
 }
 
+/* Push stdio's buffer to the OS so a full-disk/ENOSPC failure surfaces
+ * through tinydng_writer_finish instead of silently truncating the file at
+ * fclose time (whose result no one can check through the void close()). */
+static int td_wio_file_flush(tinydng_write_io *io) {
+  td_wio_file *f = (td_wio_file *)io->backend;
+  if (!f || !f->fp) {
+    return -1;
+  }
+  return (fflush(f->fp) == 0 && ferror(f->fp) == 0) ? 0 : -1;
+}
+
+/* File size via a 64-bit ftell + SEEK_END (the old probe relied on a seek
+ * past EOF failing, which POSIX does not guarantee). */
 static uint64_t td_wio_file_size(tinydng_write_io *io) {
   td_wio_file *f = (td_wio_file *)io->backend;
-  long cur, end;
-  cur = ftell(f->fp);
-  if (td_wseek(f->fp, 0) != 0) {
+#if defined(_WIN32)
+  __int64 cur, end;
+#else
+  int64_t cur, end;
+#endif
+#if defined(_WIN32)
+  cur = _ftelli64(f->fp);
+#else
+  cur = (int64_t)ftello(f->fp);
+#endif
+  if (cur < 0) {
     return 0;
   }
-  if (td_wseek(f->fp, (uint64_t)-1) != 0 && fseek(f->fp, 0, SEEK_END) != 0) {
-    return 0;
-  }
-  end = ftell(f->fp);
-  if (cur >= 0) {
+  if (fseek(f->fp, 0, SEEK_END) != 0) {
     td_wseek(f->fp, (uint64_t)cur);
+    return 0;
   }
+#if defined(_WIN32)
+  end = _ftelli64(f->fp);
+#else
+  end = (int64_t)ftello(f->fp);
+#endif
+  td_wseek(f->fp, (uint64_t)cur);
   return (end < 0) ? 0u : (uint64_t)end;
 }
 
@@ -491,6 +515,7 @@ tinydng_status tinydng_write_io_open_file(tinydng_context *ctx,
   out->write = td_wio_file_write;
   out->size = td_wio_file_size;
   out->close = td_wio_file_close;
+  out->flush = td_wio_file_flush;
   out->backend = f;
   return TINYDNG_OK;
 }
@@ -1199,14 +1224,19 @@ tinydng_status tinydng_writer_create(tinydng_context *ctx,
     w->rows_per_strip = rps;
     down = td_wceil(meta->height, rps);
   }
-  if (comp == TINYDNG_COMPRESSION_NEW_JPEG &&
-      ((uint64_t)meta->width > (uint64_t)INT_MAX ||
-       (uint64_t)meta->height > (uint64_t)INT_MAX ||
-       (uint64_t)meta->width * (uint64_t)spp > (uint64_t)INT_MAX)) {
-    td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, 0, 0,
-                 "lossless JPEG dimensions exceed encoder limits");
-    td_ctx_free(ctx, w);
-    return TINYDNG_E_BOUNDS;
+  if (comp == TINYDNG_COMPRESSION_NEW_JPEG) {
+    /* The LJPEG encoder's hard limits: SOF3 dims are 16-bit and components
+     * 1..4. Validate here so create() fails with E_UNSUPPORTED instead of
+     * every write_strip/write_tile failing later with E_INTERNAL. */
+    if ((uint64_t)meta->width > 0xFFFFu || (uint64_t)meta->height > 0xFFFFu ||
+        spp < 1u || spp > 4u) {
+      td_set_error(err, TINYDNG_E_UNSUPPORTED, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                   "lossless JPEG requires dims <= 65535 and spp in 1..4 "
+                   "(got %ux%u spp=%u)",
+                   meta->width, meta->height, (unsigned)spp);
+      td_ctx_free(ctx, w);
+      return TINYDNG_E_UNSUPPORTED;
+    }
   }
   if ((uint64_t)across * (uint64_t)down > 0xFFFFFFu) {
     td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, 0, 0,
@@ -1453,11 +1483,19 @@ static tinydng_status td_writer_put_segment(tinydng_writer *w, uint32_t index,
                  "segment %u written twice", index);
     return TINYDNG_E_INVALID_ARG;
   }
+  /* Fail fast: a classic-TIFF offset/length overflow must be reported before
+     the payload is encoded + written (the old order orphaned the bytes). The
+     worst-case stored size is bounded by pw*ph*spp*bps/8. */
+  if (!w->bigtiff && at > (uint64_t)UINT32_MAX) {
+    td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, 0, at,
+                 "payload exceeds classic TIFF offset limits");
+    return TINYDNG_E_BOUNDS;
+  }
   st = td_writer_put_payload(w, (const uint8_t *)pixels, pw, ph, at, &len, err);
   if (st != TINYDNG_OK) {
     return st;
   }
-  if (!w->bigtiff && (at > (uint64_t)UINT32_MAX || len > (size_t)UINT32_MAX)) {
+  if (!w->bigtiff && len > (size_t)UINT32_MAX) {
     td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, 0, at,
                  "payload exceeds classic TIFF offset limits");
     return TINYDNG_E_BOUNDS;
@@ -1682,6 +1720,12 @@ tinydng_status tinydng_writer_finish(tinydng_writer *w, tinydng_error *err) {
   if (st == TINYDNG_OK) {
     st = td_writer_put_header(&w->sink, w->big_endian, w->bigtiff, ifd_off, err);
   }
+  if (st == TINYDNG_OK && w->sink.flush && w->sink.flush(&w->sink) != 0) {
+    td_set_error(err, TINYDNG_E_IO, TINYDNG_STAGE_WRITE, 0, 0,
+                 w->sink.size(&w->sink),
+                 "final sink flush failed (output may be truncated)");
+    st = TINYDNG_E_IO;
+  }
 
 cleanup:
   td_ctx_free(w->ctx, w->w.extras);
@@ -1747,7 +1791,10 @@ tinydng_status tinydng_write_memory(tinydng_context *ctx,
   }
   st = tinydng_writer_write_strip(w, 0, img->data, err);
   if (st != TINYDNG_OK) {
-    tinydng_writer_finish(w, err); /* releases writer state */
+    /* Cleanup finish() clears `err`; use a scratch error so the original
+       failure message survives. */
+    tinydng_error cerr;
+    tinydng_writer_finish(w, &cerr); /* releases writer state */
     io.close(&io);
     return st;
   }
@@ -1794,7 +1841,10 @@ tinydng_status tinydng_write_file(tinydng_context *ctx, const char *path,
   }
   st = tinydng_writer_write_strip(w, 0, img->data, err);
   if (st != TINYDNG_OK) {
-    tinydng_writer_finish(w, err); /* releases writer state */
+    /* Cleanup finish() clears `err`; use a scratch error so the original
+       failure message survives. */
+    tinydng_error cerr;
+    tinydng_writer_finish(w, &cerr); /* releases writer state */
     io.close(&io);
     return st;
   }

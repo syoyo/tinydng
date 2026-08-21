@@ -1754,7 +1754,13 @@ int tdng_lj92_encode_rows(tdng_lj92_enc lj, const uint16_t* image, int row0,
   }
   if (image != self->image) return TDNG_LJ92_ERROR_BAD_HANDLE;
   ret = enc_write_rows(self, row0, row_count);
-  if (ret != TDNG_LJ92_ERROR_NONE) return ret;
+  if (ret != TDNG_LJ92_ERROR_NONE) {
+    // Poison the phase machine: the internal read pointer has already
+    // advanced partway through this band, so a retry would resume from the
+    // wrong position and eventually walk out of the caller's image buffer.
+    self->phase = 3;
+    return ret;
+  }
   enc_stage_flush(self);
   if (self->sink_failed) return TDNG_LJ92_ERROR_IO;
   self->next_row = row0 + row_count;
