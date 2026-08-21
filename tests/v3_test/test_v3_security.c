@@ -9,7 +9,18 @@
  *   D  RATIONAL EXIF tag type gating            (dng.c)
  *   E  LinearizationTable element stride        (dng.c)
  *   F  Duplicate string tag frees the old value (dng.c: td_set_ascii)
+ *   G  LJPEG huffman symbol ssss > 16 rejected  (lj92: build_huff_lut)
+ *   H  JPEGInterchangeFormat byte-count clamp   (tiff.c td_build_segments)
+ *   I  Truncated SOF/segment length             (lj92 parseImage)
+ *   J  Streaming read_fn over-report clamped    (lj92 srefill)
+ *   K  Linearization strict bound (raw < len)   (lj92 decode paths)
+ *   L  Writer CFA counts clamp                  (writer td_add CFA tags)
+ *   M  Writer NaN/huge rationals saturate       (writer td_add_*rationals)
+ *   N  PSD writer NULL layers/channels          (psd_write validate)
+ *   O  Zero-length opcode keeps list parsing    (dng.c opcode walk)
  */
+#include <math.h>
+
 #include "td_test_util.h"
 #include "tiny_dng_ljpeg92_v2.h"
 
@@ -342,6 +353,124 @@ static void case_ljpeg_truncated_segment(void) {
   }
 }
 
+/* J: a streaming read_fn that over-reports (returns more than requested).
+ * srefill must clamp it so buf_len never exceeds buf_cap; the decode then
+ * behaves exactly like a well-behaved callback. */
+typedef struct {
+  const uint8_t *data;
+  size_t size;
+} tdj_src;
+
+static size_t evil_read(void *user, uint64_t off, void *dst, size_t len) {
+  tdj_src *s = (tdj_src *)user;
+  if (off >= s->size) {
+    return 0;
+  }
+  if (len > s->size - (size_t)off) {
+    len = s->size - (size_t)off;
+  }
+  memcpy(dst, s->data + off, len);
+  return len + 16u; /* LIE: more than delivered (clamped by srefill) */
+}
+
+static uint64_t plain_size(void *user) {
+  return ((tdj_src *)user)->size;
+}
+
+static void case_ljpeg_stream_overreporting(void) {
+  /* Noise image large enough that the encoded stream exceeds the 64KB
+   * stream-chunk capacity: the first refill requests exactly CHUNK bytes,
+   * and the +16 lie then exceeds buf_cap (the case the clamp guards). */
+#define JW 320
+#define JH 320
+  static uint16_t pix[JW * JH];
+  uint32_t i;
+  uint32_t rng = 0x12345678u;
+  uint8_t *enc = NULL;
+  int enclen = 0;
+  int rc;
+  for (i = 0; i < (uint32_t)(JW * JH); i++) {
+    rng = rng * 1664525u + 1013904223u;
+    pix[i] = (uint16_t)((rng >> 11) & 0xFFFFu);
+  }
+  rc = tdng_lj92_encode_ex(pix, JW, JH, 16, 1, 1, JW, 0, NULL, 0, &enc,
+                           &enclen);
+  CHECK(rc == TDNG_LJ92_ERROR_NONE && enc != NULL && enclen > 65536 + 16,
+        "J: encode fixture (%d bytes)", enclen);
+  if (rc == TDNG_LJ92_ERROR_NONE && enc) {
+    tdj_src src;
+    src.data = enc;
+    src.size = (size_t)enclen;
+    tdng_lj92 lj = NULL;
+    int w = 0, h = 0, bits = 0, comps = 0;
+    int ret = tdng_lj92_open_streaming(&lj, &src, evil_read, plain_size, &w, &h,
+                                       &bits, &comps);
+    CHECK(ret == TDNG_LJ92_ERROR_NONE && w == JW && h == JH && bits == 16 &&
+              comps == 1,
+          "J: streaming open ok with lying read_fn (ret=%d %dx%d)", ret, w, h);
+    if (ret == TDNG_LJ92_ERROR_NONE) {
+      static uint16_t out[JW * JH];
+      uint32_t k;
+      int dret;
+      memset(out, 0xAA, sizeof(out));
+      dret = tdng_lj92_decode(lj, out, JW, 0, NULL, 0);
+      CHECK(dret == TDNG_LJ92_ERROR_NONE, "J: streaming decode ok (%d)", dret);
+      for (k = 0; k < (uint32_t)(JW * JH); k++) {
+        if (out[k] != pix[k]) break;
+      }
+      CHECK(k == (uint32_t)(JW * JH), "J: decoded pixels match");
+      tdng_lj92_close(lj);
+    }
+  }
+  free(enc);
+#undef JW
+#undef JH
+}
+
+/* K: linearization lookups use strict '< table length' bounds. A decoded
+ * sample equal to the table length must fail the decode instead of reading
+ * lin[len] (the old '> len' check allowed it). */
+static void case_ljpeg_linearize_bound(void) {
+  uint16_t pix[4] = {100, 100, 100, 100};
+  uint8_t *enc = NULL;
+  int enclen = 0;
+  int rc = tdng_lj92_encode_ex(pix, 2, 2, 16, 1, 1, 2, 0, NULL, 0, &enc,
+                               &enclen);
+  CHECK(rc == TDNG_LJ92_ERROR_NONE && enc != NULL, "K: encode fixture");
+  if (rc == TDNG_LJ92_ERROR_NONE && enc) {
+    tdng_lj92 lj = NULL;
+    int w = 0, h = 0, bits = 0, comps = 0;
+    CHECK(tdng_lj92_open(&lj, enc, enclen, &w, &h, &bits, &comps) ==
+              TDNG_LJ92_ERROR_NONE,
+          "K: open");
+    if (lj) {
+      uint16_t out[4];
+      /* Exactly 100 entries: sample 100 == len. Pre-fix ('>' bound) this
+       * indexed lin[100] -- one entry past the table; post-fix ('>=') it
+       * fails the decode. */
+      uint16_t short_tab[100];
+      uint16_t wide_tab[200];
+      uint32_t i;
+      memset(short_tab, 0x11, sizeof(short_tab));
+      for (i = 0; i < 200; i++) {
+        wide_tab[i] = (uint16_t)(i + 1); /* v -> v+1 so identity is visible */
+      }
+      memset(out, 0, sizeof(out));
+      CHECK(tdng_lj92_decode(lj, out, 2, 0, short_tab, 100) ==
+                TDNG_LJ92_ERROR_CORRUPT,
+            "K: sample == table length rejected (strict bound)");
+      memset(out, 0, sizeof(out));
+      CHECK(tdng_lj92_decode(lj, out, 2, 0, wide_tab, 200) ==
+                TDNG_LJ92_ERROR_NONE,
+            "K: sample 100 accepted with 200-entry table");
+      CHECK(out[0] == 101 && out[3] == 101,
+            "K: mapped through table ([%u %u])", out[0], out[3]);
+      tdng_lj92_close(lj);
+    }
+  }
+  free(enc);
+}
+
 /* H: JPEGInterchangeFormat byte-count clamp (tiff.c td_build_segments).
  * A 0 byte count (or one extending past EOF) used to reach the baseline
  * JPEG decoder with an empty input (fuzzer crash); it must now be clamped
@@ -436,6 +565,203 @@ static void case_jpeg_if_clamp(void) {
   }
 }
 
+/* L: a caller struct with CFA counts larger than the fixed-size arrays must
+ * not make the writer read past pattern[16]/plane_color[4] (stack overread
+ * under ASan pre-fix); emitted tag lengths are clamped to the arrays. */
+static void case_writer_cfa_clamp(void) {
+  tinydng_context *ctx = tinydng_context_create(NULL, NULL);
+  tinydng_write_image img;
+  tinydng_write_options opts;
+  tinydng_cfa cfa;
+  uint8_t pix[4 * 4 * 1];
+  uint8_t *out = NULL;
+  size_t out_size = 0;
+  tinydng_error err;
+  tinydng_status st;
+  memset(pix, 0x40, sizeof(pix));
+  memset(&img, 0, sizeof(img));
+  img.width = 4;
+  img.height = 4;
+  img.samples_per_pixel = 1;
+  img.bits_per_sample = 8;
+  img.data = pix;
+  img.data_size = sizeof(pix);
+  memset(&cfa, 0, sizeof(cfa));
+  cfa.present = 1;
+  cfa.pattern_dim[0] = 2;
+  cfa.pattern_dim[1] = 2;
+  cfa.pattern_size = 255;     /* poisoned: > sizeof(pattern)==16 */
+  cfa.plane_color_count = 200; /* poisoned: > sizeof(plane_color)==4 */
+  img.cfa = &cfa;
+  memset(&opts, 0, sizeof(opts));
+  opts.as_dng = 1;
+  st = tinydng_write_memory(ctx, &img, &opts, &out, &out_size, &err);
+  CHECK(st == TINYDNG_OK, "L: write with oversized CFA counts ok (%s)",
+        err.message);
+  if (st == TINYDNG_OK && out) {
+    tinydng_document *doc = NULL;
+    const tinydng_image_info *im;
+    CHECK(tinydng_open_memory(ctx, out, out_size, NULL, &doc, &err) ==
+              TINYDNG_OK,
+          "L: output re-opens");
+    im = doc ? tinydng_image_get(doc, 0) : NULL;
+    CHECK(im && im->cfa.pattern_size <= 16 && im->cfa.plane_color_count <= 4,
+          "L: parsed counts clamped (%u/%u)",
+          im ? (unsigned)im->cfa.pattern_size : 99u,
+          im ? (unsigned)im->cfa.plane_color_count : 99u);
+    if (doc) tinydng_document_destroy(ctx, doc);
+    tinydng_buffer_free(ctx, out);
+  }
+  tinydng_context_destroy(ctx);
+}
+
+/* M: NaN / +-inf / huge doubles in calibration matrices must saturate
+ * instead of executing undefined float->int conversions (UBSan traps on the
+ * pre-fix plain casts). */
+static void case_writer_nan_rational(void) {
+  tinydng_context *ctx = tinydng_context_create(NULL, NULL);
+  tinydng_write_image img;
+  tinydng_write_options opts;
+  tinydng_raw_info raw;
+  uint8_t pix[2 * 2 * 1];
+  uint8_t *out = NULL;
+  size_t out_size = 0;
+  tinydng_error err;
+  int i;
+  memset(pix, 0x20, sizeof(pix));
+  memset(&img, 0, sizeof(img));
+  img.width = 2;
+  img.height = 2;
+  img.samples_per_pixel = 1;
+  img.bits_per_sample = 8;
+  img.data = pix;
+  img.data_size = sizeof(pix);
+  memset(&raw, 0, sizeof(raw));
+  raw.color_matrix_present = 1;
+  for (i = 0; i < 9; i++) {
+    raw.color_matrix1[i] = (i == 0) ? NAN : ((i == 1) ? 1e300 : -INFINITY);
+  }
+  img.raw = &raw;
+  memset(&opts, 0, sizeof(opts));
+  opts.as_dng = 1;
+  {
+    uint8_t *out2 = NULL;
+    size_t sz2 = 0;
+    CHECK(tinydng_write_memory(ctx, &img, &opts, &out2, &sz2, &err) ==
+              TINYDNG_OK,
+          "M: write with NaN/Inf matrix ok (%s)", err.message);
+    if (out2) {
+      tinydng_document *doc = NULL;
+      const tinydng_image_info *im;
+      CHECK(tinydng_open_memory(ctx, out2, sz2, NULL, &doc, &err) ==
+                TINYDNG_OK,
+            "M: output re-opens");
+      im = doc ? tinydng_image_get(doc, 0) : NULL;
+      if (im) {
+        int finite_all = 1;
+        for (i = 0; i < 9; i++) {
+          if (!(im->raw.color_matrix1[i] == im->raw.color_matrix1[i]) ||
+              im->raw.color_matrix1[i] > 2147.483647e3 ||
+              im->raw.color_matrix1[i] < -2147.483648e3) {
+            finite_all = 0;
+          }
+        }
+        CHECK(finite_all, "M: round-tripped matrix saturated/in range");
+      }
+      if (doc) tinydng_document_destroy(ctx, doc);
+      tinydng_buffer_free(ctx, out2);
+    }
+  }
+  tinydng_context_destroy(ctx);
+}
+
+/* N: PSD writer rejects layer_count>0 with layers==NULL (and channel_count>0
+ * with channels==NULL) at validate time instead of dereferencing NULL. */
+static void case_psdw_null_layers(void) {
+  tinydng_context *ctx = tinydng_context_create(NULL, NULL);
+  tinydng_psd_write_doc doc;
+  tinydng_psd_write_layer layer;
+  tinydng_psd_write_channel ch;
+  uint8_t comp[2 * 2 * 1];
+  uint8_t chan[2 * 2 * 1];
+  tinydng_error err;
+  uint8_t *out = NULL;
+  size_t sz = 0;
+  tinydng_status st;
+  memset(comp, 0x30, sizeof(comp));
+  memset(chan, 0x50, sizeof(chan));
+  memset(&doc, 0, sizeof(doc));
+  doc.width = 2;
+  doc.height = 2;
+  doc.depth = 8;
+  doc.channel_count = 1;
+  doc.composite = comp;
+  doc.composite_size = sizeof(comp);
+  doc.layer_count = 1;
+  doc.layers = NULL; /* poisoned */
+  st = tinydng_psd_write_memory(ctx, &doc, NULL, &out, &sz, &err);
+  CHECK(st == TINYDNG_E_INVALID_ARG && out == NULL,
+        "N: NULL layers rejected (%d %s)", (int)st, err.message);
+  /* Now a valid layer shell with channels == NULL. */
+  memset(&layer, 0, sizeof(layer));
+  layer.left = 0;
+  layer.top = 0;
+  layer.right = 2;
+  layer.bottom = 2;
+  layer.channel_count = 1;
+  layer.channels = NULL; /* poisoned */
+  ch.id = 0;
+  ch.data = chan;
+  ch.size = sizeof(chan);
+  (void)ch;
+  doc.layers = &layer;
+  st = tinydng_psd_write_memory(ctx, &doc, NULL, &out, &sz, &err);
+  CHECK(st == TINYDNG_E_INVALID_ARG && out == NULL,
+        "N: NULL channels rejected (%d %s)", (int)st, err.message);
+  tinydng_context_destroy(ctx);
+}
+
+/* O: an opcode carrying nbytes=0 must not abort the rest of its list: a
+ * following valid GainMap is still parsed (pre-fix returned early). */
+static void case_opcode_zero_nbytes(void) {
+  uint8_t b[256];
+  size_t p = 0;
+  tinydng_context *ctx = tinydng_context_create(NULL, NULL);
+  tinydng_document *doc;
+  const tinydng_image_info *im;
+  size_t total;
+  uint8_t *buf;
+  ent ex;
+  tdt_pu32(b + p, 2, 1);
+  p += 4;                       /* two opcodes */
+  op_hdr(b, &p, 99u, 0u);       /* unknown id, zero-length payload */
+  op_hdr(b, &p, 9u, 92u);       /* GainMap: 76-byte header + 16 bytes */
+  tdt_pu32(b + p, 0, 1); p += 4; tdt_pu32(b + p, 0, 1); p += 4;
+  tdt_pu32(b + p, 0, 1); p += 4; tdt_pu32(b + p, 0, 1); p += 4;
+  tdt_pu32(b + p, 0, 1); p += 4; tdt_pu32(b + p, 1, 1); p += 4;
+  tdt_pu32(b + p, 1, 1); p += 4; tdt_pu32(b + p, 1, 1); p += 4;
+  tdt_pu32(b + p, 1, 1); p += 4; tdt_pu32(b + p, 1, 1); p += 4; /* mpv=mph=1 */
+  tdt_pf64be(b + p, 0.5); p += 8; tdt_pf64be(b + p, 0.5); p += 8;
+  tdt_pf64be(b + p, 0.0); p += 8; tdt_pf64be(b + p, 0.0); p += 8;
+  tdt_pu32(b + p, 4u, 1); p += 4;               /* map_planes=4 -> 4 items */
+  tdt_pf32be(b + p, 1.f); p += 4; tdt_pf32be(b + p, 1.f); p += 4;
+  tdt_pf32be(b + p, 1.f); p += 4; tdt_pf32be(b + p, 1.f); p += 4;
+  ex.tag = 51009;
+  ex.type = 7;
+  ex.count = (uint32_t)p;
+  ex.val = 12;
+  buf = build_img(&ex, 1, b, p, &total);
+  im = open_img(ctx, buf, total, &doc);
+  CHECK(im != NULL, "O: file opens");
+  CHECK(im && im->raw.gainmap_count == 1,
+        "O: GainMap after zero-nbytes opcode parsed (count=%zu)",
+        im ? im->raw.gainmap_count : (size_t)999);
+  if (doc) tinydng_document_destroy(ctx, doc);
+  CHECK(tinydng_context_memory_used(ctx) == 0u, "O: no leak");
+  tinydng_context_destroy(ctx);
+  free(buf);
+}
+
 int main(void) {
   (void)tdt_slurp; /* shared helper unused by this all-in-memory test */
   printf("== v3 security regression fixtures ==\n");
@@ -448,6 +774,12 @@ int main(void) {
   case_ljpeg_ssss();
   case_ljpeg_truncated_segment();
   case_jpeg_if_clamp();
+  case_ljpeg_stream_overreporting();
+  case_ljpeg_linearize_bound();
+  case_writer_cfa_clamp();
+  case_writer_nan_rational();
+  case_psdw_null_layers();
+  case_opcode_zero_nbytes();
   printf(g_fail ? "SECURITY: FAILURES\n" : "SECURITY: ALL PASS\n");
   return g_fail;
 }
