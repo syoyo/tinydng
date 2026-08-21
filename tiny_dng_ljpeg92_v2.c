@@ -119,6 +119,9 @@ static int srefill(tdng_lj92_stream* s, uint64_t off, size_t need) {
     if (want > TDNG_LJ92_STREAM_CHUNK) want = TDNG_LJ92_STREAM_CHUNK;
     if (want > s->buf_cap) want = s->buf_cap;
     size_t got = s->read_fn(s->user, off, s->buf, (size_t)want);
+    // Hardening: the callback contract is "return requested bytes or fewer";
+    // clamp a misbehaving callback so buf_len can never exceed buf_cap.
+    if (got > (size_t)want) got = (size_t)want;
     s->buf_off = off;
     s->buf_len = got;
     return got >= need;
@@ -127,6 +130,7 @@ static int srefill(tdng_lj92_stream* s, uint64_t off, size_t need) {
 
 /* Read exactly len bytes at absolute off. Returns 1 on success. */
 static int sread(tdng_lj92_stream* s, uint64_t off, void* dst, size_t len) {
+  if (len > (size_t)TDNG_LJ92_STREAM_CHUNK) return 0; /* exceeds cache capacity */
   if (!srefill(s, off, len)) return 0;
   memcpy(dst, s->buf + (size_t)(off - s->buf_off), len);
   return 1;
@@ -531,7 +535,7 @@ static TDNG_ALWAYS_INLINE int parseScanRun(ljp* self, bitio_t* bio,
       int d = bitio_decode_diff(bio, hl[c], hb[c]);
       int raw = (int)(uint16_t)(init_px + d);
       if (LIN) {
-        if ((unsigned)raw > (unsigned)linlen) return TDNG_LJ92_ERROR_CORRUPT;
+        if ((unsigned)raw >= (unsigned)linlen) return TDNG_LJ92_ERROR_CORRUPT;
         rowbuf[base + c] = (u16)raw;
         out[base + c] = lin[raw];
       } else {
@@ -547,7 +551,7 @@ static TDNG_ALWAYS_INLINE int parseScanRun(ljp* self, bitio_t* bio,
         int d = bitio_decode_diff(bio, hl[c], hb[c]);
         int raw = (int)(uint16_t)(Px + d);
         if (LIN) {
-          if ((unsigned)raw > (unsigned)linlen) return TDNG_LJ92_ERROR_CORRUPT;
+          if ((unsigned)raw >= (unsigned)linlen) return TDNG_LJ92_ERROR_CORRUPT;
           rowbuf[cur + c] = (u16)raw;
           out[cur + c] = lin[raw];
         } else {
@@ -576,7 +580,7 @@ static TDNG_ALWAYS_INLINE int parseScanRun(ljp* self, bitio_t* bio,
       int d = bitio_decode_diff(bio, hl[c], hb[c]);
       int raw = (int)(uint16_t)(Px + d);
       if (LIN) {
-        if ((unsigned)raw > (unsigned)linlen) return TDNG_LJ92_ERROR_CORRUPT;
+        if ((unsigned)raw >= (unsigned)linlen) return TDNG_LJ92_ERROR_CORRUPT;
         currow[c] = (u16)raw;
         curout[c] = lin[raw];
       } else {
@@ -608,7 +612,7 @@ static TDNG_ALWAYS_INLINE int parseScanRun(ljp* self, bitio_t* bio,
         int d = bitio_decode_diff(bio, hl[c], hb[c]);
         int raw = (int)(uint16_t)(Px + d);
         if (LIN) {
-          if ((unsigned)raw > (unsigned)linlen) return TDNG_LJ92_ERROR_CORRUPT;
+          if ((unsigned)raw >= (unsigned)linlen) return TDNG_LJ92_ERROR_CORRUPT;
           currow[cur + c] = (u16)raw;
           curout[cur + c] = lin[raw];
         } else {
@@ -667,7 +671,7 @@ static int parseScanGeneric(ljp* self, bitio_t* bio, int pred) {
     int raw = (int)(uint16_t)(init_px + d);
     rowbuf[c] = (u16)raw;
     if (has_lin) {
-      if ((unsigned)raw > (unsigned)linlen) return TDNG_LJ92_ERROR_CORRUPT;
+      if ((unsigned)raw >= (unsigned)linlen) return TDNG_LJ92_ERROR_CORRUPT;
       out[c] = lin[raw];
     } else {
       out[c] = (u16)raw;
@@ -683,7 +687,7 @@ static int parseScanGeneric(ljp* self, bitio_t* bio, int pred) {
       int raw = (int)(uint16_t)(Px + d);
       rowbuf[cur + c] = (u16)raw;
       if (has_lin) {
-        if ((unsigned)raw > (unsigned)linlen) return TDNG_LJ92_ERROR_CORRUPT;
+        if ((unsigned)raw >= (unsigned)linlen) return TDNG_LJ92_ERROR_CORRUPT;
         out[cur + c] = lin[raw];
       } else {
         out[cur + c] = (u16)raw;
@@ -703,7 +707,7 @@ static int parseScanGeneric(ljp* self, bitio_t* bio, int pred) {
       int raw = (int)(uint16_t)(lastraw[c] + d);
       rowbuf[c] = (u16)raw;
       if (has_lin) {
-        if ((unsigned)raw > (unsigned)linlen) return TDNG_LJ92_ERROR_CORRUPT;
+        if ((unsigned)raw >= (unsigned)linlen) return TDNG_LJ92_ERROR_CORRUPT;
         out[c] = lin[raw];
       } else {
         out[c] = (u16)raw;
@@ -732,7 +736,7 @@ static int parseScanGeneric(ljp* self, bitio_t* bio, int pred) {
         int raw = (int)(uint16_t)(Px + d);
         rowbuf[cur + c] = (u16)raw;
         if (has_lin) {
-          if ((unsigned)raw > (unsigned)linlen) return TDNG_LJ92_ERROR_CORRUPT;
+          if ((unsigned)raw >= (unsigned)linlen) return TDNG_LJ92_ERROR_CORRUPT;
           out[cur + c] = lin[raw];
         } else {
           out[cur + c] = (u16)raw;
@@ -775,7 +779,7 @@ static int parseScanPred1MonoFast(ljp* self, bitio_t* bio) {
 
     if (lin) {
       for (int col = 0; col < W; col++) {
-        if (thisrow[col] > linlen) return TDNG_LJ92_ERROR_CORRUPT;
+        if (thisrow[col] >= linlen) return TDNG_LJ92_ERROR_CORRUPT;
         out[col] = lin[thisrow[col]];
       }
     } else {
@@ -1091,10 +1095,10 @@ int tdng_lj92_decode(tdng_lj92 lj, uint16_t* target, int writeLength,
     // integrated tinydng codec always passes writeLength = W*NC, so this is a
     // no-op for the integrated path.
     if (writeLength > 0) {
-      size_t cap_samples;
-      if (!td_safe_mul_size((size_t)writeLength, (size_t)self->y,
-                            &cap_samples) ||
-          (uint64_t)cap_samples < need) {
+      // Standalone u64 math (this TU must not depend on td_internal.h).
+      uint64_t cap_samples =
+          (uint64_t)(uint32_t)writeLength * (uint64_t)(uint32_t)self->y;
+      if (cap_samples < need) {
         return TDNG_LJ92_ERROR_CORRUPT;
       }
     }
@@ -1150,7 +1154,8 @@ typedef struct _lje {
   int sink_failed;
 
   // Frequency of SSSS symbols (0..16) across all components.
-  int hist[LJ92_MAX_SSSS];
+  // int64: a 65535x65535x4 constant image drives hist[0] past INT32_MAX.
+  int64_t hist[LJ92_MAX_SSSS];
   // Canonical Huffman table derived from hist.
   int bits[17];          // bits[L] = number of codes of length L (1..16).
   uint8_t huffval[17];   // symbols ordered by code length.
@@ -1394,7 +1399,7 @@ static void enc_build_huffman_table(lje* self) {
     codesize[i] = 0;
     others[i] = -1;
   }
-  int total = 0;
+  int64_t total = 0;
   for (int s = 0; s < LJ92_MAX_SSSS; s++) total += self->hist[s];
   if (total > 0) {
     for (int s = 0; s < LJ92_MAX_SSSS; s++) {
@@ -1905,10 +1910,12 @@ static int stream_destuff_entropy(ljp* self, uint64_t stream_pos) {
                                               : stream_pos + window;
   }
   if (end < stream_pos) return TDNG_LJ92_ERROR_CORRUPT;
-  // Hardening: cap_needed would overflow `int` for huge streams.
+  // Hardening: reject streams whose entropy payload cannot be addressed with
+  // an int-sized destuffed buffer (mirrors destuff_entropy_stream). Clamping
+  // only the allocation while looping over the full span would overflow ebuf.
   uint64_t remain = end - stream_pos;
   if (remain > (uint64_t)(INT_MAX - LJ92_ENTROPY_ALLOC_PAD)) {
-    remain = (uint64_t)(INT_MAX - LJ92_ENTROPY_ALLOC_PAD);
+    return TDNG_LJ92_ERROR_CORRUPT;
   }
   int need = (int)remain + LJ92_ENTROPY_ALLOC_PAD;
   if (self->ebuf_cap < need) {

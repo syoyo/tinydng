@@ -459,6 +459,16 @@ static tinydng_status td_psdw_validate(tinydng_context *ctx,
                  "PSD writer: indexed mode requires a 768-byte palette");
     return TINYDNG_E_INVALID_ARG;
   }
+  if (doc->icc == NULL && doc->icc_size > 0u) {
+    td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                 "PSD writer: icc_size > 0 with NULL icc pointer");
+    return TINYDNG_E_INVALID_ARG;
+  }
+  if (doc->layer_count > 0u && doc->layers == NULL) {
+    td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                 "PSD writer: layer_count > 0 with NULL layers");
+    return TINYDNG_E_INVALID_ARG;
+  }
   if (doc->layer_count > ctx->max_psd_layers ||
       doc->layer_count > 32767u) {
     td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_WRITE, 0, 0, 0,
@@ -480,6 +490,12 @@ static tinydng_status td_psdw_validate(tinydng_context *ctx,
     if (L->channel_count > 56u) {
       td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_WRITE, 0, 0, 0,
                    "PSD writer: layer %zu channel count out of range", i);
+      return TINYDNG_E_INVALID_ARG;
+    }
+    if (L->channel_count > 0u && L->channels == NULL) {
+      td_set_error(err, TINYDNG_E_INVALID_ARG, TINYDNG_STAGE_WRITE, 0, 0, 0,
+                   "PSD writer: layer %zu channel_count > 0 with NULL channels",
+                   i);
       return TINYDNG_E_INVALID_ARG;
     }
     {

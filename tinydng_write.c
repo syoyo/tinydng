@@ -194,7 +194,9 @@ static void td_add_bytes(td_writer *w, uint16_t tag, const uint8_t *v,
   td_add(w, tag, TD_TYPE_BYTE, n, v, n);
 }
 
-/* Doubles -> SRATIONAL (num/den) with fixed denominator. */
+/* Doubles -> SRATIONAL (num/den) with fixed denominator. The double->int32
+ * conversion is saturated: a NaN/Inf or out-of-range caller value would be
+ * undefined behavior (C11 6.3.1.4) as a plain cast. */
 static void td_add_srationals(td_writer *w, uint16_t tag, const double *v,
                               uint32_t n) {
   uint8_t tmp[128];
@@ -205,13 +207,25 @@ static void td_add_srationals(td_writer *w, uint16_t tag, const double *v,
     return;
   }
   for (i = 0; i < n; i++) {
-    int32_t num = (int32_t)(v[i] * (double)den);
+    int32_t num;
+    double d = v[i] * (double)den;
+    if (!(d == d)) { /* NaN */
+      num = 0;
+    } else if (d >= 2147483647.0) {
+      num = INT32_MAX;
+    } else if (d <= -2147483648.0) {
+      num = (-2147483647 - 1);
+    } else {
+      num = (int32_t)d;
+    }
     td_put32(tmp + i * 8u, (uint32_t)num, w->big_endian);
     td_put32(tmp + i * 8u + 4u, (uint32_t)den, w->big_endian);
   }
   td_add(w, tag, TD_TYPE_SRATIONAL, n, tmp, (size_t)n * 8u);
 }
 
+/* Doubles -> RATIONAL; negative / NaN values clamp to 0 (RATIONAL is
+ * unsigned), huge values saturate at UINT32_MAX. */
 static void td_add_rationals(td_writer *w, uint16_t tag, const double *v,
                              uint32_t n) {
   uint8_t tmp[128];
@@ -222,7 +236,15 @@ static void td_add_rationals(td_writer *w, uint16_t tag, const double *v,
     return;
   }
   for (i = 0; i < n; i++) {
-    uint32_t num = (uint32_t)(v[i] * (double)den);
+    uint32_t num;
+    double d = v[i] * (double)den;
+    if (!(d == d) || d <= 0.0) { /* NaN or negative */
+      num = 0;
+    } else if (d >= 4294967295.0) {
+      num = UINT32_MAX;
+    } else {
+      num = (uint32_t)d;
+    }
     td_put32(tmp + i * 8u, num, w->big_endian);
     td_put32(tmp + i * 8u + 4u, den, w->big_endian);
   }
@@ -1308,12 +1330,22 @@ tinydng_status tinydng_writer_create(tinydng_context *ctx,
       dim[0] = cfa->pattern_dim[0] ? cfa->pattern_dim[0] : 2u;
       dim[1] = cfa->pattern_dim[1] ? cfa->pattern_dim[1] : 2u;
       td_add_shorts(&w->w, TD_TAG_CFA_REPEAT_PATTERN_DIM, dim, 2);
+      /* Clamp counts to the fixed-size arrays in tinydng_cfa; a
+       * inconsistently-initialized caller struct must not make the writer
+       * read past the end of pattern[16] / plane_color[4]. */
       if (cfa->pattern_size) {
-        td_add_bytes(&w->w, TD_TAG_CFA_PATTERN, cfa->pattern, cfa->pattern_size);
+        uint32_t pn = cfa->pattern_size;
+        if (pn > (uint32_t)sizeof(cfa->pattern)) {
+          pn = (uint32_t)sizeof(cfa->pattern);
+        }
+        td_add_bytes(&w->w, TD_TAG_CFA_PATTERN, cfa->pattern, pn);
       }
       if (cfa->plane_color_count) {
-        td_add_bytes(&w->w, TD_TAG_CFA_PLANE_COLOR, cfa->plane_color,
-                     cfa->plane_color_count);
+        uint32_t cn = cfa->plane_color_count;
+        if (cn > (uint32_t)sizeof(cfa->plane_color)) {
+          cn = (uint32_t)sizeof(cfa->plane_color);
+        }
+        td_add_bytes(&w->w, TD_TAG_CFA_PLANE_COLOR, cfa->plane_color, cn);
       }
     }
     if (raw) {
