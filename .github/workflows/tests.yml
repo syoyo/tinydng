@@ -1,0 +1,72 @@
+name: v3 tests
+
+# Build + run the clean-room v3 test suite on every push/PR.
+# Linux/macOS run under ASan+UBSan (the security fixtures in
+# tests/v3_test/test_v3_security.c are designed to fail under sanitizers if
+# any hardening fix regresses); Windows runs a plain build to keep platform
+# coverage (the sanitizer cmake module has no MSVC UBSan).
+#
+# A short libFuzzer smoke exercises the reader/writer/PSD harnesses so gross
+# breakage is caught without burning CI minutes on long campaigns.
+
+on: [push, pull_request]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ctest:
+    name: ctest (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            sanitize: ON
+            werror: ON
+          - os: macos-latest
+            sanitize: ON
+            werror: OFF
+          - os: windows-latest
+            sanitize: OFF
+            werror: OFF
+    env:
+      ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: >
+          cmake -S . -B build-san
+          -DCMAKE_BUILD_TYPE=Debug
+          -DSANITIZE_ADDRESS=${{ matrix.sanitize }}
+          -DSANITIZE_UNDEFINED=${{ matrix.sanitize }}
+          -DTINYDNG_WERROR=${{ matrix.werror }}
+
+      - name: Build
+        run: cmake --build build-san --parallel
+
+      - name: Test
+        run: ctest --test-dir build-san --output-on-failure
+
+  fuzz-smoke:
+    name: fuzz smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build harnesses
+        working-directory: fuzzer
+        run: make CLANG=clang v3 v3-seeds psd-seeds
+
+      - name: Smoke reader/writer/PSD (60s each)
+        working-directory: fuzzer
+        run: |
+          set -e
+          ./fuzz-v3         -dict=v3.dict     -max_total_time=60 -max_len=65536 seeds-v3
+          ./fuzz-v3-psd     -dict=v3-psd.dict -max_total_time=60 -max_len=65536 seeds-psd
+          ./fuzz-v3-bigtiff -dict=v3.dict     -max_total_time=60 -max_len=65536 seeds-v3
+          ./fuzz-v3-write                     -max_total_time=60 -max_len=65536
