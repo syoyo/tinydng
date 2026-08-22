@@ -165,7 +165,8 @@ static void td_add_shorts(td_writer *w, uint16_t tag, const uint16_t *v,
                           uint32_t n) {
   uint8_t tmp[64];
   uint32_t i;
-  if (n * 2u > sizeof(tmp)) {
+  /* Compare in size_t: a uint32 multiply could wrap and skip the bound. */
+  if ((size_t)n * 2u > sizeof(tmp)) {
     w->failed = 1;
     return;
   }
@@ -179,7 +180,7 @@ static void td_add_longs(td_writer *w, uint16_t tag, const uint32_t *v,
                          uint32_t n) {
   uint8_t tmp[128];
   uint32_t i;
-  if (n * 4u > sizeof(tmp)) {
+  if ((size_t)n * 4u > sizeof(tmp)) {
     w->failed = 1;
     return;
   }
@@ -202,7 +203,7 @@ static void td_add_srationals(td_writer *w, uint16_t tag, const double *v,
   uint8_t tmp[128];
   uint32_t i;
   const int32_t den = 1000000;
-  if (n * 8u > sizeof(tmp)) {
+  if ((size_t)n * 8u > sizeof(tmp)) {
     w->failed = 1;
     return;
   }
@@ -231,7 +232,7 @@ static void td_add_rationals(td_writer *w, uint16_t tag, const double *v,
   uint8_t tmp[128];
   uint32_t i;
   const uint32_t den = 1000000u;
-  if (n * 8u > sizeof(tmp)) {
+  if ((size_t)n * 8u > sizeof(tmp)) {
     w->failed = 1;
     return;
   }
