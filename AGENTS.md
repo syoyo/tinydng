@@ -81,6 +81,7 @@ SubIFDs are only processed when `TINYDNG_OPEN_PARSE_SUBIFDS` flag is set. Withou
 - LJPEG linearization/delinearization tables are indexed with strict `< length` bounds everywhere (decoder and encoder agree).
 - PSD bitmap mode (depth 1): a stored set bit is BLACK, decoded to {0, 255} for both composites and layer channels (Photoshop semantics). KEEP_PACKED output stays raw stored bytes.
 - PSD duplicate layer channel ids are deduped at decode task-build time so threaded decodes never race on one output slot.
+- PSD layers may declare huge rects with little channel data (uniform-color/adjustment layers are legal). Channel planes report their filled prefix; scatter onto pre-zeroed destinations is bounded by that prefix, so decode cost tracks stored bytes, not declared pixels.
 
 ### V3 Decode
 - `tinydng_decode_image(ctx, doc, idx, opts, pixels, err)` - decode full image

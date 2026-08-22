@@ -1693,6 +1693,10 @@ typedef struct td_psd_chan_task {
   size_t pixel_stride;  /* bytes between consecutive pixels in dst */
   size_t out_bytes;     /* bytes per output sample (1/2/4) */
   int invert1;          /* 1-bit: emit bit?0:255 */
+  int dst_zero;         /* dst was zero-initialized => samples beyond the
+                           plane's valid prefix are already correct */
+  size_t plane_valid;   /* set by td_psd_load_plane: plane bytes that may
+                           differ from zero (0 = empty, plane_bytes = all) */
   tinydng_error err;
   int ok;
 } td_psd_chan_task;
@@ -1704,6 +1708,7 @@ static uint8_t *td_psd_load_plane(tinydng_context *ctx,
                                   const tinydng_psd_channel *ch, uint32_t w,
                                   uint32_t h, uint16_t depth, int is_psb,
                                   size_t *out_plane_bytes,
+                                  size_t *out_valid,
                                   tinydng_error *err) {
   td_reader r;
   size_t row_bytes, plane_bytes;
@@ -1734,13 +1739,14 @@ static uint8_t *td_psd_load_plane(tinydng_context *ctx,
   if (!plane) {
     return NULL;
   }
+  *out_valid = 0; /* only filled prefixes are reported below */
 
   switch (ch->compression) {
     case TINYDNG_PSD_COMP_RAW: {
       if (ch->data_length == 0u) {
         /* A zero-length channel carries no image bytes; the plane was
            allocated zeroed above, so leave it as all-black. */
-        break;
+        break; /* *out_valid stays 0 */
       }
       size_t copy = ch->data_length;
       if (copy > plane_bytes) {
@@ -1758,6 +1764,7 @@ static uint8_t *td_psd_load_plane(tinydng_context *ctx,
           memcpy(plane, v, copy);
         }
       }
+      *out_valid = copy;
       /* Any tail beyond the channel data length stays zeroed. */
       break;
     }
@@ -1835,6 +1842,7 @@ static uint8_t *td_psd_load_plane(tinydng_context *ctx,
       }
       td_ctx_free(ctx, table);
       td_ctx_free(ctx, rowbuf);
+      *out_valid = plane_bytes; /* every row decoded to exactly row_bytes */
       break;
     }
 #endif /* TINYDNG_NO_PACKBITS */
@@ -1867,6 +1875,7 @@ static uint8_t *td_psd_load_plane(tinydng_context *ctx,
           !td_psd_unpredict_plane(ctx, plane, w, h, depth, err)) {
         goto fail;
       }
+      *out_valid = plane_bytes;
       break;
     }
 #endif /* TINYDNG_NO_ZIP */
@@ -1884,13 +1893,21 @@ fail:
   return NULL;
 }
 
-/* Convert one stored plane to host samples scattered into dst. */
+/* Convert one stored plane to host samples scattered into dst.
+   `max_samples` caps how many destination samples are written: callers
+   scattering onto a pre-zeroed dst may pass the count of samples that can
+   possibly be non-zero (derived from the plane's filled prefix); samples
+   beyond it are zero and dst already holds zeros. Pass 0 to scatter all. */
 static void td_psd_scatter_plane(const uint8_t *plane, uint32_t w, uint32_t h,
                                  uint16_t depth, uint8_t *dst,
-                                 size_t pixel_stride, int invert1) {
+                                 size_t pixel_stride, int invert1,
+                                 size_t max_samples) {
   size_t n_pixels;
   if (!td_safe_mul_size((size_t)w, (size_t)h, &n_pixels)) {
     return;
+  }
+  if (max_samples != 0u && max_samples < n_pixels) {
+    n_pixels = max_samples;
   }
   size_t i;
   if (depth == 8u) {
@@ -1913,7 +1930,11 @@ static void td_psd_scatter_plane(const uint8_t *plane, uint32_t w, uint32_t h,
   } else { /* depth 1: packed MSB-first, rows byte-aligned */
     size_t row_bytes = (size_t)w / 8u + (((size_t)w % 8u) != 0u);
     uint32_t y, x;
-    for (y = 0; y < h; y++) {
+    /* Rows fully beyond the filled prefix cannot hold non-zero bits when
+       the caller pre-zeroed dst; clamp the scanned row count. */
+    uint32_t h_lim = (max_samples != 0u) ? (uint32_t)(max_samples / ((size_t)w ? (size_t)w : 1u)) : h;
+    if (h_lim > h) h_lim = h;
+    for (y = 0; y < h_lim; y++) {
       const uint8_t *rp = plane + (size_t)y * row_bytes;
       uint8_t *dp = dst + (size_t)y * w * pixel_stride;
       for (x = 0; x < w; x++) {
@@ -1929,15 +1950,48 @@ static void td_psd_scatter_plane(const uint8_t *plane, uint32_t w, uint32_t h,
 static void *td_psd_chan_worker(void *p) {
   td_psd_chan_task *t = (td_psd_chan_task *)p;
   size_t plane_bytes = 0;
+  size_t plane_valid = 0;
   uint8_t *plane =
       td_psd_load_plane(t->ctx, t->doc, t->ch, t->w, t->h, t->depth,
-                        t->is_psb, &plane_bytes, &t->err);
+                        t->is_psb, &plane_bytes, &plane_valid, &t->err);
   if (!plane) {
     t->ok = 0;
     return NULL;
   }
-  td_psd_scatter_plane(plane, t->w, t->h, t->depth, t->dst, t->pixel_stride,
-                       t->invert1);
+  t->plane_valid = plane_valid;
+  /* Samples past the plane's filled prefix are zero; on a pre-zeroed dst
+     they need no write at all (huge adjustment-style layers with little or
+     no channel data are legal PSD and would otherwise cost O(w*h)). */
+  {
+    size_t total_samples = (size_t)t->w * (size_t)t->h;
+    /* Plane bytes that can hold a non-zero sample, per stored format:
+       depth 8 -> 1 B/sample, 16 -> 2, 32 -> 4, depth 1 -> 1 bit/sample. */
+    size_t samples_possible;
+    if (t->depth == 1u) {
+      samples_possible = (size_t)(t->plane_valid / 1u) * 8u;
+    } else {
+      size_t eb = (size_t)(t->depth / 8u);
+      if (eb == 0u) {
+        eb = 1u;
+      }
+      samples_possible = t->plane_valid / eb + 1u;
+    }
+    size_t max_samples = total_samples; /* default: scatter everything */
+    if (!t->dst_zero) {
+      max_samples = total_samples; /* caller buffer may be dirty */
+    } else if (t->plane_valid == 0u) {
+      ; /* nothing to write: skip entirely */
+    } else {
+      max_samples = samples_possible + 1u; /* +1 covers the boundary sample */
+      if (max_samples > total_samples) {
+        max_samples = total_samples;
+      }
+    }
+    if (!(t->plane_valid == 0u && t->dst_zero)) {
+      td_psd_scatter_plane(plane, t->w, t->h, t->depth, t->dst,
+                           t->pixel_stride, t->invert1, max_samples);
+    }
+  }
   td_ctx_free(t->ctx, plane);
   t->ok = 1;
   return NULL;
@@ -2100,6 +2154,10 @@ tinydng_status tinydng_psd_decode_layer(tinydng_context *ctx,
       tasks[n_tasks].pixel_stride = pixel_stride;
       tasks[n_tasks].out_bytes = out_bytes;
       tasks[n_tasks].invert1 = 1;
+      /* dst comes from td_ctx_calloc when the library owns it; a caller
+         buffer may be uninitialized, so only zero-planes onto owned dst
+         are skippable. */
+      tasks[n_tasks].dst_zero = owns;
       tinydng_error_clear(&tasks[n_tasks].err);
       tasks[n_tasks].ok = 0;
       n_tasks++;
@@ -2193,7 +2251,8 @@ tinydng_status tinydng_psd_decode_layer_channel(
     }
     dst = (uint8_t *)opts->dst;
   } else {
-    dst = (uint8_t *)td_ctx_alloc(ctx, total, err);
+    /* calloc so an all-zero channel plane may skip the scatter loop. */
+    dst = (uint8_t *)td_ctx_calloc(ctx, total, err);
     if (!dst) {
       return TINYDNG_E_OOM;
     }
@@ -2210,6 +2269,7 @@ tinydng_status tinydng_psd_decode_layer_channel(
   task.pixel_stride = out_bytes;
   task.out_bytes = out_bytes;
   task.invert1 = 1;
+  task.dst_zero = owns;
   tinydng_error_clear(&task.err);
   task.ok = 0;
   td_psd_chan_worker(&task);
