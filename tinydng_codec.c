@@ -1316,8 +1316,13 @@ static tinydng_status td_decode_window(tinydng_context *ctx,
   tinydng_status st = TINYDNG_OK;
 
   /* Serialize overlapping decodes on the same context: the allocator and
-     mt_active are shared, so two concurrent decode calls would corrupt state.
-     The mutex is recursive so a PSD smart-object decode (same thread) nests. */
+      mt_active are shared, so two concurrent decode calls would corrupt state.
+      The mutex is recursive so a PSD smart-object decode (same thread) nests.
+      NOTE for future work: a nested decode that engages MT would clear
+      mt_active on its exit while the outer decode's workers are still
+      running (unlocking their allocator/stdio reads). No current path does
+      this -- segment decoders never re-enter tinydng_decode_* -- but any
+      feature that decodes inside a worker must keep decodes serial. */
   td_mutex_lock(ctx->decode_guard);
 
   memset(&par, 0, sizeof(par));

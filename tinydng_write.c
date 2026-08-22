@@ -1054,6 +1054,13 @@ static tinydng_status td_writer_emit_ifd(const td_writer *w,
       uint8_t *ep = hdr + 2u + i * 12u;
       td_put16(ep, e->tag, w->big_endian);
       td_put16(ep + 2, e->type, w->big_endian);
+      if (e->count > (uint64_t)UINT32_MAX) {
+        /* Unreachable with current tag builders; guard so a future caller
+         * cannot silently truncate the count field. */
+        td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_WRITE, 0, e->tag,
+                     ifd_off, "classic TIFF entry count overflow");
+        return TINYDNG_E_BOUNDS;
+      }
       td_put32(ep + 4, (uint32_t)e->count, w->big_endian);
       if (e->ext_len > 0u) {
         size_t padded;

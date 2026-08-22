@@ -26,7 +26,10 @@ typedef struct _lje* tdng_lj92_enc;
 int tdng_lj92_open(tdng_lj92* lj, const uint8_t* data, int datalen,
                    int* width, int* height, int* bitdepth, int* components);
 void tdng_lj92_close(tdng_lj92 lj);
-/* Decode into `target` (row stride `writeLength` samples; 0 = unchecked).
+/* Decode into `target` (row stride `writeLength` samples; a positive value
+ * is the caller's declared per-row capacity and decode fails if
+ * writeLength*H < W*Nf*H; 0 skips the capacity check -- legacy behavior,
+ * prefer passing the real stride).
  * `linearize`, if non-NULL, is a mapping table with exactly `linearizeLength`
  * entries: any decoded sample >= linearizeLength fails the decode with
  * TDNG_LJ92_ERROR_CORRUPT (samples are indices into the table). */

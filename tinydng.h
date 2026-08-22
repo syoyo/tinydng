@@ -747,6 +747,8 @@ tinydng_status tinydng_write_io_open_file(tinydng_context *ctx,
                                           const char *path,
                                           tinydng_write_io *out,
                                           tinydng_error *err);
+/* Note: open_file creates/truncates the destination immediately ("w+b");
+   a failed write leaves a partial file behind. */
 tinydng_status tinydng_write_io_open_memory(tinydng_context *ctx,
                                             tinydng_write_io *out,
                                             tinydng_error *err);
@@ -767,7 +769,10 @@ typedef struct tinydng_tiling {
 typedef struct tinydng_writer tinydng_writer;
 
 /* Create a streaming writer. `meta` supplies the geometry + DNG metadata;
-   meta->data/data_size are ignored (pixels arrive per tile/strip). */
+   meta->data/data_size are ignored (pixels arrive per tile/strip).
+   On failure the sink is NOT closed (the caller keeps ownership); on
+   success tinydng_writer_finish releases writer state but the sink still
+   needs io.close() from the caller. */
 tinydng_status tinydng_writer_create(tinydng_context *ctx,
                                      tinydng_write_io sink,
                                      const tinydng_write_image *meta,

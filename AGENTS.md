@@ -77,6 +77,7 @@ SubIFDs are only processed when `TINYDNG_OPEN_PARSE_SUBIFDS` flag is set. Withou
 ### V3 Hardening Notes
 - Security regression fixtures live in `tests/v3_test/test_v3_security.c`; each case is designed to fail under ASan+UBSan if its fix is reverted.
 - Baseline-JPEG payloads (TIFF JPEGInterchangeFormat + PSD thumbnail/smart objects) pass an stbi_info budget check before decode; stb_image allocates outside the tracked allocator, so `STBI_MAX_DIMENSIONS` is pinned to 1<<15 in `tinydng_stb_image.c`.
+- Vendored deps vs known CVEs: stb_image 2.28 is built with `STBI_ONLY_JPEG`(+`STBI_ONLY_PNG`) which compiles out every decoder named by public stb_image CVEs (GIF/TGA/HDR/PIC); do not widen the format set without re-checking. miniz 10.0.3 has no known open CVEs.
 - LJPEG linearization/delinearization tables are indexed with strict `< length` bounds everywhere (decoder and encoder agree).
 - PSD bitmap mode (depth 1): a stored set bit is BLACK, decoded to {0, 255} for both composites and layer channels (Photoshop semantics). KEEP_PACKED output stays raw stored bytes.
 - PSD duplicate layer channel ids are deduped at decode task-build time so threaded decodes never race on one output slot.

@@ -1960,9 +1960,14 @@ static int stream_destuff_entropy(ljp* self, uint64_t stream_pos) {
 static int stream_parse_headers(ljp* self, uint64_t soi_off) {
   tdng_lj92_stream* s = (tdng_lj92_stream*)self->stream_user;
   uint64_t pos;
-  if (UINT64_MAX - soi_off < 2u) return TDNG_LJ92_ERROR_CORRUPT;
+  /* Heap scratch instead of a 64KB stack array: this runs on whatever
+   * thread calls open_streaming (decode workers may have small stacks). */
+  u8* scratch = (u8*)malloc(TDNG_LJ92_STREAM_CHUNK);
+  int result;
+  if (!scratch) return TDNG_LJ92_ERROR_NO_MEMORY;
+  result = TDNG_LJ92_ERROR_CORRUPT; /* default status for the error paths */
+  if (UINT64_MAX - soi_off < 2u) goto out;
   pos = soi_off + 2u;
-  u8 scratch[65536];
   self->x = 0;
   self->y = 0;
   self->components = 0;
@@ -1971,48 +1976,55 @@ static int stream_parse_headers(ljp* self, uint64_t soi_off) {
   for (;;) {
     uint64_t mo = 0;
     int m = stream_find_marker(self, pos, &mo);
-    if (m < 0) return TDNG_LJ92_ERROR_CORRUPT;
+    if (m < 0) goto out;
     if (m == 0xD8) {
-      if (UINT64_MAX - mo < 2u) return TDNG_LJ92_ERROR_CORRUPT;
+      if (UINT64_MAX - mo < 2u) goto out;
       pos = mo + 2u;
       continue;
     }
-    if (m == 0xD9) return TDNG_LJ92_ERROR_CORRUPT;  // EOI before SOS
-    if (UINT64_MAX - mo < 2u) return TDNG_LJ92_ERROR_CORRUPT;
+    if (m == 0xD9) goto out;  // EOI before SOS
+    if (UINT64_MAX - mo < 2u) goto out;
     uint16_t segsize = 0;
-    if (!sread(s, mo + 2, &segsize, 2)) return TDNG_LJ92_ERROR_CORRUPT;
+    if (!sread(s, mo + 2, &segsize, 2)) goto out;
     segsize = (uint16_t)((segsize >> 8) | (segsize << 8));
-    if (segsize < 2) return TDNG_LJ92_ERROR_CORRUPT;
+    if (segsize < 2) goto out;
     uint64_t sd, se;  // sd is the segment's Ln length field
     if (UINT64_MAX - mo < 2u) {
-      return TDNG_LJ92_ERROR_CORRUPT;
+      goto out;
     }
     sd = mo + 2u;
     if (UINT64_MAX - sd < (uint64_t)segsize) {
-      return TDNG_LJ92_ERROR_CORRUPT;
+      goto out;
     }
     se = sd + (uint64_t)segsize;
     size_t payload_len = (size_t)segsize;
-    if (payload_len > sizeof(scratch)) return TDNG_LJ92_ERROR_CORRUPT;
+    if (payload_len > (size_t)TDNG_LJ92_STREAM_CHUNK) goto out;
 
     if (m == 0xDA) {  // SOS: parse and record the SOS header offset
-      if (!sread(s, sd, scratch, payload_len)) return TDNG_LJ92_ERROR_CORRUPT;
-      int compcount = 0, pred = 0, Ls = 0;
-      int ret = parse_sos_payload(scratch, (int)payload_len, self->components,
-                                  &compcount, &pred, &Ls);
-      if (ret != TDNG_LJ92_ERROR_NONE) return ret;
+      result = TDNG_LJ92_ERROR_CORRUPT;
+      if (!sread(s, sd, scratch, payload_len)) goto out;
+      {
+        int compcount = 0, pred = 0, Ls = 0;
+        int ret = parse_sos_payload(scratch, (int)payload_len,
+                                    self->components, &compcount, &pred, &Ls);
+        if (ret != TDNG_LJ92_ERROR_NONE) {
+          result = ret;
+          goto out;
+        }
+      }
       self->stream_scanstart = sd;  // the entropy data starts at sd + Ls
-      return expand_luts_uniform(self);
+      result = expand_luts_uniform(self);
+      goto out;
     }
     if (m >= 0xC0 && m <= 0xCF && m != 0xC4) {  // SOF frames
       // Lf P Y X Nf layout; Lf >= 8 (see parseSof3).
-      if (segsize < 8) return TDNG_LJ92_ERROR_CORRUPT;
+      if (segsize < 8) goto out;
       u8 precision, nf;
       uint16_t yh, xh;
-      if (!sread(s, sd + 2, &precision, 1)) return TDNG_LJ92_ERROR_CORRUPT;
-      if (!sread(s, sd + 3, &yh, 2)) return TDNG_LJ92_ERROR_CORRUPT;
-      if (!sread(s, sd + 5, &xh, 2)) return TDNG_LJ92_ERROR_CORRUPT;
-      if (!sread(s, sd + 7, &nf, 1)) return TDNG_LJ92_ERROR_CORRUPT;
+      if (!sread(s, sd + 2, &precision, 1)) goto out;
+      if (!sread(s, sd + 3, &yh, 2)) goto out;
+      if (!sread(s, sd + 5, &xh, 2)) goto out;
+      if (!sread(s, sd + 7, &nf, 1)) goto out;
       yh = (uint16_t)((yh >> 8) | (yh << 8));
       xh = (uint16_t)((xh >> 8) | (xh << 8));
       self->sof_marker = (uint8_t)m;
@@ -2021,33 +2033,41 @@ static int stream_parse_headers(ljp* self, uint64_t soi_off) {
       self->x = (int)xh;
       self->components = nf;
       // A4: bitdepth must be in [2,16] so that 1 << (bits-1) is defined.
-      if (self->bits < 2 || self->bits > 16) return TDNG_LJ92_ERROR_CORRUPT;
+      if (self->bits < 2 || self->bits > 16) goto out;
       // A3: accept up to LJ92_MAX_COMPONENTS.
       if (self->components < 1 || self->components > LJ92_MAX_COMPONENTS) {
-        return TDNG_LJ92_ERROR_CORRUPT;
+        goto out;
       }
       pos = se;
       continue;
     }
     if (m == 0xC4) {  // DHT: build a Huffman LUT
-      if (!sread(s, sd, scratch, payload_len)) return TDNG_LJ92_ERROR_CORRUPT;
+      if (!sread(s, sd, scratch, payload_len)) goto out;
       if (self->num_huff_idx >= LJ92_MAX_COMPONENTS) {
-        return TDNG_LJ92_ERROR_CORRUPT;
+        goto out;
       }
-      int hufflen = 0, maxbits = 0;
-      u16* lut = NULL;
-      int ret = build_huff_lut(scratch, (int)payload_len, &hufflen, &lut,
-                               &maxbits);
-      if (ret != TDNG_LJ92_ERROR_NONE) return ret;
-      self->hufflut[self->num_huff_idx] = lut;
-      self->huffbits[self->num_huff_idx] = maxbits;
-      self->num_huff_idx++;
+      {
+        int hufflen = 0, maxbits = 0;
+        u16* lut = NULL;
+        int ret =
+            build_huff_lut(scratch, (int)payload_len, &hufflen, &lut, &maxbits);
+        if (ret != TDNG_LJ92_ERROR_NONE) {
+          result = ret;
+          goto out;
+        }
+        self->hufflut[self->num_huff_idx] = lut;
+        self->huffbits[self->num_huff_idx] = maxbits;
+        self->num_huff_idx++;
+      }
       pos = se;
       continue;
     }
     // APPn, COM, DQT, DRI, ...: skip the segment.
     pos = se;
   }
+out:
+  free(scratch);
+  return result;
 }
 
 // Streaming scan: re-read the SOS payload from the stream, destuff the
