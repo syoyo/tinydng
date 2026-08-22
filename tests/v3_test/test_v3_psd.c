@@ -366,10 +366,11 @@ static void test_bitmap_composite(tinydng_context *ctx) {
   }
   CHECK(px.bits_per_sample == 8u && px.width == W && px.height == H,
         "bitmap: geometry");
-  /* Stored bits pass through unchanged (min-is-white documented). */
+  /* PSD bitmap polarity: a stored set bit is BLACK (Photoshop semantics;
+   * matches GIMP's psd plugin), scaled to the 8-bit output range. */
   for (y = 0; y < H; y++) {
     for (x = 0; x < W; x++) {
-      uint8_t want = (x & 1u) ? 0u : 1u; /* 0xAA... = 10101010 1010 */
+      uint8_t want = (x & 1u) ? 255u : 0u; /* 0xAA... = 10101010 1010 */
       CHECK(px.data[y * W + x] == want, "bitmap: pixel %u,%u", x, y);
     }
   }

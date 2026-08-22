@@ -38,6 +38,8 @@ typedef struct td_geom {
   size_t row_stride;      /* width * pixel_stride            */
   size_t image_size;      /* row_stride * height             */
   uint16_t packed;        /* 1 => keep raw sub-byte packed bytes */
+  uint16_t invert_1bit;   /* 1 => map stored bit 1 -> 0, 0 -> 255
+                             (PSD bitmap mode: bit 1 = black) */
 } td_geom;
 
 /* Forward decls (defined below). */
@@ -403,6 +405,10 @@ static tinydng_status td_fill_block_from_stored(const td_geom *g, int big_endian
         v = bitbuf >> (nbits - g->bps);
         nbits -= g->bps;
         bitbuf &= (1u << nbits) - 1u; /* keep only the unconsumed low bits */
+        if (g->invert_1bit && g->bps == 1u) {
+          /* PSD bitmap polarity: stored bit 1 = black. */
+          v = v ? 0u : 255u;
+        }
         /* Write into the destination element width: bps<8 -> 8-bit output,
            bps 9..15 -> 16-bit output (see out_bps in td_compute_geom). */
         if (g->out_bytes == 1u) {
@@ -1322,6 +1328,13 @@ static tinydng_status td_decode_window(tinydng_context *ctx,
   par.img = img;
   par.g = g;
   par.gseg = *g;
+  /* PSD bitmap mode stores bit 1 = black (verified against Photoshop files;
+   * GIMP's psd plugin maps a set bit to palette index 0 = black too), while
+   * TIFF 1-bit conventionally means 1 = max value. Invert+scale only here,
+   * and only when not keeping raw packed bytes. */
+  if (doc->format == TD_DOC_FORMAT_PSD && g->bps == 1u && !g->packed) {
+    par.gseg.invert_1bit = 1u;
+  }
   par.planar = (img->planar_configuration == 2u && g->spp > 1u);
   if (par.planar) {
     par.gseg.spp = 1u; /* in planar mode each segment carries one component */
