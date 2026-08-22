@@ -1,9 +1,9 @@
 ROOT=../..
 CC ?= cc
-CFLAGS_BASE = -O3 -DNDEBUG -std=c11 -Wall -Wextra -I$(ROOT)
+CFLAGS_BASE = -O3 -DNDEBUG -std=c11 -Wall -Wextra -I$(ROOT) -I$(ROOT)/attic/v2
 LDFLAGS_BASE =
 
-SRC = benchmark_decode.c $(ROOT)/tiny_dng_ljpeg92_v2.c $(ROOT)/tiny_dng_v2.c
+SRC = benchmark_decode.c $(ROOT)/tiny_dng_ljpeg92_v2.c $(ROOT)/attic/v2/tiny_dng_v2.c
 
 all: bench-scalar bench-sse2 bench-avx2
 

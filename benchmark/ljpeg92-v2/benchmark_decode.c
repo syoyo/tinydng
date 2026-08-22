@@ -11,7 +11,7 @@
 #include <string.h>
 #include <time.h>
 
-#include "../../tiny_dng_v2.h"
+#include "tiny_dng_v2.h"
 #include "../../tiny_dng_ljpeg92_v2.h"
 
 typedef struct ljpeg_view {
