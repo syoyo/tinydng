@@ -69,9 +69,17 @@ SubIFDs are only processed when `TINYDNG_OPEN_PARSE_SUBIFDS` flag is set. Withou
 - `tdng_lj92_encode_open/scan/begin/rows/finish` emit the encoded stream to a `tdng_lj92_write_fn` sink (4KB staged chunks, never materialized). Two-pass: `scan` builds the SSSS histogram, `begin` emits SOI/SOF3/DHT/SOS, `rows` feeds the entropy pass incrementally.
 
 ### v3 Streaming / Tiled Writer
-- `tinydng_write_io` (absolute-offset write/size/close; file + memory backends)
+- `tinydng_write_io` (absolute-offset write/size/close/flush; file + memory backends). `flush` is optional; `tinydng_writer_finish` calls it on success so a final stdio-buffer failure reports E_IO instead of silent truncation.
 - `tinydng_writer_create/write_tile/write_strip/finish`: tiled or multi-strip; none/LZW/PackBits/lossless-JPEG compression. Edge tiles padded to full tile dims.
+- Lossless JPEG writer constraints (dims <= 65535, spp 1..4) are validated at create time (E_UNSUPPORTED).
 - `tinydng_write_memory/write_file` are thin wrappers (single strip + memory/file sink)
+
+### V3 Hardening Notes
+- Security regression fixtures live in `tests/v3_test/test_v3_security.c`; each case is designed to fail under ASan+UBSan if its fix is reverted.
+- Baseline-JPEG payloads (TIFF JPEGInterchangeFormat + PSD thumbnail/smart objects) pass an stbi_info budget check before decode; stb_image allocates outside the tracked allocator, so `STBI_MAX_DIMENSIONS` is pinned to 1<<15 in `tinydng_stb_image.c`.
+- LJPEG linearization/delinearization tables are indexed with strict `< length` bounds everywhere (decoder and encoder agree).
+- PSD bitmap mode (depth 1): a stored set bit is BLACK, decoded to {0, 255} for both composites and layer channels (Photoshop semantics). KEEP_PACKED output stays raw stored bytes.
+- PSD duplicate layer channel ids are deduped at decode task-build time so threaded decodes never race on one output slot.
 
 ### V3 Decode
 - `tinydng_decode_image(ctx, doc, idx, opts, pixels, err)` - decode full image
