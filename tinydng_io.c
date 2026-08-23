@@ -132,13 +132,26 @@ tinydng_status tinydng_io_open_memory(tinydng_context *ctx, const uint8_t *data,
 
 /* ================================================================== */
 /* stdio backend (pull-based; map() == NULL)                          */
+/*                                                                    */
+/* On POSIX the backend holds a raw fd as well as the FILE* and reads */
+/* via pread(), which does not use (or change) the shared FILE*       */
+/* position: decode workers read concurrently with no lock at all.    */
+/* Elsewhere seek+fread is serialized with a dedicated io_lock so     */
+/* reads no longer contend with allocator traffic on ctx->lock.       */
 /* ================================================================== */
 
 typedef struct td_io_stdio {
   tinydng_context *ctx;
   FILE *fp;
+  int fd; /* POSIX only: positioned pread() source; -1 when unused */
   uint64_t size;
 } td_io_stdio;
+
+#if defined(__unix__) || defined(__APPLE__) || defined(__linux__)
+#define TDNG_STDIO_HAVE_PREAD 1
+#else
+#define TDNG_STDIO_HAVE_PREAD 0
+#endif
 
 static int td_seek64(FILE *fp, uint64_t off) {
 #if defined(_WIN32)
@@ -179,23 +192,36 @@ static int64_t td_ftell64(FILE *fp) {
 static size_t td_stdio_read(tinydng_io *io, uint64_t off, void *dst,
                             size_t len) {
   td_io_stdio *s = (td_io_stdio *)io->backend;
-  /* The stdio backend shares one FILE* (and its position), so seek+read must
-     be atomic across decode threads. The lock is taken only while a
-     multi-threaded decode is active; mmap/memory backends use map() and never
-     reach this path. */
-  td_mutex *L;
-  size_t got;
+  size_t got = 0;
   if (off > s->size || (uint64_t)len > (s->size - off)) {
     return 0;
   }
-  L = (s->ctx && s->ctx->mt_active) ? s->ctx->lock : NULL;
-  td_mutex_lock(L);
-  if (td_seek64(s->fp, off) != 0) {
-    td_mutex_unlock(L);
-    return 0;
+#if TDNG_STDIO_HAVE_PREAD
+  /* pread() is positional: no shared FILE* position, no lock, and decode
+     workers issue reads concurrently. Handle short reads. */
+  {
+    uint8_t* p = (uint8_t*)dst;
+    while (got < len) {
+      ssize_t r = pread(s->fd, p + got, len - got, (off_t)(off + got));
+      if (r <= 0) {
+        break;
+      }
+      got += (size_t)r;
+    }
   }
-  got = fread(dst, 1, len, s->fp);
-  td_mutex_unlock(L);
+#else
+  /* The stdio backend shares one FILE* (and its position), so seek+read must
+     be atomic across decode threads. A dedicated io_lock keeps file traffic
+     independent of allocator serialization on ctx->lock. */
+  {
+    td_mutex* L = (s->ctx && s->ctx->mt_active) ? s->ctx->io_lock : NULL;
+    td_mutex_lock(L);
+    if (td_seek64(s->fp, off) == 0) {
+      got = fread(dst, 1, len, s->fp);
+    }
+    td_mutex_unlock(L);
+  }
+#endif
   return got;
 }
 
@@ -210,6 +236,11 @@ static void td_stdio_close(tinydng_io *io) {
     if (s->fp) {
       fclose(s->fp);
     }
+#if TDNG_STDIO_HAVE_PREAD
+    if (s->fd >= 0) {
+      close(s->fd);
+    }
+#endif
     td_ctx_free(s->ctx, s);
   }
   io->backend = NULL;
@@ -245,6 +276,20 @@ tinydng_status tinydng_io_open_stdio(tinydng_context *ctx, const char *path,
   }
   s->ctx = ctx;
   s->fp = fp;
+#if TDNG_STDIO_HAVE_PREAD
+  /* Duplicate the descriptor for pread(): fclose(fp) will not close this
+     one; it is closed explicitly in td_stdio_close. */
+  s->fd = dup(fileno(fp));
+  if (s->fd < 0) {
+    td_ctx_free(ctx, s);
+    fclose(fp);
+    td_set_error(err, TINYDNG_E_IO, TINYDNG_STAGE_IO, 0, 0, 0,
+                 "dup failed for '%s'", path);
+    return TINYDNG_E_IO;
+  }
+#else
+  s->fd = -1;
+#endif
   s->size = (uint64_t)len64;
   memset(out, 0, sizeof(*out));
   out->read = td_stdio_read;

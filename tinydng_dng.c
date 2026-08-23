@@ -53,40 +53,38 @@ static int32_t td_clamp_i32(double d) {
 
 static size_t td_read_reals(const td_reader *r, uint16_t type, uint64_t off,
                             uint64_t count, double *out, size_t max) {
-  size_t i;
+  /* Largest caller passes max=16 doubles; 128 bytes of stack scratch covers
+     any array this path reads when the io backend has no map view. */
+  uint8_t sc[16u * 8u];
   size_t n = (count > (uint64_t)max) ? max : (size_t)count;
   size_t ts = td_tiff_type_size(type);
-  if (ts == 0u) {
+  size_t span;
+  const uint8_t* base;
+  if (ts == 0u || !td_safe_mul_size(n, ts, &span) || span > sizeof(sc)) {
     return 0;
   }
-  for (i = 0; i < n; i++) {
-    uint64_t delta, at;
-    if (!td_safe_mul_u64((uint64_t)i, (uint64_t)ts, &delta) ||
-        !td_safe_add_u64(off, delta, &at) ||
-        !td_r_val_real(r, type, at, &out[i])) {
-      return i;
-    }
+  base = td_bulk_span_view(r, off, span, sc, sizeof(sc));
+  if (!base) {
+    return 0;
   }
-  return n;
+  return td_reals_from_buf(base, type, r->big_endian, n, out);
 }
 
 static size_t td_read_uints(const td_reader *r, uint16_t type, uint64_t off,
                             uint64_t count, uint64_t *out, size_t max) {
-  size_t i;
+  uint8_t sc[16u * 8u];
   size_t n = (count > (uint64_t)max) ? max : (size_t)count;
   size_t ts = td_tiff_type_size(type);
-  if (ts == 0u) {
+  size_t span;
+  const uint8_t* base;
+  if (ts == 0u || !td_safe_mul_size(n, ts, &span) || span > sizeof(sc)) {
     return 0;
   }
-  for (i = 0; i < n; i++) {
-    uint64_t delta, at;
-    if (!td_safe_mul_u64((uint64_t)i, (uint64_t)ts, &delta) ||
-        !td_safe_add_u64(off, delta, &at) ||
-        !td_r_val_uint(r, type, at, &out[i])) {
-      return i;
-    }
+  base = td_bulk_span_view(r, off, span, sc, sizeof(sc));
+  if (!base) {
+    return 0;
   }
-  return n;
+  return td_uints_from_buf(base, type, r->big_endian, n, out);
 }
 
 /* ------------------------------------------------------------------ */
@@ -99,15 +97,6 @@ static size_t td_read_uints(const td_reader *r, uint16_t type, uint64_t off,
 #define TD_MAX_OPCODES 64u
 #define TD_MAX_GAINMAP_ITEMS (4u * 1024u * 1024u)
 #define TD_MAX_OPCODE_BYTES (64u * 1024u * 1024u)
-
-static int td_r_f32_be(const td_reader *br, uint64_t at, float *out) {
-  uint32_t u;
-  if (!td_r_u32(br, at, &u)) {
-    return 0;
-  }
-  memcpy(out, &u, sizeof(*out));
-  return 1;
-}
 
 static int td_r_f64_be(const td_reader *br, uint64_t at, double *out) {
   uint64_t u;
@@ -379,11 +368,27 @@ static int td_parse_opcode_list(tinydng_context *ctx, const td_reader *r,
       if (!pixels) {
         return 0;
       }
-      for (j = 0; j < (uint32_t)num_items; j++) {
-        if (!td_r_f32_be(&br, p + (uint64_t)j * 4u, &pixels[j])) {
+      {
+        /* One bulk view for the whole pixel span (mmap: zero-copy). */
+        const uint8_t* pv = td_bulk_span_view(&br, p, pbytes, NULL, 0);
+        uint8_t* scr = NULL;
+        if (!pv) {
+          scr = (uint8_t*)td_ctx_alloc(ctx, pbytes, err);
+          if (!scr) {
+            td_ctx_free(ctx, pixels);
+            return 0;
+          }
+          pv = td_bulk_span_view(&br, p, pbytes, scr, pbytes);
+        }
+        if (!pv) {
+          td_ctx_free(ctx, scr);
           td_ctx_free(ctx, pixels);
           return 1;
         }
+        for (j = 0; j < (uint32_t)num_items; j++) {
+          pixels[j] = td_f32_from_buf(pv + (size_t)j * 4u, br.big_endian);
+        }
+        td_ctx_free(ctx, scr);
       }
       gm.opcode_list = list_index;
       gm.top = u[0];
@@ -680,26 +685,44 @@ int td_dng_handle_tag(tinydng_context *ctx, const td_reader *r,
     case TD_TAG_LINEARIZATION_TABLE: {
       size_t i, n, ts;
       uint16_t *tbl;
-      size_t bytes;
+      size_t bytes, span;
+      const uint8_t* base = NULL;
+      uint8_t* scr = NULL;
       ts = td_tiff_type_size(type);  /* element stride must match the type */
       if (count == 0u || count > (1u << 20) || ts == 0u) {
         break; /* benign skip */
       }
       n = (size_t)count;
-      if (!td_safe_mul_size(n, sizeof(uint16_t), &bytes)) {
+      if (!td_safe_mul_size(n, sizeof(uint16_t), &bytes) ||
+          !td_safe_mul_size(n, ts, &span)) {
         break;
+      }
+      /* One bulk view instead of a per-element read (mmap: zero-copy). */
+      base = td_bulk_span_view(r, data_off, span, NULL, 0);
+      if (!base) {
+        scr = (uint8_t*)td_ctx_alloc(ctx, span, err);
+        if (!scr) {
+          return 0;
+        }
+        base = td_bulk_span_view(r, data_off, span, scr, span);
+        if (!base) {
+          td_ctx_free(ctx, scr);
+          break;
+        }
       }
       tbl = (uint16_t *)td_ctx_alloc(ctx, bytes, err);
       if (!tbl) {
+        td_ctx_free(ctx, scr);
         return 0;
       }
       for (i = 0; i < n; i++) {
         uint64_t v;
-        if (!td_r_val_uint(r, type, data_off + (uint64_t)i * (uint64_t)ts, &v)) {
+        if (!td_val_uint_buf(base + i * ts, type, r->big_endian, &v)) {
           break;
         }
         tbl[i] = (uint16_t)v;
       }
+      td_ctx_free(ctx, scr);
       img->raw.linearization_table = tbl;
       img->raw.linearization_table_count = i;
       break;

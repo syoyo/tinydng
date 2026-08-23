@@ -110,10 +110,17 @@ static uint64_t td_u64_from_buf(const uint8_t *p, int big_endian) {
   return v;
 }
 
+float td_f32_from_buf(const uint8_t* p, int big_endian) {
+  uint32_t u = td_u32_from_buf(p, big_endian);
+  float f;
+  memcpy(&f, &u, sizeof(f));
+  return f;
+}
+
 /* Widen a TIFF-typed element at `p` (file byte order) to u64, mirroring
    td_r_val_uint's semantics for the unsigned array types. */
-static int td_val_uint_from_buf(const uint8_t *p, uint16_t type,
-                                int big_endian, uint64_t *out) {
+int td_val_uint_buf(const uint8_t* p, uint16_t type, int big_endian,
+                    uint64_t* out) {
   switch (type) {
     case TD_TYPE_BYTE:
     case TD_TYPE_ASCII:
@@ -307,6 +314,102 @@ int td_r_val_real(const td_reader *r, uint16_t type, uint64_t at, double *out) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Bulk array reads                                                   */
+/* ------------------------------------------------------------------ */
+
+const uint8_t* td_bulk_span_view(const td_reader* r, uint64_t off, size_t bytes,
+                                 const uint8_t* scratch, size_t scratch_cap) {
+  if (!r || bytes == 0u) {
+    return NULL;
+  }
+  return td_io_view(r->io, r->size, off, bytes, (uint8_t*)scratch, scratch_cap);
+}
+
+size_t td_uints_from_buf(const uint8_t* p, uint16_t type, int big_endian,
+                         size_t n, uint64_t* out) {
+  size_t ts = td_tiff_type_size(type);
+  size_t i;
+  if (ts == 0u) {
+    return 0;
+  }
+  for (i = 0; i < n; i++) {
+    if (!td_val_uint_buf(p + i * ts, type, big_endian, &out[i])) {
+      return i;
+    }
+  }
+  return n;
+}
+
+size_t td_reals_from_buf(const uint8_t* p, uint16_t type, int big_endian,
+                         size_t n, double* out) {
+  size_t ts = td_tiff_type_size(type);
+  size_t i;
+  if (ts == 0u) {
+    return 0;
+  }
+  for (i = 0; i < n; i++) {
+    const uint8_t* e = p + i * ts;
+    switch (type) {
+      case TD_TYPE_RATIONAL: {
+        uint32_t num = td_u32_from_buf(e, big_endian);
+        uint32_t den = td_u32_from_buf(e + 4u, big_endian);
+        out[i] = (den == 0u) ? 0.0 : ((double)num / (double)den);
+        break;
+      }
+      case TD_TYPE_SRATIONAL: {
+        int32_t num = (int32_t)td_u32_from_buf(e, big_endian);
+        int32_t den = (int32_t)td_u32_from_buf(e + 4u, big_endian);
+        out[i] = (den == 0) ? 0.0 : ((double)num / (double)den);
+        break;
+      }
+      case TD_TYPE_FLOAT: {
+        uint32_t u = td_u32_from_buf(e, big_endian);
+        float f;
+        memcpy(&f, &u, sizeof(f));
+        out[i] = (double)f;
+        break;
+      }
+      case TD_TYPE_DOUBLE: {
+        uint64_t u = td_u64_from_buf(e, big_endian);
+        double d;
+        memcpy(&d, &u, sizeof(d));
+        out[i] = d;
+        break;
+      }
+      default: {
+        /* Integer types widen to real (mirrors td_r_val_real's fallback). */
+        int64_t s;
+        uint64_t u;
+        if (td_val_uint_buf(e, type, big_endian, &u)) {
+          s = (int64_t)u;
+        } else {
+          /* Signed fallbacks not covered by the unsigned widening. */
+          switch (type) {
+            case TD_TYPE_SBYTE:
+              s = (int8_t)e[0];
+              break;
+            case TD_TYPE_SSHORT:
+              s = (int16_t)td_u16_from_buf(e, big_endian);
+              break;
+            case TD_TYPE_SLONG:
+              s = (int32_t)td_u32_from_buf(e, big_endian);
+              break;
+            case TD_TYPE_SLONG8:
+              s = (int64_t)td_u64_from_buf(e, big_endian);
+              break;
+            default:
+              return i;
+          }
+        }
+        out[i] = (double)s;
+        break;
+      }
+    }
+  }
+  return n;
+}
+
+/* ------------------------------------------------------------------ */
 /* IFD entry decoding                                                 */
 /* ------------------------------------------------------------------ */
 
@@ -466,8 +569,8 @@ static int td_read_u64_array(tinydng_context *ctx, const td_reader *r,
     }
     for (i = 0; i < n; i++) {
       uint64_t v;
-      if (!td_val_uint_from_buf(src + (size_t)i * e->type_size, e->type,
-                                r->big_endian, &v)) {
+      if (!td_val_uint_buf(src + (size_t)i * e->type_size, e->type,
+                           r->big_endian, &v)) {
         td_ctx_free(ctx, scratch);
         td_ctx_free(ctx, arr);
         td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_IFD, ifd_index,

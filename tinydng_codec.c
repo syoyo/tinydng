@@ -121,14 +121,47 @@ static tinydng_status td_compute_geom(tinydng_context *ctx,
   return TINYDNG_OK;
 }
 
+/* Reusable growable scratch buffer. Per-worker instances keep multi-segment
+   decodes from hammering the (locked) context allocator for every segment.
+   Ownership: allocated through the ctx allocator, released with
+   td_scratch_free when the worker finishes. */
+typedef struct {
+  uint8_t* p;
+  size_t cap;
+} td_scratch;
+
+static void td_scratch_free(tinydng_context* ctx, td_scratch* s) {
+  if (s->p) {
+    td_ctx_free(ctx, s->p);
+    s->p = NULL;
+    s->cap = 0;
+  }
+}
+
+static uint8_t* td_scratch_get(tinydng_context* ctx, td_scratch* s, size_t need,
+                               tinydng_error* err) {
+  if (s->cap < need) {
+    td_ctx_free(ctx, s->p);
+    s->p = (uint8_t*)td_ctx_alloc(ctx, need, err);
+    if (!s->p) {
+      s->cap = 0;
+      return NULL;
+    }
+    s->cap = need;
+  }
+  return s->p;
+}
+
 /* Obtain a contiguous pointer to a segment's compressed/raw bytes. Uses
-   zero-copy map when available; otherwise allocates `*owned` and reads. */
-static const uint8_t *td_segment_bytes(tinydng_context *ctx, tinydng_io *io,
+   zero-copy map when available; otherwise allocates `*owned` and reads.
+   When `re` is non-NULL it is used as a reusable growable read buffer (the
+   result stays valid only until the next request on the same scratch), which
+   lets multi-segment decodes avoid per-segment allocator traffic. */
+static const uint8_t* td_segment_bytes(tinydng_context* ctx, tinydng_io* io,
                                        uint64_t io_size, uint64_t off,
-                                       size_t len, uint8_t **owned,
-                                       tinydng_error *err) {
+                                       size_t len, td_scratch* re,
+                                       tinydng_error* err) {
   uint8_t *buf;
-  *owned = NULL;
   if (len == 0u) {
     return NULL;
   }
@@ -138,17 +171,22 @@ static const uint8_t *td_segment_bytes(tinydng_context *ctx, tinydng_io *io,
       return p;
     }
   }
-  buf = (uint8_t *)td_ctx_alloc(ctx, len, err);
+  if (re) {
+    buf = td_scratch_get(ctx, re, len, err);
+  } else {
+    buf = (uint8_t*)td_ctx_alloc(ctx, len, err);
+  }
   if (!buf) {
     return NULL;
   }
   if (td_io_view(io, io_size, off, len, buf, len) == NULL) {
-    td_ctx_free(ctx, buf);
+    if (!re) {
+      td_ctx_free(ctx, buf);
+    }
     td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0, off,
                  "segment bytes out of range");
     return NULL;
   }
-  *owned = buf;
   return buf;
 }
 
@@ -167,38 +205,109 @@ static void td_unpredict_h(uint8_t *buf, uint32_t w, uint32_t h, uint16_t spp,
   for (y = 0; y < h; y++) {
     size_t base = (size_t)y * row_elems;
     for (c = 0; c < spp; c++) {
+      /* Pointer-stepped per channel: cur += prev with prev tracking the
+         previous sample of the SAME channel. Semantically identical to
+         p[x*spp+c] += p[(x-1)*spp+c], without per-iteration multiplications. */
       if (bytes == 1u) {
-        uint8_t *p = buf + base;
+        uint8_t* p = buf + base + c;
+        uint8_t prev = p[0];
         for (x = 1; x < w; x++) {
-          p[(size_t)x * spp + c] =
-              (uint8_t)(p[(size_t)x * spp + c] + p[((size_t)x - 1) * spp + c]);
+          p += spp;
+          prev = (uint8_t)(*p + prev);
+          *p = prev;
         }
       } else if (bytes == 2u) {
-        /* Alignment-safe: work in byte offsets, read/write via memcpy. */
+        uint8_t* p = buf + (base + c) * 2u;
+        const size_t step = (size_t)spp * 2u;
+        uint16_t prev;
+        memcpy(&prev, p, 2);
         for (x = 1; x < w; x++) {
-          size_t off_c = ((size_t)base + (size_t)x * spp + c) * 2u;
-          size_t off_p = ((size_t)base + ((size_t)x - 1) * spp + c) * 2u;
-          uint16_t cur, prev;
-          memcpy(&cur, buf + off_c, 2);
-          memcpy(&prev, buf + off_p, 2);
+          uint16_t cur;
+          p += step;
+          memcpy(&cur, p, 2);
           cur = (uint16_t)(cur + prev);
-          memcpy(buf + off_c, &cur, 2);
+          memcpy(p, &cur, 2);
+          prev = cur;
         }
       } else if (bytes == 4u) {
+        uint8_t* p = buf + (base + c) * 4u;
+        const size_t step = (size_t)spp * 4u;
+        uint32_t prev;
+        memcpy(&prev, p, 4);
         for (x = 1; x < w; x++) {
-          size_t off_c = ((size_t)base + (size_t)x * spp + c) * 4u;
-          size_t off_p = ((size_t)base + ((size_t)x - 1) * spp + c) * 4u;
-          uint32_t cur, prev;
-          memcpy(&cur, buf + off_c, 4);
-          memcpy(&prev, buf + off_p, 4);
+          uint32_t cur;
+          p += step;
+          memcpy(&cur, p, 4);
           cur = cur + prev;
-          memcpy(buf + off_c, &cur, 4);
+          memcpy(p, &cur, 4);
+          prev = cur;
         }
       }
     }
   }
 }
 
+/* Fast row unpackers for the common raw depths. Groups are chosen so each
+   consumes a whole number of bytes (12b: 2 samples / 3 bytes, 10b: 4 / 5,
+   14b: 4 / 7), removing the per-sample refill branch of the generic loop.
+   `n` is the sample count; tails fall back to the byte-aligned generic path. */
+static void td_unpack_tail(const uint8_t* rp, uint16_t* dst, size_t n,
+                           unsigned bps) {
+  uint32_t bitbuf = 0;
+  int nbits = 0;
+  size_t s;
+  for (s = 0; s < n; s++) {
+    uint32_t v;
+    while (nbits < (int)bps) {
+      bitbuf = (bitbuf << 8) | (uint32_t)(*rp++);
+      nbits += 8;
+    }
+    v = (bitbuf >> (nbits - (int)bps)) & ((1u << bps) - 1u);
+    nbits -= (int)bps;
+    bitbuf &= (1u << nbits) - 1u;
+    dst[s] = (uint16_t)v;
+  }
+}
+
+static void td_unpack_row_12(const uint8_t* rp, uint16_t* dst, size_t n) {
+  size_t i = 0;
+  for (; i + 2 <= n; i += 2, rp += 3) {
+    uint32_t t =
+        ((uint32_t)rp[0] << 16) | ((uint32_t)rp[1] << 8) | (uint32_t)rp[2];
+    dst[i] = (uint16_t)(t >> 12);
+    dst[i + 1] = (uint16_t)(t & 0x0FFFu);
+  }
+  td_unpack_tail(rp, dst + i, n - i, 12u);
+}
+
+static void td_unpack_row_10(const uint8_t* rp, uint16_t* dst, size_t n) {
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4, rp += 5) {
+    uint64_t t = ((uint64_t)rp[0] << 32) | ((uint64_t)rp[1] << 24) |
+                 ((uint64_t)rp[2] << 16) | ((uint64_t)rp[3] << 8) |
+                 (uint64_t)rp[4];
+    dst[i] = (uint16_t)(t >> 30);
+    dst[i + 1] = (uint16_t)((t >> 20) & 0x03FFu);
+    dst[i + 2] = (uint16_t)((t >> 10) & 0x03FFu);
+    dst[i + 3] = (uint16_t)(t & 0x03FFu);
+  }
+  td_unpack_tail(rp, dst + i, n - i, 10u);
+}
+
+static void td_unpack_row_14(const uint8_t* rp, uint16_t* dst, size_t n) {
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4, rp += 7) {
+    uint64_t t = ((uint64_t)rp[0] << 48) | ((uint64_t)rp[1] << 40) |
+                 ((uint64_t)rp[2] << 32) | ((uint64_t)rp[3] << 24) |
+                 ((uint64_t)rp[4] << 16) | ((uint64_t)rp[5] << 8) |
+                 (uint64_t)rp[6];
+    dst[i] = (uint16_t)(t >> 42);
+    dst[i + 1] = (uint16_t)((t >> 28) & 0x3FFFu);
+    dst[i + 2] = (uint16_t)((t >> 14) & 0x3FFFu);
+    dst[i + 3] = (uint16_t)(t & 0x3FFFu);
+  }
+  td_unpack_tail(rp, dst + i, n - i, 14u);
+}
 /* Floating-point predictor (TIFF predictor 3), libtiff fpAcc algorithm. */
 static int td_unpredict_fp(tinydng_context *ctx, uint8_t *buf, uint32_t w,
                            uint32_t h, uint16_t spp, size_t bytes,
@@ -359,19 +468,20 @@ static tinydng_status td_fill_block_from_stored(const td_geom *g, int big_endian
         return TINYDNG_E_BOUNDS;
       }
       if (stored_bytes == 2u) {
-        for (i = 0; i < total_samples; i++) {
-          uint16_t v;
-          memcpy(&v, block + i * 2u, sizeof(v));
-          v = (uint16_t)((v >> 8) | (v << 8));
-          memcpy(block + i * 2u, &v, sizeof(v));
+        uint8_t* q = block;
+        for (i = 0; i < total_samples; i++, q += 2) {
+          uint8_t t = q[0];
+          q[0] = q[1];
+          q[1] = t;
         }
       } else {
-        for (i = 0; i < total_samples; i++) {
-          uint32_t v;
-          memcpy(&v, block + i * 4u, sizeof(v));
-          v = ((v >> 24) & 0xFFu) | ((v >> 8) & 0xFF00u) |
-              ((v << 8) & 0xFF0000u) | ((v << 24) & 0xFF000000u);
-          memcpy(block + i * 4u, &v, sizeof(v));
+        uint8_t* q = block;
+        for (i = 0; i < total_samples; i++, q += 4) {
+          uint8_t a = q[0], b = q[1], c = q[2], d = q[3];
+          q[0] = d;
+          q[1] = c;
+          q[2] = b;
+          q[3] = a;
         }
       }
     }
@@ -391,31 +501,60 @@ static tinydng_status td_fill_block_from_stored(const td_geom *g, int big_endian
     for (y = 0; y < bh; y++) {
       const uint8_t *rp = src + (size_t)y * in_row_bytes;
       size_t row_base = (size_t)y * samples_per_row;
-      /* MSB-first accumulator: shift whole bytes in, pull bps bits out of the
-         top. nbits stays below bps+8 <= 24, so one 32-bit value suffices. */
-      uint32_t bitbuf = 0;
-      int nbits = 0;
-      size_t s;
-      for (s = 0; s < samples_per_row; s++) {
-        uint32_t v;
-        while (nbits < g->bps) {
-          bitbuf = (bitbuf << 8) | (uint32_t)(*rp++);
-          nbits += 8;
-        }
-        v = bitbuf >> (nbits - g->bps);
-        nbits -= g->bps;
-        bitbuf &= (1u << nbits) - 1u; /* keep only the unconsumed low bits */
-        if (g->invert_1bit && g->bps == 1u) {
-          /* PSD bitmap polarity: stored bit 1 = black. */
-          v = v ? 0u : 255u;
-        }
-        /* Write into the destination element width: bps<8 -> 8-bit output,
-           bps 9..15 -> 16-bit output (see out_bps in td_compute_geom). */
-        if (g->out_bytes == 1u) {
+      if (g->out_bytes == 1u) {
+        /* bps < 8: 8-bit output elements (incl. PSD bitmap polarity). */
+        uint32_t bitbuf = 0;
+        int nbits = 0;
+        size_t s;
+        for (s = 0; s < samples_per_row; s++) {
+          uint32_t v;
+          while (nbits < g->bps) {
+            bitbuf = (bitbuf << 8) | (uint32_t)(*rp++);
+            nbits += 8;
+          }
+          v = bitbuf >> (nbits - g->bps);
+          nbits -= g->bps;
+          bitbuf &= (1u << nbits) - 1u; /* keep only the unconsumed low bits */
+          if (g->invert_1bit && g->bps == 1u) {
+            /* PSD bitmap polarity: stored bit 1 = black. */
+            v = v ? 0u : 255u;
+          }
           ((uint8_t *)block)[row_base + s] = (uint8_t)v;
-        } else {
-          uint16_t w = (uint16_t)v;
-          memcpy((uint8_t *)block + (row_base + s) * 2u, &w, sizeof(w));
+        }
+      } else if (g->bps == 12u && samples_per_row >= 2u &&
+                 in_row_bytes == ((samples_per_row / 2u) * 3u)) {
+        /* Fast paths for the common raw depths; group boundaries are
+           byte-aligned so the tail handler resumes cleanly. */
+        td_unpack_row_12(rp, (uint16_t*)(void*)block + row_base,
+                         samples_per_row);
+      } else if (g->bps == 10u && samples_per_row >= 4u &&
+                 in_row_bytes == ((samples_per_row / 4u) * 5u)) {
+        td_unpack_row_10(rp, (uint16_t*)(void*)block + row_base,
+                         samples_per_row);
+      } else if (g->bps == 14u && samples_per_row >= 4u &&
+                 in_row_bytes == ((samples_per_row / 4u) * 7u)) {
+        td_unpack_row_14(rp, (uint16_t*)(void*)block + row_base,
+                         samples_per_row);
+      } else {
+        /* MSB-first accumulator: shift whole bytes in, pull bps bits out of
+           the top. nbits stays below bps+8 <= 24, so one 32-bit value
+           suffices. */
+        uint32_t bitbuf = 0;
+        int nbits = 0;
+        size_t s;
+        for (s = 0; s < samples_per_row; s++) {
+          uint32_t v;
+          while (nbits < g->bps) {
+            bitbuf = (bitbuf << 8) | (uint32_t)(*rp++);
+            nbits += 8;
+          }
+          v = bitbuf >> (nbits - g->bps);
+          nbits -= g->bps;
+          bitbuf &= (1u << nbits) - 1u;
+          {
+            uint16_t w16 = (uint16_t)v;
+            memcpy((uint8_t*)block + (row_base + s) * 2u, &w16, sizeof(w16));
+          }
         }
       }
     }
@@ -425,10 +564,9 @@ static tinydng_status td_fill_block_from_stored(const td_geom *g, int big_endian
 
 /* Decode one uncompressed segment into `block`. */
 static tinydng_status td_decode_block_uncompressed(
-    tinydng_context *ctx, tinydng_io *io, uint64_t io_size, int big_endian,
-    const td_geom *g, const tinydng_segment *seg, uint32_t bw, uint32_t bh,
-    uint8_t *block, tinydng_error *err) {
-  uint8_t *owned = NULL;
+    tinydng_context* ctx, tinydng_io* io, uint64_t io_size, int big_endian,
+    const td_geom* g, const tinydng_segment* seg, uint32_t bw, uint32_t bh,
+    uint8_t* block, td_scratch* in_re, tinydng_error* err) {
   const uint8_t *src;
   size_t need;
   tinydng_status st;
@@ -443,14 +581,11 @@ static tinydng_status td_decode_block_uncompressed(
                  (unsigned long long)seg->byte_count);
     return TINYDNG_E_BOUNDS;
   }
-  src = td_segment_bytes(ctx, io, io_size, seg->offset, need, &owned, err);
+  src = td_segment_bytes(ctx, io, io_size, seg->offset, need, in_re, err);
   if (!src) {
     return td_error_status_or(err, TINYDNG_E_BOUNDS);
   }
   st = td_fill_block_from_stored(g, big_endian, src, need, bw, bh, block, err);
-  if (owned) {
-    td_ctx_free(ctx, owned);
-  }
   return st;
 }
 
@@ -475,16 +610,21 @@ static tinydng_status td_finish_compressed(tinydng_context *ctx, int big_endian,
 #endif
 
 #ifndef TINYDNG_NO_LZW
-/* TIFF LZW (early-change, MSB-first). Returns decoded byte count or -1. */
+/* TIFF LZW (early-change, MSB-first). Returns decoded byte count or -1.
+ *
+ * Like libtiff, decoding stops as soon as the output buffer is satisfied:
+ * real-world encoders (Photoshop, NASA PDS) may terminate strips without an
+ * explicit EOI and pad the final bits with garbage, so consuming codes past
+ * the expected byte count would spuriously fail valid files.
+ */
 static long td_lzw_decode(const uint8_t *in, size_t in_len, uint8_t *out,
                           size_t out_cap) {
   enum { CLEAR = 256, EOI = 257 };
   uint16_t prefix[4096];
   uint8_t suffix[4096];
-  uint8_t stack[4096];
   int code_size = 9;
   int next_code = 258;
-  long out_pos = 0;
+  size_t out_pos = 0;
   uint64_t bitbuf = 0;
   int bitcnt = 0;
   size_t in_pos = 0;
@@ -492,9 +632,22 @@ static long td_lzw_decode(const uint8_t *in, size_t in_len, uint8_t *out,
 
   for (;;) {
     int code;
-    while (bitcnt < code_size && in_pos < in_len) {
-      bitbuf = (bitbuf << 8) | in[in_pos++];
-      bitcnt += 8;
+    /* Refill up to 5 bytes at once so <=12-bit codes rarely stall; identical
+       semantics to a byte-at-a-time MSB-first reader. */
+    while (bitcnt < code_size) {
+      size_t avail = in_len - in_pos;
+      size_t take = avail < 5u ? avail : 5u;
+      uint64_t v = 0;
+      size_t i;
+      if (take == 0) {
+        break;
+      }
+      for (i = 0; i < take; i++) {
+        v = (v << 8) | in[in_pos + i];
+      }
+      in_pos += take;
+      bitbuf = (bitbuf << (take * 8u)) | v;
+      bitcnt += (int)(take * 8u);
     }
     if (bitcnt < code_size) {
       break; /* ran out of input */
@@ -511,66 +664,73 @@ static long td_lzw_decode(const uint8_t *in, size_t in_len, uint8_t *out,
       prev = -1;
       continue;
     }
-    {
-      int sp = 0;
-      int cur = code;
-      if (prev == -1) {
-        if (code >= 256) {
-          return -1;
-        }
-        if ((size_t)out_pos >= out_cap) {
-          return -1;
-        }
-        out[out_pos++] = (uint8_t)code;
-        prev = code;
-        continue;
-      }
-      if (code < next_code) {
-        cur = code;
-      } else if (code == next_code) {
-        /* KwKwK case: emit prev string + its first char */
-        stack[sp++] = (uint8_t)0; /* placeholder, replaced below */
-        cur = prev;
-      } else {
-        return -1; /* invalid code */
-      }
-      /* Walk the chain for `cur` onto the stack. */
-      while (cur >= 256) {
-        if (sp >= 4096 || cur >= 4096) {
-          return -1;
-        }
-        stack[sp++] = suffix[cur];
-        cur = prefix[cur];
-      }
-      if (sp >= 4096) {
+    if (prev == -1) {
+      if (code >= 256) {
         return -1;
       }
-      stack[sp++] = (uint8_t)cur;
-      if (code == next_code) {
-        /* fix the KwKwK placeholder: first char is `cur` (= firstchar(prev)) */
-        stack[0] = (uint8_t)cur;
+      if (out_pos >= out_cap) {
+        return -1;
       }
-      /* Emit reversed stack. */
-      while (sp > 0) {
-        if ((size_t)out_pos >= out_cap) {
-          return -1;
+      out[out_pos++] = (uint8_t)code;
+      prev = code;
+      if (out_pos >= out_cap) {
+        break; /* output satisfied */
+      }
+      continue;
+    }
+    {
+      int kwk = (code == next_code);
+      int head = kwk ? prev : code;
+      int c = head;
+      size_t len = 0;
+      if (!kwk && code > next_code) {
+        return -1; /* invalid code */
+      }
+      /* Measure the string so the capacity is verified with one check, then
+         emit it forward directly into the output (no intermediate stack).
+         The prefix-chain walk visits characters last-to-first, so bytes are
+         written through a descending cursor. */
+      while (c >= 256) {
+        len++;
+        c = prefix[c];
+      }
+      /* c == leading literal == first char of this string */
+      len += kwk ? 2u : 1u;
+      if (out_pos > out_cap || len > out_cap - out_pos) {
+        return -1;
+      }
+      {
+        size_t w_last = out_pos + len - 1u; /* inclusive last slot     */
+        size_t w = kwk ? (w_last - 1u) : w_last;
+        if (kwk) {
+          /* KwKwK: one extra copy of this string's first char. */
+          out[w_last] = (uint8_t)c;
         }
-        out[out_pos++] = stack[--sp];
-      }
-      /* Add new entry prev + firstchar. */
-      if (next_code < 4096) {
-        prefix[next_code] = (uint16_t)prev;
-        suffix[next_code] = (uint8_t)cur;
-        next_code++;
-        /* TIFF early change: widen one code before the table fills. */
-        if (code_size < 12 && next_code == (1 << code_size) - 1) {
-          code_size++;
+        c = head;
+        while (c >= 256) {
+          out[w--] = suffix[c];
+          c = prefix[c];
+        }
+        out[out_pos] = (uint8_t)c; /* leading literal / first char */
+        out_pos += len;
+        /* Add new entry prev + firstchar(this string). */
+        if (next_code < 4096) {
+          prefix[next_code] = (uint16_t)prev;
+          suffix[next_code] = (uint8_t)c;
+          next_code++;
+          /* TIFF early change: widen one code before the table fills. */
+          if (code_size < 12 && next_code == (1 << code_size) - 1) {
+            code_size++;
+          }
         }
       }
       prev = code;
     }
+    if (out_pos >= out_cap) {
+      break; /* output satisfied */
+    }
   }
-  return out_pos;
+  return (long)out_pos;
 }
 #endif /* TINYDNG_NO_LZW */
 
@@ -578,49 +738,41 @@ static long td_lzw_decode(const uint8_t *in, size_t in_len, uint8_t *out,
 long td_packbits_decode(const uint8_t *in, size_t in_len, uint8_t *out,
                         size_t out_cap) {
   size_t ip = 0;
-  long op = 0;
+  size_t op = 0;
   while (ip < in_len) {
     int8_t n = (int8_t)in[ip++];
     if (n >= 0) {
-      int cnt = n + 1;
-      int k;
-      if (ip + (size_t)cnt > in_len) {
+      size_t cnt = (size_t)n + 1u;
+      if (cnt > in_len - ip || cnt > out_cap - op) {
         return -1;
       }
-      for (k = 0; k < cnt; k++) {
-        if ((size_t)op >= out_cap) {
-          return -1;
-        }
-        out[op++] = in[ip++];
-      }
+      memcpy(out + op, in + ip, cnt);
+      op += cnt;
+      ip += cnt;
     } else if (n != -128) {
-      int cnt = 1 - n;
-      int k;
+      size_t cnt = (size_t)(1 - n);
       uint8_t v;
-      if (ip >= in_len) {
+      if (ip >= in_len || cnt > out_cap - op) {
         return -1;
       }
       v = in[ip++];
-      for (k = 0; k < cnt; k++) {
-        if ((size_t)op >= out_cap) {
-          return -1;
-        }
-        out[op++] = v;
-      }
+      memset(out + op, v, cnt);
+      op += cnt;
     }
   }
-  return op;
+  return (long)op;
 }
 #endif /* TINYDNG_NO_PACKBITS */
 
-/* Decode one LZW/PackBits/ZIP segment into `block`. */
+/* Decode one LZW/PackBits/ZIP segment into `block`. `in_re`/`st_re` are
+   optional reusable per-worker scratches (input bytes / decompressed bytes). */
 static tinydng_status td_decode_block_compressed(
-    tinydng_context *ctx, tinydng_io *io, uint64_t io_size, int big_endian,
-    const td_geom *g, const tinydng_segment *seg, uint16_t compression,
-    uint32_t bw, uint32_t bh, uint8_t *block, tinydng_error *err) {
-  uint8_t *owned = NULL;
-  uint8_t *stored = NULL;
+    tinydng_context* ctx, tinydng_io* io, uint64_t io_size, int big_endian,
+    const td_geom* g, const tinydng_segment* seg, uint16_t compression,
+    uint32_t bw, uint32_t bh, uint8_t* block, td_scratch* in_re,
+    td_scratch* st_re, tinydng_error* err) {
   const uint8_t *src;
+  uint8_t* stored = NULL;
   size_t need;
   long got = -1;
   tinydng_status st;
@@ -636,15 +788,52 @@ static tinydng_status td_decode_block_compressed(
     return TINYDNG_E_BOUNDS;
   }
   src = td_segment_bytes(ctx, io, io_size, seg->offset, (size_t)seg->byte_count,
-                         &owned, err);
+                         in_re, err);
   if (!src) {
     return td_error_status_or(err, TINYDNG_E_BOUNDS);
   }
-  stored = (uint8_t *)td_ctx_alloc(ctx, need, err);
-  if (!stored) {
-    if (owned) {
-      td_ctx_free(ctx, owned);
+
+  /* Fast path: when the stored layout equals the output layout (8-bit
+     samples, or matching byte order for 16/32), decompress straight into the
+     destination block and skip both the scratch and the final copy pass.
+     PSD zip-with-prediction is excluded: its unpredict pass must run before
+     the block conversion. */
+  if (compression != (uint16_t)TD_COMPRESSION_PSD_ZIP_PRED && !g->packed &&
+      g->bps == g->out_bps && (g->bps == 8u || big_endian == td_host_big())) {
+#ifndef TINYDNG_NO_LZW
+    if (compression == TINYDNG_COMPRESSION_LZW) {
+      got = td_lzw_decode(src, (size_t)seg->byte_count, block, need);
+    } else
+#endif
+#ifndef TINYDNG_NO_PACKBITS
+        if (compression == TINYDNG_COMPRESSION_PACKBITS) {
+      got = td_packbits_decode(src, (size_t)seg->byte_count, block, need);
+    } else
+#endif
+#ifndef TINYDNG_NO_ZIP
+        if (compression == TINYDNG_COMPRESSION_ZIP) {
+      mz_ulong dlen = (mz_ulong)need;
+      int mzr = mz_uncompress(block, &dlen, src, (mz_ulong)seg->byte_count);
+      got = (mzr == MZ_OK) ? (long)dlen : -1;
+    } else
+#endif
+    {
+      /* fall through to the generic path below */
     }
+    if (got >= 0) {
+      if ((size_t)got != need) {
+        td_set_error(err, TINYDNG_E_DECODE, TINYDNG_STAGE_DECODE, 0, 0, 0,
+                     "decompressed size mismatch: got=%ld need=%zu", got, need);
+        return TINYDNG_E_DECODE;
+      }
+      return TINYDNG_OK; /* predictor is applied by the caller */
+    }
+    got = -1; /* fall back to the generic path for uniform error reporting */
+  }
+
+  stored = st_re ? td_scratch_get(ctx, st_re, need, err)
+                 : (uint8_t*)td_ctx_alloc(ctx, need, err);
+  if (!stored) {
     return TINYDNG_E_OOM;
   }
 
@@ -681,9 +870,8 @@ static tinydng_status td_decode_block_compressed(
 #endif
 #endif
     default:
-      td_ctx_free(ctx, stored);
-      if (owned) {
-        td_ctx_free(ctx, owned);
+      if (!st_re) {
+        td_ctx_free(ctx, stored);
       }
       td_set_error(err, TINYDNG_E_UNSUPPORTED, TINYDNG_STAGE_DECODE, 0, 0, 0,
                    "compression %u not enabled", (unsigned)compression);
@@ -691,9 +879,8 @@ static tinydng_status td_decode_block_compressed(
   }
 
   if (got < 0) {
-    td_ctx_free(ctx, stored);
-    if (owned) {
-      td_ctx_free(ctx, owned);
+    if (!st_re) {
+      td_ctx_free(ctx, stored);
     }
     td_set_error(err, TINYDNG_E_DECODE, TINYDNG_STAGE_DECODE, 0, 0, seg->offset,
                  "decompression failed (comp=%u)", (unsigned)compression);
@@ -702,33 +889,35 @@ static tinydng_status td_decode_block_compressed(
 
   st = td_finish_compressed(ctx, big_endian, g, stored, (size_t)got, need, bw,
                             bh, block, err);
-  td_ctx_free(ctx, stored);
-  if (owned) {
-    td_ctx_free(ctx, owned);
+  if (!st_re) {
+    td_ctx_free(ctx, stored);
   }
   return st;
 }
 
 #ifndef TINYDNG_NO_BASELINE_JPEG
 /* Decode one baseline/lossy JPEG segment (8-bit) into `block`. */
-static tinydng_status td_decode_block_baseline(tinydng_context *ctx,
-                                               tinydng_io *io, uint64_t io_size,
-                                               const td_geom *g,
-                                               const tinydng_segment *seg,
-                                               uint8_t *block, uint32_t bw,
-                                               uint32_t bh, tinydng_error *err) {
-  uint8_t *owned = NULL;
+static tinydng_status td_decode_block_baseline(
+    tinydng_context* ctx, tinydng_io* io, uint64_t io_size, const td_geom* g,
+    const tinydng_segment* seg, uint8_t* block, uint32_t bw, uint32_t bh,
+    td_scratch* in_re, tinydng_error* err) {
+  td_scratch local;
+  td_scratch* sc = in_re ? in_re : &local;
   const uint8_t *src;
   int w = 0, h = 0, comp = 0;
   stbi_uc *pixels;
 
+  if (!in_re) {
+    local.p = NULL;
+    local.cap = 0;
+  }
   if (seg->byte_count > (uint64_t)INT32_MAX) {
     td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0, seg->offset,
                  "jpeg segment too large");
     return TINYDNG_E_BOUNDS;
   }
   src = td_segment_bytes(ctx, io, io_size, seg->offset, (size_t)seg->byte_count,
-                         &owned, err);
+                         sc, err);
   if (!src) {
     return td_error_status_or(err, TINYDNG_E_BOUNDS);
   }
@@ -737,7 +926,7 @@ static tinydng_status td_decode_block_baseline(tinydng_context *ctx,
    * reject images whose decoded size cannot fit the remaining budget before
    * letting stb allocate. */
   if (!stbi_info_from_memory(src, (int)seg->byte_count, &w, &h, &comp)) {
-    td_ctx_free(ctx, owned);
+    if (sc == &local) td_scratch_free(ctx, sc);
     td_set_error(err, TINYDNG_E_DECODE, TINYDNG_STAGE_DECODE, 0, 0, seg->offset,
                  "jpeg header parse failed: %s", stbi_failure_reason());
     return TINYDNG_E_DECODE;
@@ -756,7 +945,7 @@ static tinydng_status td_decode_block_baseline(tinydng_context *ctx,
     if (!td_safe_mul_u64(need_px, (uint64_t)((unsigned)g->spp),
                          &need_bytes) ||
         need_bytes > budget) {
-      td_ctx_free(ctx, owned);
+      if (sc == &local) td_scratch_free(ctx, sc);
       td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0,
                    seg->offset,
                    "jpeg decoded size %dx%dx%u exceeds memory budget (%llu "
@@ -767,9 +956,7 @@ static tinydng_status td_decode_block_baseline(tinydng_context *ctx,
   }
   pixels = stbi_load_from_memory(src, (int)seg->byte_count, &w, &h, &comp,
                                  (int)g->spp);
-  if (owned) {
-    td_ctx_free(ctx, owned);
-  }
+  if (sc == &local) td_scratch_free(ctx, sc);
   if (!pixels) {
     td_set_error(err, TINYDNG_E_DECODE, TINYDNG_STAGE_DECODE, 0, 0, seg->offset,
                  "stb baseline JPEG decode failed: %s", stbi_failure_reason());
@@ -812,6 +999,49 @@ static uint64_t td_lj92_stream_size(void *user) {
   return ((td_lj92_stream_io *)user)->size;
 }
 
+static void* td_lj92_ctx_alloc(void* user, size_t size) {
+  return td_ctx_alloc((tinydng_context*)user, size, NULL);
+}
+
+static void td_lj92_ctx_free(void* user, void* ptr) {
+  td_ctx_free((tinydng_context*)user, ptr);
+}
+
+/* Decode a JPEG lossless frame into an interleaved u16 sample array. SOF11
+   exposes native component planes; when every component has the same native
+   geometry they can alias the interleaved destination without an upsample or
+   scratch copy. Unequal native planes are deliberately not resampled here. */
+static int td_lj92_decode_u16(tdng_lj92 lj, uint16_t* dst, int w, int h,
+                              int comps) {
+  tdng_lj92_frame_info info;
+  tdng_lj92_plane planes[TDNG_LJ92_MAX_COMPONENTS];
+  size_t total;
+  int ret = tdng_lj92_get_frame_info(lj, &info);
+  if (ret != TDNG_LJ92_ERROR_NONE) return ret;
+  if (info.sof_marker != 0xCB) {
+    return tdng_lj92_decode(lj, dst, w * comps, 0, NULL, 0);
+  }
+  if (info.component_count != comps || comps < 1 ||
+      comps > TDNG_LJ92_MAX_COMPONENTS ||
+      !td_safe_mul_size((size_t)w * (size_t)comps, (size_t)h, &total)) {
+    return TDNG_LJ92_ERROR_CORRUPT;
+  }
+  memset(planes, 0, sizeof(planes));
+  for (int c = 0; c < comps; c++) {
+    if (info.components[c].width != (uint32_t)w ||
+        info.components[c].height != (uint32_t)h) {
+      return TDNG_LJ92_ERROR_UNSUPPORTED;
+    }
+    planes[c].data = dst + c;
+    planes[c].capacity_samples = total - (size_t)c;
+    planes[c].row_stride_samples = (size_t)w * (size_t)comps;
+    planes[c].pixel_stride_samples = (size_t)comps;
+    planes[c].width = (uint32_t)w;
+    planes[c].height = (uint32_t)h;
+  }
+  return tdng_lj92_decode_planes(lj, planes, (size_t)comps);
+}
+
 /* Decode one lossless-JPEG segment into `block` (bw*bh*spp*2). Returns the
    actual decoded dims via out_bw/out_bh. When the backend can map the
    segment, decode zero-copy from the mapping; otherwise stream it through
@@ -822,16 +1052,22 @@ static tinydng_status td_decode_block_ljpeg(tinydng_context *ctx,
                                             const tinydng_segment *seg,
                                             uint8_t *block, uint32_t bw,
                                             uint32_t bh, tinydng_error *err) {
-  uint8_t *owned = NULL;
+  td_scratch owned;
   const uint8_t *src;
   tdng_lj92 lj = NULL;
-  uint16_t *lj_target = NULL;
   int w = 0, h = 0, bits = 0, comps = 0;
   int ret;
   tinydng_status st = TINYDNG_OK;
   /* The streaming adapter must outlive tdng_lj92_decode, which reads it
      through the decoder's stream_user until tdng_lj92_close. */
   td_lj92_stream_io sio;
+  tdng_lj92_allocator ljalloc;
+
+  owned.p = NULL;
+  owned.cap = 0;
+  ljalloc.alloc = td_lj92_ctx_alloc;
+  ljalloc.free = td_lj92_ctx_free;
+  ljalloc.user = ctx;
 
   if (seg->byte_count > (uint64_t)INT32_MAX) {
     td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0, seg->offset,
@@ -845,14 +1081,16 @@ static tinydng_status td_decode_block_ljpeg(tinydng_context *ctx,
     if (!src) {
       return td_error_status_or(err, TINYDNG_E_BOUNDS);
     }
-    ret = tdng_lj92_open(&lj, src, (int)seg->byte_count, &w, &h, &bits, &comps);
+    ret = tdng_lj92_open_ex(&lj, src, (int)seg->byte_count, &ljalloc, &w, &h,
+                            &bits, &comps);
   } else {
     /* Streaming decode through the io backend (no full-segment copy). */
     sio.io = io;
     sio.base = seg->offset;
     sio.size = seg->byte_count;
-    ret = tdng_lj92_open_streaming(&lj, &sio, td_lj92_stream_read,
-                                   td_lj92_stream_size, &w, &h, &bits, &comps);
+    ret = tdng_lj92_open_streaming_ex(&lj, &sio, td_lj92_stream_read,
+                                      td_lj92_stream_size, &ljalloc, &w, &h,
+                                      &bits, &comps);
   }
   if (ret == TDNG_LJ92_ERROR_NOT_LOSSLESS) {
     td_set_error(err, TINYDNG_E_UNSUPPORTED, TINYDNG_STAGE_DECODE, 0, 0,
@@ -866,6 +1104,37 @@ static tinydng_status td_decode_block_ljpeg(tinydng_context *ctx,
     st = TINYDNG_E_DECODE;
     goto cleanup;
   }
+  {
+    tdng_lj92_frame_info info;
+    ret = tdng_lj92_get_frame_info(lj, &info);
+    if (ret != TDNG_LJ92_ERROR_NONE) {
+      td_set_error(err, TINYDNG_E_DECODE, TINYDNG_STAGE_DECODE, 0, 0,
+                   seg->offset, "invalid lossless JPEG frame metadata");
+      st = TINYDNG_E_DECODE;
+      goto cleanup;
+    }
+    if (info.sof_marker == 0xCB && !io->map) {
+      /* The advanced native-plane engine is memory-backed. SOF11 is rare in
+         DNG, so materialize only this segment; ordinary SOF3 retains the
+         zero-materialization streaming fast path. */
+      tdng_lj92_close(lj);
+      lj = NULL;
+      src = td_segment_bytes(ctx, io, io_size, seg->offset,
+                             (size_t)seg->byte_count, &owned, err);
+      if (!src) {
+        st = td_error_status_or(err, TINYDNG_E_BOUNDS);
+        goto cleanup;
+      }
+      ret = tdng_lj92_open_ex(&lj, src, (int)seg->byte_count, &ljalloc, &w, &h,
+                              &bits, &comps);
+      if (ret != TDNG_LJ92_ERROR_NONE) {
+        td_set_error(err, TINYDNG_E_DECODE, TINYDNG_STAGE_DECODE, 0, 0,
+                     seg->offset, "SOF11 reopen failed ret=%d", ret);
+        st = TINYDNG_E_DECODE;
+        goto cleanup;
+      }
+    }
+  }
   /* The LJPEG may store the block as (w x h) with `comps` interleaved
      channels; total samples/row = w*comps must match the block (bw*spp).
      This covers the DNG CFA trick (e.g. 256-wide tile stored as 128x2). */
@@ -878,43 +1147,86 @@ static tinydng_status td_decode_block_ljpeg(tinydng_context *ctx,
     goto cleanup;
   }
 
-  {
-    size_t samples, target_bytes;
-    if (!td_safe_mul_size((size_t)w, (size_t)comps, &samples) ||
-        !td_safe_mul_size(samples, (size_t)h, &samples) ||
-        !td_safe_mul_size(samples, sizeof(*lj_target), &target_bytes)) {
+  if (g->packed) {
+    /* KEEP_PACKED with sub-byte depth (bps 9..15): the destination holds
+       MSB-first packed rows, not u16 samples. Decode to a full-width u16
+       scratch, then repack each row down to g->bps bits.
+       (Pre-fix this path wrote raw u16 samples into the packed-size block:
+       a heap overflow reachable via TINYDNG_DEC_KEEP_PACKED on 10/12/14-bit
+       LJPEG files.) */
+    uint16_t* scratch = NULL;
+    size_t row_samples = (size_t)w * (size_t)comps;
+    size_t scratch_bytes, rowb, y, x;
+    unsigned bps = g->bps;
+    if (!td_safe_mul_size(row_samples, (size_t)h * sizeof(uint16_t),
+                          &scratch_bytes)) {
       td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0,
-                   seg->offset, "ljpeg output size overflow");
+                   seg->offset, "ljpeg scratch size overflow");
       st = TINYDNG_E_BOUNDS;
       goto cleanup;
     }
-    lj_target = (uint16_t *)td_ctx_alloc(ctx, target_bytes, err);
-    if (!lj_target) {
+    if (!td_packed_row_bytes(bw, g->spp, bps, &rowb)) {
+      td_set_error(err, TINYDNG_E_BOUNDS, TINYDNG_STAGE_DECODE, 0, 0,
+                   seg->offset, "packed row size overflow");
+      st = TINYDNG_E_BOUNDS;
+      goto cleanup;
+    }
+    scratch = (uint16_t*)td_ctx_alloc(ctx, scratch_bytes, err);
+    if (!scratch) {
       st = TINYDNG_E_OOM;
       goto cleanup;
     }
-  }
-  ret = tdng_lj92_decode(lj, lj_target,
-                         (int)((size_t)w * (size_t)comps), 0, NULL, 0);
-  if (ret != TDNG_LJ92_ERROR_NONE) {
-    td_set_error(err, TINYDNG_E_DECODE, TINYDNG_STAGE_DECODE, 0, 0, seg->offset,
-                 "tdng_lj92_decode failed ret=%d", ret);
-    st = TINYDNG_E_DECODE;
+    ret = td_lj92_decode_u16(lj, scratch, w, h, comps);
+    if (ret != TDNG_LJ92_ERROR_NONE) {
+      td_ctx_free(ctx, scratch);
+      st = ret == TDNG_LJ92_ERROR_UNSUPPORTED ? TINYDNG_E_UNSUPPORTED
+                                              : TINYDNG_E_DECODE;
+      td_set_error(err, st, TINYDNG_STAGE_DECODE, 0, 0, seg->offset,
+                   "tdng_lj92_decode failed ret=%d", ret);
+      goto cleanup;
+    }
+    {
+      const uint16_t mask = (uint16_t)((1u << bps) - 1u);
+      for (y = 0; y < bh; y++) {
+        uint8_t* dstrow = block + y * rowb;
+        const uint16_t* srow = scratch + y * row_samples;
+        memset(dstrow, 0, rowb);
+        size_t bitpos = 0;
+        for (x = 0; x < row_samples; x++) {
+          uint16_t v = (uint16_t)(srow[x] & mask);
+          int k;
+          for (k = (int)bps - 1; k >= 0; k--) {
+            dstrow[bitpos >> 3] =
+                (uint8_t)(dstrow[bitpos >> 3] |
+                          (uint8_t)(((v >> k) & 1u) << (7u - (bitpos & 7u))));
+            bitpos++;
+          }
+        }
+      }
+    }
+    td_ctx_free(ctx, scratch);
+    st = TINYDNG_OK;
     goto cleanup;
   }
-  memcpy(block, lj_target, (size_t)w * (size_t)comps * (size_t)h *
-                              sizeof(*lj_target));
+
+  /* The dims check above guarantees w*comps == bw*spp and h == bh, i.e. the
+     LJPEG sample grid matches the block exactly (w*comps*h samples). Decode
+     straight into `block` as native-order u16 values: the codec treats
+     LJPEG blocks as sample-value arrays with no endian-swap pass, and the
+     scratch/dst allocation is suitably aligned for uint16_t. */
+  ret = td_lj92_decode_u16(lj, (uint16_t*)(void*)block, w, h, comps);
+  if (ret != TDNG_LJ92_ERROR_NONE) {
+    st = ret == TDNG_LJ92_ERROR_UNSUPPORTED ? TINYDNG_E_UNSUPPORTED
+                                            : TINYDNG_E_DECODE;
+    td_set_error(err, st, TINYDNG_STAGE_DECODE, 0, 0, seg->offset,
+                 "tdng_lj92_decode failed ret=%d", ret);
+  }
 
 cleanup:
   if (lj) {
     tdng_lj92_close(lj);
   }
-  if (owned) {
-    td_ctx_free(ctx, owned);
-  }
-  if (lj_target) {
-    td_ctx_free(ctx, lj_target);
-  }
+  td_scratch_free(ctx, &owned);
   return st;
 }
 
@@ -1131,12 +1443,16 @@ typedef struct {
   int failed;     /* a worker reported an error */
 } td_decode_par;
 
-/* Per-worker state: an owned scratch block (grown on demand) + a private
-   error slot so threads never share the caller's error object. */
+/* Per-worker state: owned scratch buffers (grown on demand, reused across
+   segments so threaded decodes do not contend on the context allocator for
+   every segment) + a private error slot so threads never share the caller's
+   error object. */
 typedef struct {
   td_decode_par *par;
   uint8_t *block;
   size_t block_cap;
+  td_scratch in_sc;     /* raw/compressed input bytes                */
+  td_scratch stored_sc; /* decompressed bytes (generic path)         */
   tinydng_error err;
 } td_decode_worker_arg;
 
@@ -1210,14 +1526,14 @@ static int td_decode_one_segment(td_decode_par *par, const tinydng_segment *seg,
     case TINYDNG_COMPRESSION_NONE:
       st = td_decode_block_uncompressed(ctx, par->io, par->io_size,
                                         par->big_endian, gseg, seg, bw, bh,
-                                        target, err);
+                                        target, &w->in_sc, err);
       break;
     case TINYDNG_COMPRESSION_OLD_JPEG:
     case TINYDNG_COMPRESSION_NEW_JPEG:
       if (gseg->out_bps <= 8u) {
 #ifndef TINYDNG_NO_BASELINE_JPEG
         st = td_decode_block_baseline(ctx, par->io, par->io_size, gseg, seg,
-                                      target, bw, bh, err);
+                                      target, bw, bh, &w->in_sc, err);
 #else
         td_set_error(err, TINYDNG_E_UNSUPPORTED, TINYDNG_STAGE_DECODE, 0, 0, 0,
                      "baseline JPEG disabled");
@@ -1231,7 +1547,7 @@ static int td_decode_one_segment(td_decode_par *par, const tinydng_segment *seg,
 #ifndef TINYDNG_NO_BASELINE_JPEG
     case TINYDNG_COMPRESSION_LOSSY_JPEG:
       st = td_decode_block_baseline(ctx, par->io, par->io_size, gseg, seg,
-                                    target, bw, bh, err);
+                                    target, bw, bh, &w->in_sc, err);
       break;
 #endif
     case TINYDNG_COMPRESSION_LZW:
@@ -1240,10 +1556,9 @@ static int td_decode_one_segment(td_decode_par *par, const tinydng_segment *seg,
 #if !defined(TINYDNG_NO_PSD) && !defined(TINYDNG_NO_ZIP)
     case TD_COMPRESSION_PSD_ZIP_PRED:
 #endif
-      st = td_decode_block_compressed(ctx, par->io, par->io_size,
-                                      par->big_endian, gseg, seg,
-                                      par->img->compression, bw, bh, target,
-                                      err);
+      st = td_decode_block_compressed(
+          ctx, par->io, par->io_size, par->big_endian, gseg, seg,
+          par->img->compression, bw, bh, target, &w->in_sc, &w->stored_sc, err);
       break;
     default:
       td_set_error(err, TINYDNG_E_UNSUPPORTED, TINYDNG_STAGE_DECODE, 0, 0, 0,
@@ -1376,6 +1691,10 @@ static tinydng_status td_decode_window(tinydng_context *ctx,
     workers[t].par = &par;
     workers[t].block = NULL;
     workers[t].block_cap = 0;
+    workers[t].in_sc.p = NULL;
+    workers[t].in_sc.cap = 0;
+    workers[t].stored_sc.p = NULL;
+    workers[t].stored_sc.cap = 0;
     tinydng_error_clear(&workers[t].err);
   }
 
@@ -1391,6 +1710,8 @@ static tinydng_status td_decode_window(tinydng_context *ctx,
 
   for (t = 0; t < n; t++) {
     td_ctx_free(ctx, workers[t].block);
+    td_scratch_free(ctx, &workers[t].in_sc);
+    td_scratch_free(ctx, &workers[t].stored_sc);
     if (st == TINYDNG_OK && workers[t].err.status != TINYDNG_OK) {
       if (err) {
         *err = workers[t].err;

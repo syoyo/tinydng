@@ -3,7 +3,9 @@
  *
  *   clang -std=c11 -g -O1 -fsanitize=address,undefined,fuzzer -I.. \
  *     fuzz-v3.c ../tinydng_api.c ../tinydng_io.c ../tinydng_tiff.c \
- *     ../tinydng_dng.c ../tinydng_codec.c ../tiny_dng_ljpeg92_v2.c -o fuzz-v3
+ *     ../tinydng_dng.c ../tinydng_codec.c ../tinydng_write.c \
+ *     ../tinydng_psd.c ../tinydng_psd_write.c ../tinydng_miniz.c \
+ *     ../tinydng_stb_image.c ../tiny_dng_ljpeg92_v2.c -o fuzz-v3
  */
 #include "../tinydng.h"
 
@@ -41,11 +43,33 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
       tinydng_error derr;
       for (s = 0; s < sc; s++) {
         tinydng_segment seg;
-        (void)tinydng_image_segment(img, s, &seg);
+        if (tinydng_image_segment(img, s, &seg) == TINYDNG_OK && seg.w > 0u &&
+            seg.h > 0u && (s & 3u) == 0u) {
+          /* Exercise single-segment decode on a slice of segments. */
+          if (tinydng_decode_segment(ctx, doc, i, s, NULL, &px, &derr) ==
+              TINYDNG_OK) {
+            tinydng_pixels_free(ctx, &px);
+          }
+        }
       }
-      /* Exercise the decode path (bounded by the context memory cap). */
+      /* Full-image decode (bounded by the context memory cap). */
       if (tinydng_decode_image(ctx, doc, i, NULL, &px, &derr) == TINYDNG_OK) {
+        /* Region decode over a deterministic pseudo-random sub-window of
+           the decoded geometry; clamped in-bounds by construction. */
+        uint32_t rw = px.width ? (1u + (px.width >> 1)) : 0u;
+        uint32_t rh = px.height ? (1u + (px.height >> 1)) : 0u;
+        uint32_t rx = px.width > rw ? (px.data[0] % (px.width - rw)) : 0u;
+        uint32_t ry =
+            px.height > rh ? (px.data[px.size / 2u] % (px.height - rh)) : 0u;
         tinydng_pixels_free(ctx, &px);
+        if (rw && rh) {
+          tinydng_decode_options ropts;
+          memset(&ropts, 0, sizeof(ropts));
+          if (tinydng_decode_region(ctx, doc, i, rx, ry, rw, rh, &ropts, &px,
+                                    &derr) == TINYDNG_OK) {
+            tinydng_pixels_free(ctx, &px);
+          }
+        }
       }
     }
     tinydng_document_destroy(ctx, doc);

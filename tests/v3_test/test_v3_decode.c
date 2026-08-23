@@ -908,7 +908,7 @@ static int test_lj92_skipLength(tinydng_context *ctx) {
   /* skipLength != 0 must be rejected (no out-of-bounds write). */
   {
     int r = tdng_lj92_decode(lj, target, (int)((size_t)dw * dcomps), 1, NULL, 0);
-    CHECK(r == TDNG_LJ92_ERROR_CORRUPT,
+    CHECK(r == TDNG_LJ92_ERROR_INVALID_ARGUMENT,
           "lj92 rejects skipLength=1 (got %d)", r);
   }
 

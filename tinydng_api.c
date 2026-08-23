@@ -686,6 +686,10 @@ tinydng_context *tinydng_context_create(const tinydng_config *config,
      then stays serial). Allocation failure here is non-fatal for the same
      reason -- MT simply won't engage. */
   ctx->lock = td_mutex_create(ctx);
+  /* Dedicated lock for non-positional stdio reads (Windows etc.): keeps
+     file traffic off the allocator lock during MT decode. POSIX reads use
+     pread() and never take it. */
+  ctx->io_lock = td_mutex_create(ctx);
   ctx->decode_guard = td_mutex_create_recursive(ctx);
   ctx->mt_active = 0;
   return ctx;
@@ -698,6 +702,7 @@ void tinydng_context_destroy(tinydng_context *ctx) {
   }
   alloc = ctx->allocator;
   td_mutex_destroy(ctx, ctx->lock);
+  td_mutex_destroy(ctx, ctx->io_lock);
   td_mutex_destroy(ctx, ctx->decode_guard);
   td_ctx_free_all(ctx);
   alloc.free(alloc.user_data, ctx);

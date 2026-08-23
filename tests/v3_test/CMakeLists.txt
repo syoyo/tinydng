@@ -42,7 +42,7 @@ endif()
 enable_testing()
 
 foreach(t test_v3_roundtrip test_v3_decode test_v3_metadata test_v3_security
-          test_v3_mt test_v3_psd test_v3_streamwrite)
+          test_v3_mt test_v3_psd test_v3_streamwrite test_lj92)
   add_executable(${t} ${t}.c)
   target_link_libraries(${t} PRIVATE tinydng_v3)
 endforeach()
@@ -54,3 +54,4 @@ add_test(NAME v3_security COMMAND test_v3_security)
 add_test(NAME v3_mt COMMAND test_v3_mt ${TINYDNG_ROOT})
 add_test(NAME v3_psd COMMAND test_v3_psd)
 add_test(NAME v3_streamwrite COMMAND test_v3_streamwrite ${TINYDNG_ROOT})
+add_test(NAME lj92 COMMAND test_lj92)

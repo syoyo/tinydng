@@ -26,10 +26,12 @@ set(TINYDNG_V3_VENDOR_SRCS
   tinydng_miniz.c
   tinydng_stb_image.c)
 
+set(TINYDNG_V3_CODEC_SRCS tiny_dng_ljpeg92_v2.c)
+
 add_library(tinydng STATIC
   ${TINYDNG_V3_CORE_SRCS}
   ${TINYDNG_V3_VENDOR_SRCS}
-  tiny_dng_ljpeg92_v2.c)
+  ${TINYDNG_V3_CODEC_SRCS})
 target_include_directories(tinydng PUBLIC ${CMAKE_SOURCE_DIR})
 target_compile_features(tinydng PUBLIC c_std_11)
 
@@ -55,7 +57,7 @@ if(NOT MSVC)
   if(TINYDNG_WERROR)
     list(APPEND TINYDNG_V3_FLAGS -Werror)
   endif()
-  set_source_files_properties(${TINYDNG_V3_CORE_SRCS}
+  set_source_files_properties(${TINYDNG_V3_CORE_SRCS} ${TINYDNG_V3_CODEC_SRCS}
     PROPERTIES COMPILE_OPTIONS "${TINYDNG_V3_FLAGS}")
 endif()
 
@@ -72,7 +74,8 @@ add_sanitizers(test_dng_v3)
 enable_testing()
 
 set(TINYDNG_V3_TESTS test_v3_roundtrip test_v3_decode test_v3_metadata
-                     test_v3_security test_v3_mt test_v3_psd test_v3_streamwrite)
+                     test_v3_security test_v3_mt test_v3_psd test_v3_streamwrite
+                     test_lj92)
 foreach(t ${TINYDNG_V3_TESTS})
   add_executable(${t} tests/v3_test/${t}.c)
   target_link_libraries(${t} PRIVATE tinydng)
@@ -86,3 +89,4 @@ add_test(NAME v3_security COMMAND test_v3_security)
 add_test(NAME v3_mt COMMAND test_v3_mt "${CMAKE_SOURCE_DIR}")
 add_test(NAME v3_psd COMMAND test_v3_psd)
 add_test(NAME v3_streamwrite COMMAND test_v3_streamwrite "${CMAKE_SOURCE_DIR}")
+add_test(NAME lj92 COMMAND test_lj92)

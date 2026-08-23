@@ -18,6 +18,8 @@
  *   M  Writer NaN/huge rationals saturate       (writer td_add_*rationals)
  *   N  PSD writer NULL layers/channels          (psd_write validate)
  *   O  Zero-length opcode keeps list parsing    (dng.c opcode walk)
+ *   P  LZW strip without EOI + trailing junk    (codec td_lzw_decode)
+ *   Q  Allocation-failure injection storm       (all td_ctx_alloc sites)
  */
 #include <math.h>
 
@@ -762,6 +764,241 @@ static void case_opcode_zero_nbytes(void) {
   free(buf);
 }
 
+/* P: TIFF LZW strips may end without an explicit EOI code (Photoshop / NASA
+ * PDS writers pad the final bits with garbage). The decoder must stop as soon
+ * as the expected output size is reached instead of consuming trailing junk.
+ * Pre-fix, a junk code AFTER the output was satisfied returned -1 and failed
+ * otherwise-valid files. The stream below is CLEAR,'A','A','A','A' followed by
+ * eleven 1-bits (junk decodes as code 511 >= next_code 262 -> pre-fix error).
+ */
+static void case_lzw_trailing_garbage(void) {
+  uint16_t codes[5];
+  uint8_t lzw[7];
+  uint64_t acc = 0;
+  int nb = 0, i;
+  size_t ob = 0, total;
+  uint8_t *buf, *e;
+  tinydng_context* ctx;
+  tinydng_document* doc = NULL;
+  const tinydng_image_info* im;
+  const size_t ifd_off = 20; /* past 8-byte header + 4 pad + 7-byte strip */
+
+  codes[0] = 256; /* Clear */
+  codes[1] = codes[2] = codes[3] = codes[4] = 65;
+  for (i = 0; i < 5; i++) {
+    acc = (acc << 9) | codes[i];
+    nb += 9;
+    while (nb >= 8) {
+      lzw[ob++] = (uint8_t)(acc >> (nb - 8));
+      nb -= 8;
+    }
+  }
+  acc = (acc << 11) | 0x7FFu; /* trailing garbage, no EOI */
+  nb += 11;
+  while (nb >= 8) {
+    lzw[ob++] = (uint8_t)(acc >> (nb - 8));
+    nb -= 8;
+  }
+  CHECK(ob == sizeof(lzw), "P: fixture packing (%zu)", ob);
+
+  buf = (uint8_t*)calloc(1, ifd_off + 2u + 9u * 12u + 4u);
+  CHECK(buf != NULL, "P: alloc");
+  if (!buf) {
+    return;
+  }
+  memcpy(buf + 12, lzw, sizeof(lzw)); /* strip data at offset 12 */
+  buf[0] = 'I';
+  buf[1] = 'I';
+  tdt_pu16(buf + 2, 42, 0);
+  tdt_pu32(buf + 4, (uint32_t)ifd_off, 0);
+  tdt_pu16(buf + ifd_off, 9, 0);
+  e = buf + ifd_off + 2u;
+#define BE(t, ty, c, v)                 \
+  do {                                  \
+    tdt_pu16(e, (uint16_t)(t), 0);      \
+    tdt_pu16(e + 2, (uint16_t)(ty), 0); \
+    tdt_pu32(e + 4, (uint32_t)(c), 0);  \
+    tdt_pu32(e + 8, (uint32_t)(v), 0);  \
+    e += 12;                            \
+  } while (0)
+  BE(256, 3, 1, 2);  /* width */
+  BE(257, 3, 1, 2);  /* height */
+  BE(258, 3, 1, 8);  /* bps */
+  BE(259, 3, 1, 5);  /* compression: LZW */
+  BE(262, 3, 1, 1);  /* photometric min-is-black */
+  BE(273, 4, 1, 12); /* StripOffsets -> strip blob */
+  BE(277, 3, 1, 1);  /* spp */
+  BE(278, 3, 1, 2);  /* rows per strip */
+  BE(279, 4, 1, 7);  /* StripByteCounts */
+#undef BE
+
+  ctx = tinydng_context_create(NULL, NULL);
+  im = open_img(ctx, buf, ifd_off + 2u + 9u * 12u + 4u, &doc);
+  CHECK(im != NULL, "P: file opens");
+  if (im) {
+    tinydng_pixels px;
+    tinydng_error derr;
+    tinydng_status st = tinydng_decode_image(ctx, doc, 0, NULL, &px, &derr);
+    CHECK(st == TINYDNG_OK, "P: no-EOI LZW strip decodes (%d %s)", (int)st,
+          derr.message);
+    if (st == TINYDNG_OK) {
+      CHECK(px.size == 4 && px.data[0] == 0x41 && px.data[1] == 0x41 &&
+                px.data[2] == 0x41 && px.data[3] == 0x41,
+            "P: decoded payload intact");
+      tinydng_pixels_free(ctx, &px);
+    }
+  }
+  if (doc) tinydng_document_destroy(ctx, doc);
+  tinydng_context_destroy(ctx);
+  free(buf);
+}
+
+/* Q: allocation-failure injection. An allocator that fails after `budget`
+ * allocations is used across open + decode (and write) so that every
+ * td_ctx_alloc call site is exercised under OOM: the API must return a clean
+ * error status and the context must report zero live memory afterwards.
+ */
+typedef struct {
+  tinydng_allocator base;
+  size_t countdown; /* allocations remaining before failure */
+} fa_state;
+
+static void* fa_alloc(void* ud, size_t n) {
+  fa_state* f = (fa_state*)ud;
+  if (f->countdown == 0u) {
+    return NULL;
+  }
+  f->countdown--;
+  return malloc(n);
+}
+
+static void fa_free(void* ud, void* p) {
+  (void)ud;
+  free(p);
+}
+
+/* Run open+decode of `data` under an allocator that fails at every possible
+ * allocation ordinal; asserts clean status + zero leak for each. */
+static void fa_storm_read(const char* label, const uint8_t* data, size_t size,
+                          size_t max_ord) {
+  size_t k;
+  for (k = 0; k <= max_ord; k++) {
+    fa_state fa;
+    tinydng_config cfg;
+    tinydng_context* ctx;
+    tinydng_document* doc = NULL;
+    tinydng_error err;
+    tinydng_pixels px;
+    size_t used_after;
+    memset(&fa, 0, sizeof(fa));
+    fa.base.alloc = fa_alloc;
+    fa.base.free = fa_free;
+    fa.base.user_data = &fa;
+    fa.countdown = k;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.allocator = fa.base;
+    ctx = tinydng_context_create(&cfg, &err);
+    if (!ctx) {
+      continue; /* failing context create itself is acceptable */
+    }
+    if (tinydng_open_memory(ctx, data, size, NULL, &doc, &err) == TINYDNG_OK) {
+      if (tinydng_decode_image(ctx, doc, 0, NULL, &px, &err) == TINYDNG_OK) {
+        tinydng_pixels_free(ctx, &px);
+      }
+      tinydng_document_destroy(ctx, doc);
+    }
+    used_after = tinydng_context_memory_used(ctx);
+    CHECK(used_after == 0u, "Q(%s): leak %zu bytes at alloc-ordinal %zu", label,
+          used_after, k);
+    tinydng_context_destroy(ctx);
+  }
+}
+
+static void case_alloc_failure_injection(void) {
+  /* Reference inputs built with the default allocator: one uncompressed and
+   * one LZW DNG (16x16 gradient, 8-bit). The LZW variant also exercises the
+   * per-segment scratch buffers under OOM. */
+  const uint32_t W = 16, H = 16;
+  uint8_t pixels[16 * 16];
+  tinydng_write_image img;
+  tinydng_write_options wopts;
+  tinydng_context* ref_ctx = tinydng_context_create(NULL, NULL);
+  uint8_t *uncomp_dng = NULL, *lzw_dng = NULL;
+  size_t uncomp_sz = 0, lzw_sz = 0;
+  uint32_t i;
+  tinydng_error err;
+
+  CHECK(ref_ctx != NULL, "Q: reference context");
+  if (!ref_ctx) {
+    return;
+  }
+  for (i = 0; i < W * H; i++) {
+    pixels[i] = (uint8_t)(i * 17u + (i >> 4));
+  }
+  memset(&img, 0, sizeof(img));
+  img.width = W;
+  img.height = H;
+  img.samples_per_pixel = 1;
+  img.bits_per_sample = 8;
+  img.sample_format = TINYDNG_SAMPLEFORMAT_UINT;
+  img.data = pixels;
+  img.data_size = sizeof(pixels);
+  memset(&wopts, 0, sizeof(wopts));
+
+  wopts.compression = 1; /* uncompressed */
+  if (tinydng_write_memory(ref_ctx, &img, &wopts, &uncomp_dng, &uncomp_sz,
+                           &err) != TINYDNG_OK) {
+    CHECK(0, "Q: building uncompressed fixture failed: %s", err.message);
+  }
+  wopts.compression = 5; /* LZW */
+  if (tinydng_write_memory(ref_ctx, &img, &wopts, &lzw_dng, &lzw_sz, &err) !=
+      TINYDNG_OK) {
+    CHECK(0, "Q: building LZW fixture failed: %s", err.message);
+  }
+
+  if (uncomp_dng) {
+    fa_storm_read("uncomp", uncomp_dng, uncomp_sz, 160);
+    tinydng_buffer_free(ref_ctx, uncomp_dng);
+  }
+  if (lzw_dng) {
+    fa_storm_read("lzw", lzw_dng, lzw_sz, 160);
+    tinydng_buffer_free(ref_ctx, lzw_dng);
+  }
+
+  /* Write-path storm: fail each allocation ordinal inside write_memory. */
+  {
+    size_t k;
+    for (k = 0; k <= 160; k++) {
+      fa_state fa;
+      tinydng_config cfg;
+      tinydng_context* ctx;
+      uint8_t* out = NULL;
+      size_t out_sz = 0;
+      size_t used_after;
+      memset(&fa, 0, sizeof(fa));
+      fa.base.alloc = fa_alloc;
+      fa.base.free = fa_free;
+      fa.base.user_data = &fa;
+      fa.countdown = k;
+      memset(&cfg, 0, sizeof(cfg));
+      cfg.allocator = fa.base;
+      ctx = tinydng_context_create(&cfg, &err);
+      if (!ctx) {
+        continue;
+      }
+      if (tinydng_write_memory(ctx, &img, &wopts, &out, &out_sz, &err) ==
+          TINYDNG_OK) {
+        tinydng_buffer_free(ctx, out);
+      }
+      used_after = tinydng_context_memory_used(ctx);
+      CHECK(used_after == 0u, "Q(write): leak %zu bytes at ordinal %zu",
+            used_after, k);
+      tinydng_context_destroy(ctx);
+    }
+  }
+  tinydng_context_destroy(ref_ctx);
+}
+
 int main(void) {
   (void)tdt_slurp; /* shared helper unused by this all-in-memory test */
   printf("== v3 security regression fixtures ==\n");
@@ -780,6 +1017,8 @@ int main(void) {
   case_writer_nan_rational();
   case_psdw_null_layers();
   case_opcode_zero_nbytes();
+  case_lzw_trailing_garbage();
+  case_alloc_failure_injection();
   printf(g_fail ? "SECURITY: FAILURES\n" : "SECURITY: ALL PASS\n");
   return g_fail;
 }

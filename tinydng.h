@@ -684,6 +684,9 @@ typedef struct tinydng_write_options {
   uint8_t big_endian;   /* 0 => little-endian */
   uint8_t as_dng;       /* emit DNG-specific tags from `raw`/`cfa`     */
   uint8_t bigtiff;      /* emit BigTIFF (version 43, 8-byte offsets)   */
+  uint8_t ljpeg_arithmetic; /* compression=7: SOF11 instead of SOF3   */
+  uint8_t ljpeg_predictor;  /* 0 => 1; otherwise Annex H selector 1..7 */
+  uint16_t ljpeg_restart_interval_mcus; /* 0 => none; whole MCU rows   */
   uint16_t compression; /* 0/1 none, 5 LZW, 7 lossless JPEG, 32773 PackBits */
 } tinydng_write_options;
 

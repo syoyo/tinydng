@@ -2,9 +2,9 @@
    metadata, and decode_region/decode_segment consistency. Self-contained. */
 #include "td_test_util.h"
 
-static int roundtrip(tinydng_context *ctx, const char *name, uint16_t comp,
+static int roundtrip(tinydng_context* ctx, const char* name, uint16_t comp,
                      int rgb, uint16_t bps, uint32_t W, uint32_t H,
-                     int big_endian) {
+                     int big_endian, int arithmetic) {
   tinydng_error e;
   uint16_t spp = rgb ? 3u : 1u;
   size_t sb = (size_t)bps / 8u;
@@ -35,6 +35,11 @@ static int roundtrip(tinydng_context *ctx, const char *name, uint16_t comp,
   memset(&wo, 0, sizeof(wo));
   wo.compression = comp;
   wo.big_endian = (uint8_t)big_endian;
+  if (arithmetic) {
+    wo.ljpeg_arithmetic = 1;
+    wo.ljpeg_predictor = 4;
+    wo.ljpeg_restart_interval_mcus = (uint16_t)W;
+  }
 
   if (tinydng_write_memory(ctx, &wi, &wo, &blob, &blob_len, &e) != TINYDNG_OK) {
     CHECK(0, "%s: write failed: %s", name, e.message);
@@ -331,15 +336,22 @@ int main(void) {
     return 1;
   }
   printf("== writer/reader round-trips ==\n");
-  roundtrip(ctx, "none mono16 LE", TINYDNG_COMPRESSION_NONE, 0, 16, 100, 70, 0);
-  roundtrip(ctx, "none mono16 BE", TINYDNG_COMPRESSION_NONE, 0, 16, 100, 70, 1);
-  roundtrip(ctx, "none rgb8 LE", TINYDNG_COMPRESSION_NONE, 1, 8, 50, 20, 0);
-  roundtrip(ctx, "none rgb8 BE", TINYDNG_COMPRESSION_NONE, 1, 8, 50, 20, 1);
-  roundtrip(ctx, "lzw mono16", TINYDNG_COMPRESSION_LZW, 0, 16, 200, 150, 0);
-  roundtrip(ctx, "lzw rgb8 BE", TINYDNG_COMPRESSION_LZW, 1, 8, 123, 77, 1);
-  roundtrip(ctx, "ljpeg mono16", TINYDNG_COMPRESSION_NEW_JPEG, 0, 16, 256, 192,
+  roundtrip(ctx, "none mono16 LE", TINYDNG_COMPRESSION_NONE, 0, 16, 100, 70, 0,
             0);
-  roundtrip(ctx, "ljpeg rgb16", TINYDNG_COMPRESSION_NEW_JPEG, 1, 16, 100, 80, 0);
+  roundtrip(ctx, "none mono16 BE", TINYDNG_COMPRESSION_NONE, 0, 16, 100, 70, 1,
+            0);
+  roundtrip(ctx, "none rgb8 LE", TINYDNG_COMPRESSION_NONE, 1, 8, 50, 20, 0, 0);
+  roundtrip(ctx, "none rgb8 BE", TINYDNG_COMPRESSION_NONE, 1, 8, 50, 20, 1, 0);
+  roundtrip(ctx, "lzw mono16", TINYDNG_COMPRESSION_LZW, 0, 16, 200, 150, 0, 0);
+  roundtrip(ctx, "lzw rgb8 BE", TINYDNG_COMPRESSION_LZW, 1, 8, 123, 77, 1, 0);
+  roundtrip(ctx, "ljpeg mono16", TINYDNG_COMPRESSION_NEW_JPEG, 0, 16, 256, 192,
+            0, 0);
+  roundtrip(ctx, "ljpeg rgb16", TINYDNG_COMPRESSION_NEW_JPEG, 1, 16, 100, 80, 0,
+            0);
+  roundtrip(ctx, "ljpeg SOF11 mono16", TINYDNG_COMPRESSION_NEW_JPEG, 0, 16, 96,
+            65, 0, 1);
+  roundtrip(ctx, "ljpeg SOF11 rgb16", TINYDNG_COMPRESSION_NEW_JPEG, 1, 16, 64,
+            49, 0, 1);
   printf("== DNG metadata ==\n");
   test_dng_metadata(ctx);
   printf("== region/segment ==\n");
