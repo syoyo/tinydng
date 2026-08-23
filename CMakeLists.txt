@@ -61,6 +61,10 @@ if(NOT MSVC)
     PROPERTIES COMPILE_OPTIONS "${TINYDNG_V3_FLAGS}")
 endif()
 
+# Instrument the library itself, not only the test executables. Keeping the
+# sanitizer flags on consumers as well ensures the required runtimes are linked.
+add_sanitizers(tinydng)
+
 # ----------------------------------------------------------------------
 # Smoke test
 # ----------------------------------------------------------------------

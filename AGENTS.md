@@ -5,7 +5,7 @@
 ```bash
 cd build && cmake .. && make -j4
 ./test_dng_v3 <file.dng>           # V3 loader (pure C11, all features)
-ctest                              # All v3 tests (7 tests)
+ctest                              # All v3 tests (8 tests)
 ```
 
 ## Key Files
@@ -61,7 +61,7 @@ SubIFDs are only processed when `TINYDNG_OPEN_PARSE_SUBIFDS` flag is set. Withou
 - `TDNG_LJ92_ERROR_IO = -6` - Short write during streaming encode
 
 ### LJPEG v2 Fast Decode + Streaming
-- Huffman LUT entries pack `(ssss << 8) | (codelen + ssss)`; the entropy loop consumes code + residual with ONE accumulator shift (branchless, no ssss==0 special case). Decode ~1.5x vs pre-port.
+- Huffman LUT entries pack `(mask << 6) | total`, where `mask = (1 << ssss) - 1` and `total = codelen + ssss`; the entropy loop consumes code + residual with one accumulator shift and uses the precomputed residual mask (branchless, no ssss==0 special case). Decode ~1.5x vs pre-port.
 - `tdng_lj92_open_streaming(lj, user, read_fn, size_fn, ...)` parses headers through a chunk-cached reader (64KB). Entropy payload is destuffed straight from the callback (no full-segment materialization).
 - v3 codec (`tinydng_codec.c` `td_decode_block_ljpeg`) uses the streaming path automatically when `io->map == NULL` (stdio backend).
 - SIMD prefix-sum kernels (SSE2/AVX2) are compiled into every GCC/Clang x86 build via `__attribute__((target))` and selected at runtime with `__builtin_cpu_supports` (`tdng_simd_level()`); no `-march` leaks into other code. Overrides: `TINY_DNG_LJPEG92_V2_USE_AVX2/_SSE2` (compile-time) and `TINY_DNG_LJPEG92_NO_SIMD` (scalar only). MSVC builds scalar.
@@ -73,7 +73,7 @@ SubIFDs are only processed when `TINYDNG_OPEN_PARSE_SUBIFDS` flag is set. Withou
 - Mono/skip-free/no-delinearize configuration (what the writer emits) uses streaming specializations in BOTH passes: diffs are computed from adjacent raw input elements (u16 wraparound identical to the generic path), eliminating row-cache traffic; 16-sample blocks go through `tdng_diff16_{sse2,avx2}` when the host supports it. Encoder output is bit-identical to the generic path.
 
 ### v3 Streaming / Tiled Writer
-- `tinydng_write_io` (absolute-offset write/size/close/flush; file + memory backends). `flush` is optional; `tinydng_writer_finish` calls it on success so a final stdio-buffer failure reports E_IO instead of silent truncation.
+- `tinydng_write_io` (absolute-offset write/size/close; file + memory backends). `tinydng_writer_finish` flushes the built-in file backend internally on success so a final stdio-buffer failure reports E_IO instead of silent truncation.
 - `tinydng_writer_create/write_tile/write_strip/finish`: tiled or multi-strip; none/LZW/PackBits/lossless-JPEG compression. Edge tiles padded to full tile dims.
 - Lossless JPEG writer constraints (dims <= 65535, spp 1..4) are validated at create time (E_UNSUPPORTED).
 - `tinydng_write_memory/write_file` are thin wrappers (single strip + memory/file sink)

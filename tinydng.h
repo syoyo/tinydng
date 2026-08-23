@@ -739,11 +739,6 @@ struct tinydng_write_io {
   /* Release backend resources. May be NULL. */
   void (*close)(tinydng_write_io *io);
   void *backend;
-  /* Optional (may be NULL): push any buffered bytes to the destination.
-     Returns 0 on success, nonzero on failure. tinydng_writer_finish calls
-     this on the success path so a final stdio-buffer flush failure surfaces
-     as TINYDNG_E_IO instead of silently truncating the output file. */
-  int (*flush)(tinydng_write_io *io);
 };
 
 tinydng_status tinydng_write_io_open_file(tinydng_context *ctx,

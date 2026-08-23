@@ -524,7 +524,6 @@ tinydng_status tinydng_write_io_open_file(tinydng_context *ctx,
   out->write = td_wio_file_write;
   out->size = td_wio_file_size;
   out->close = td_wio_file_close;
-  out->flush = td_wio_file_flush;
   out->backend = f;
   return TINYDNG_OK;
 }
@@ -1807,7 +1806,11 @@ tinydng_status tinydng_writer_finish(tinydng_writer *w, tinydng_error *err) {
   if (st == TINYDNG_OK) {
     st = td_writer_put_header(&w->sink, w->big_endian, w->bigtiff, ifd_off, err);
   }
-  if (st == TINYDNG_OK && w->sink.flush && w->sink.flush(&w->sink) != 0) {
+  /* Keep flushing internal so the public sink layout stays compatible. */
+  if (st == TINYDNG_OK && w->sink.write == td_wio_file_write &&
+      w->sink.size == td_wio_file_size &&
+      w->sink.close == td_wio_file_close &&
+      td_wio_file_flush(&w->sink) != 0) {
     td_set_error(err, TINYDNG_E_IO, TINYDNG_STAGE_WRITE, 0, 0,
                  w->sink.size(&w->sink),
                  "final sink flush failed (output may be truncated)");
