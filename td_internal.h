@@ -336,11 +336,13 @@ long td_packbits_decode(const uint8_t *in, size_t in_len, uint8_t *out,
 /* PSD / PSB (tinydng_psd.c, tinydng_psd_write.c)                     */
 /* ------------------------------------------------------------------ */
 
-#ifndef TINYDNG_NO_PSD
-
 /* Internal-only compression code for the composite segment table: zlib +
-   per-row delta prediction. Never collides with TIFF compression tags. */
+   per-row delta prediction. Never collides with TIFF compression tags. Keep
+   this visible in decode-only builds because shared codec dispatch compares
+   compression values against it even when PSD support is compiled out. */
 #define TD_COMPRESSION_PSD_ZIP_PRED 0xF003u
+
+#ifndef TINYDNG_NO_PSD
 
 /* Parse a PSD/PSB stream (magic already verified) and populate `doc`:
    doc->psd plus doc->images[0] for the composite. `r` is positioned on the

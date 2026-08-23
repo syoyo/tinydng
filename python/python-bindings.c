@@ -376,9 +376,11 @@ static int module_exec(PyObject *module) {
   return 0;
 }
 
+/* Regular wheels use the older limited API, which does not expose Py_mod_gil.
+   Free-threaded wheels use the full API and define Py_GIL_DISABLED. */
 static PyModuleDef_Slot module_slots[] = {
     {Py_mod_exec, module_exec},
-#if PY_VERSION_HEX >= 0x030D0000
+#if PY_VERSION_HEX >= 0x030D0000 && defined(Py_GIL_DISABLED)
     {Py_mod_gil, Py_MOD_GIL_NOT_USED},
 #endif
     {0, NULL}

@@ -26,14 +26,17 @@ jobs:
           - os: ubuntu-latest
             sanitize: ON
             werror: ON
+            asan_options: detect_leaks=1:abort_on_error=1
           - os: macos-latest
             sanitize: ON
             werror: OFF
+            asan_options: detect_leaks=0:abort_on_error=1
           - os: windows-latest
             sanitize: OFF
             werror: OFF
+            asan_options: detect_leaks=0:abort_on_error=1
     env:
-      ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+      ASAN_OPTIONS: ${{ matrix.asan_options }}
       UBSAN_OPTIONS: halt_on_error=1
     steps:
       - uses: actions/checkout@v4
@@ -47,10 +50,10 @@ jobs:
           -DTINYDNG_WERROR=${{ matrix.werror }}
 
       - name: Build
-        run: cmake --build build-san --parallel
+        run: cmake --build build-san --config Debug --parallel
 
       - name: Test
-        run: ctest --test-dir build-san --output-on-failure
+        run: ctest --test-dir build-san -C Debug --output-on-failure
 
   fuzz-smoke:
     name: fuzz smoke
